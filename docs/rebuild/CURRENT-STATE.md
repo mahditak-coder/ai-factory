@@ -4,7 +4,7 @@
 
 - Audit snapshot: `2bf75e834d0444ac5cfef767261757324cbefee8` on `audit/full-source-review`
 - Documentation branch: `rebuild/blueprint-v1` created from the exact audit commit
-- Blueprint commit: f7553323055fec120faf8d3a708230ac09ff83a6
+- Blueprint commit: 95b901d9a4bccb5d96f50c256668c2d2a904423c
 - Rebuild status: **NOT STARTED**
 - Last accepted phase: **NONE**
 - Active phase: **NONE**
