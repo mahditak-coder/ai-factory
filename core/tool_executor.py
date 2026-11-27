@@ -104,15 +104,14 @@ def execute(req: ToolRequest) -> ToolResult:
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
             error="tool-disabled", duration_ms=0), started)
     sig = _signature(req)
-    # Atomic claim + durable reservation under one lock: no adapter may run
-    # before a RESERVED receipt exists on disk.
+    # One cross-process atomic operation: read, duplicate/signature check and
+    # durable RESERVED write. An adapter may run only if this process won the
+    # claim. _seen_lock still serialises threads inside this process.
     try:
         with _seen_lock:
-            receipt = tool_events.find(call_id)
-            known_sig = (receipt or {}).get("request_id") or _seen_sigs.get(call_id)
-            duplicate = receipt is not None or call_id in _seen_calls
-            if not duplicate:
-                receipt = tool_events.reserve(call_id, sig, req.tool_id, req.project)
+            claim = tool_events.claim(call_id, sig, req.tool_id, req.project)
+            claimed = claim["claimed"]
+            if claimed:
                 tool_events.mark_in_progress(call_id)
                 _seen_calls.add(call_id)
                 _seen_sigs[call_id] = sig
@@ -121,17 +120,16 @@ def execute(req: ToolRequest) -> ToolResult:
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
             error="receipt-store-unavailable:" + str(exc)[:160], duration_ms=0),
             started, finalize_receipt=False)
-    if duplicate:
-        same = known_sig == sig
-        unresolved = (receipt or {}).get("lifecycle") in ("RESERVED", "IN_PROGRESS")
-        error = ("duplicate-call-signature-mismatch" if not same else
-                 "unresolved-in-progress:explicit-recovery-required" if unresolved else
-                 "duplicate-call")
+    if not claimed:
+        error = {"mismatch": "duplicate-call-signature-mismatch",
+                 "unresolved": "unresolved-in-progress:explicit-recovery-required",
+                 "duplicate": "duplicate-call"}.get(claim["decision"],
+                                                    "duplicate-call")
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
             error=error, duration_ms=0,
             evidence={"replayed": True, "durable": True,
-                      "lifecycle": (receipt or {}).get("lifecycle")}), started,
+                      "lifecycle": claim["receipt"].get("lifecycle")}), started,
             finalize_receipt=False)
 
     problem = spec.validate_inputs(req.inputs)

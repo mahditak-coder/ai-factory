@@ -48,6 +48,36 @@ Original local `~/AI-Factory` was not used for execution; its 151 uncommitted it
 ### Accurate guarantee
 The durable receipt lifecycle guarantees **at-most-once execution claims**: a `call_id` is reserved on disk before any adapter runs, and no process — before or after restart — will start the adapter twice for the same call. It does **not** claim exactly-once external side effects for adapters/providers without transactional idempotency: if a process dies after the adapter produced a side effect but before the terminal receipt, the effect may already exist and cannot be undone or safely re-run by this layer. Such calls remain `IN_PROGRESS`/`RESERVED` and require explicit reconciliation with a named actor.
 
+## Multi-process idempotency fix (independent review — cross-process race)
+8. `python3 -m unittest core.tests.test_phase01_multiprocess -v`
+   - Result: `Ran 7 tests in 0.729s — OK` (exit 0).
+   - Stress: the same module was run 5 more times with fresh isolated roots: 5/5 exit 0, OK.
+9. `python3 -m unittest discover -s core/tests -p 'test_*.py'`
+   - Result: `Ran 246 tests in 43.319s — OK` (exit 0).
+   - Status: **246 PASS / 0 FAIL / 0 ERROR**.
+
+### Inter-process mechanism
+- `core/tool_events.py` uses `fcntl.flock` on a stable `data/tool_receipts.json.lock` inside one `_receipt_lock()` context manager: `threading.RLock` serialises threads, `flock` serialises independent processes.
+- `claim()` performs read → duplicate check → signature validation → durable RESERVED write inside that single critical section. The executor starts an adapter only when `claimed=True`.
+- RESERVED → IN_PROGRESS → TERMINAL all use the same `_receipt_lock()`.
+- Writers use per-writer temp names (`pid.thread.random.tmp`) plus atomic `replace`; no two writers share a temp filename.
+- Lock open/acquire failure, read failure, write failure and corruption all raise `ReceiptStoreError` and block before adapter execution.
+
+### Deterministic multiprocess scenarios — all proven
+- Two processes, same `call_id`: exactly one side-effect file; 1 PASS + 1 BLOCKED; terminal receipt persisted.
+- Two processes, same `call_id` but different inputs: mismatch rejected; exactly one side effect.
+- `os._exit` after reservation: `RESERVED` persists; restarted process blocked; zero side effects.
+- `os._exit` after side effect: `IN_PROGRESS` persists; restarted process blocked; side-effect set unchanged.
+- Four processes × 25 distinct `call_id`s: 100 receipts, valid JSON, all TERMINAL, no leaked `.tmp` files.
+- Injected `flock` failure: BLOCKED with `receipt-lock-*` diagnostic; zero side effects.
+- `reconcile()` persists actor, reason and timestamp in the terminal receipt; anonymous reconciliation rejected.
+- Earlier corruption, missing-store, read/write-failure, thread-concurrency and retention tests remain green.
+
+### Exact multi-process guarantee and limits
+**Guarantee:** On POSIX filesystems supporting `flock`, independent processes cannot both win the durable claim for one `call_id`. An adapter is started only by the process that owns the RESERVED receipt, and no process — before or after restart — starts it twice for the same call. All state transitions are serialised by the same lock; unresolved calls fail closed until explicit reconciliation by a named actor.
+
+**Limits:** Exactly-once external side effects are still NOT claimed — if a process dies after an effect but before the terminal receipt, the effect may already exist and is neither undone nor safely re-run by this layer. `flock` is advisory: a foreign writer bypassing this module is outside the guarantee. The lock file must be on a local POSIX filesystem. On a non-POSIX platform (`fcntl` unavailable) the module fails closed and the guarantee narrows to a single process. Historical receipts evicted before the separate receipt store existed cannot be reconstructed; no destructive migration was performed.
+
 All commands were run with `AI_FACTORY_TEST_ROOT` pointing to an isolated temporary root, so no source/project user data was modified.
 
 ## Previously recorded failure
