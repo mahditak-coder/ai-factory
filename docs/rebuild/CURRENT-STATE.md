@@ -13,7 +13,7 @@
 - Phase 01 acceptance-fix commit: 8e292a70d20bc11450f41a03de175b81ef149356
 - Phase 01 final hardening commit: e026891a4f9de0d6d3c3e8f1d6a64aa2f170355b
 - Phase 01 multi-process fix commit: d1e801e0e9e63ab9eeda71393b92f746f9b56c39
-- Phase 01 reconciliation atomicity commit: RECON_COMMIT_PLACEHOLDER
+- Phase 01 reconciliation atomicity commit: 43bf30818e77b47b4ce23e70bd35738a0eb1db71
 - Next allowed action: final independent review. Phase 01 remains **awaiting independent acceptance** — it is NOT accepted or COMPLETE. Phase 02 is NOT authorized to start.
 
 ## Audit status and limitations
