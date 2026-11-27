@@ -401,6 +401,22 @@ def _execute(task: dict, worker_id: str) -> None:
         _fail("درخواست خطرناک رد شد: " + rc["note"], retry=False)
         return
 
+    # AF NEXT Phase 02 — every user request receives one canonical, versioned
+    # request record before specialist/model work. The adapter is optional and
+    # non-breaking: a failure here never stops the proven Phase 01 path, and
+    # legacy compat mode skips canonical intake without deleting any record.
+    try:
+        from core import request_intelligence as ri
+        if ri.compat_mode() == "canonical":
+            cr = ri.intake(goal, project=project,
+                           source_channel="orchestrator",
+                           request_id="req-task-" + tid)
+            factory.append_history(
+                project, "canonical-request",
+                "%s %s" % (cr["request_id"], cr["status"]))
+    except Exception as exc:  # noqa: BLE001 — compatibility adapter, never fatal
+        log.warning("canonical request intake failed for task %s: %s", tid, exc)
+
     factory.append_history(project, "task-start",
                            f"agent={agent_name} goal={goal[:150]}")
     # AF-31 — record a small, dependency-aware plan for this task. Failure of

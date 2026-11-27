@@ -442,6 +442,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_agents_list()
             elif route == "/api/agents/view":
                 self._api_agents_view(q)
+            elif route == "/api/requests":
+                self._api_requests_view(q)
+            elif route == "/api/requests/view":
+                self._api_requests_view(q)
             elif route == "/api/tasks":
                 self._api_tasks_list(q)
             elif route == "/api/tasks/view":
@@ -570,6 +574,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_agents_delete()
             elif route == "/api/agents/validate":
                 self._api_agents_validate()
+            elif route == "/api/requests/intake":
+                self._api_requests_intake()
+            elif route == "/api/requests/answer":
+                self._api_requests_answer()
+            elif route == "/api/requests/plan":
+                self._api_requests_plan()
+            elif route == "/api/requests/approval-token":
+                self._api_requests_approval_token()
+            elif route == "/api/requests/approve":
+                self._api_requests_approve()
             elif route == "/api/tasks":
                 self._api_tasks_add()
             elif route == "/api/tasks/cancel":
@@ -1261,6 +1275,102 @@ class Handler(BaseHTTPRequestHandler):
         factory.append_history(project, "request-check", rc["note"])
         factory.append_history(project, "plan-requested", goal[:200])
         self._json({"ok": True, "request_check": rc, **res})
+
+    # ---- Phase 02 — canonical Request Intelligence --------------------
+
+    def _ri_error(self, exc: Exception) -> None:
+        name = type(exc).__name__
+        status = 409 if isinstance(exc, ValueError) else 400
+        self._error(status, "%s: %s" % (name, str(exc)))
+
+    def _api_requests_view(self, q: dict) -> None:
+        from core import request_intelligence as ri
+        rid = str(q.get("request_id") or "")
+        if rid:
+            rec = ri.get(rid)
+            if rec is None:
+                self._error(404, "request-not-found")
+                return
+            self._json({"ok": True, "request": ri.save_view(rec)})
+            return
+        self._json({"ok": True, "requests": [ri.save_view(r)
+                                             for r in ri.list_requests(
+                                                 str(q.get("project") or ""))]})
+
+    def _api_requests_intake(self) -> None:
+        from core import request_intelligence as ri
+        data = self._read_json()
+        if data is None:
+            self._error(400, "invalid JSON body")
+            return
+        try:
+            rec = ri.intake(str(data.get("text") or data.get("goal") or ""),
+                            project=str(data.get("project") or ""),
+                            source_channel=str(data.get("source") or "api"),
+                            request_id=str(data.get("request_id") or ""))
+        except (ri.RequestError, ri.RequestStoreError, ValueError) as exc:
+            self._ri_error(exc)
+            return
+        self._json({"ok": True, "request": ri.save_view(rec)})
+
+    def _api_requests_answer(self) -> None:
+        from core import request_intelligence as ri
+        data = self._read_json()
+        if data is None:
+            self._error(400, "invalid JSON body")
+            return
+        try:
+            rec = ri.answer(str(data.get("request_id") or ""),
+                            str(data.get("answer") or ""),
+                            str(data.get("question_id") or ""))
+        except (ri.RequestError, ri.RequestStoreError, ValueError) as exc:
+            self._ri_error(exc)
+            return
+        self._json({"ok": True, "request": ri.save_view(rec)})
+
+    def _api_requests_plan(self) -> None:
+        from core import request_intelligence as ri
+        data = self._read_json()
+        if data is None:
+            self._error(400, "invalid JSON body")
+            return
+        try:
+            rec = ri.build_plan(str(data.get("request_id") or ""))
+        except (ri.RequestError, ri.RequestStoreError, ValueError) as exc:
+            self._ri_error(exc)
+            return
+        self._json({"ok": True, "request": ri.save_view(rec)})
+
+    def _api_requests_approval_token(self) -> None:
+        from core import request_intelligence as ri
+        data = self._read_json()
+        if data is None:
+            self._error(400, "invalid JSON body")
+            return
+        try:
+            proposal = ri.approval_proposal(str(data.get("request_id") or ""),
+                                            str(data.get("session_id") or ""))
+        except (ri.RequestError, ri.RequestStoreError, ValueError) as exc:
+            self._ri_error(exc)
+            return
+        self._json({"ok": True, "approval": proposal})
+
+    def _api_requests_approve(self) -> None:
+        from core import request_intelligence as ri
+        data = self._read_json()
+        if data is None:
+            self._error(400, "invalid JSON body")
+            return
+        try:
+            rec = ri.approve(str(data.get("request_id") or ""),
+                             str(data.get("token") or ""),
+                             str(data.get("actor") or ""),
+                             project=str(data.get("project") or ""),
+                             session_id=str(data.get("session_id") or ""))
+        except (ri.RequestError, ri.RequestStoreError, ValueError) as exc:
+            self._ri_error(exc)
+            return
+        self._json({"ok": True, "request": ri.save_view(rec)})
 
     def _api_factory_plan_view(self, q: dict) -> None:
         from core import factory

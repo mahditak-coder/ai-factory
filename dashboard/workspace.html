@@ -46,6 +46,13 @@
   <div id="errBar" class="ws-errbar" hidden></div>
 </section>
 
+<!-- ═══ خلاصهٔ هوش درخواست (فاز ۰۲) — فقط نمایش، بدون تصمیمگیری ═══ -->
+<section class="wscard" id="riCard">
+  <h2>🧭 درخواست جاری <span id="riStatus" class="wspill st-idle">—</span></h2>
+  <div id="riSummary" class="ws-note">هنوز درخواستی ثبت نشده است.</div>
+  <div id="riNext" class="ws-note" hidden></div>
+</section>
+
 <main class="ws-main">
 
   <!-- ═══ تنظیمات پروژه ═══ -->
@@ -206,5 +213,58 @@
 <script src="/panel.js"></script>
 <script src="/static/msgtime.js"></script>
 <script src="work.js"></script>
+<script>
+/* AF NEXT Phase 02 — small read-only view of the canonical request.
+   No approval buttons here: approvals stay in the existing Decision Center. */
+(async function () {
+  const box = document.getElementById('riSummary');
+  const pill = document.getElementById('riStatus');
+  const next = document.getElementById('riNext');
+  if (!box || !pill) return;
+  async function refresh() {
+    const sel = document.getElementById('projSel');
+    const project = sel ? encodeURIComponent(sel.value || '') : '';
+    try {
+      const r = await fetch('/api/requests?project=' + project, {cache: 'no-store'});
+      const d = await r.json();
+      const list = (d && d.requests) || [];
+      const rec = list[list.length - 1];
+      if (!rec) {
+        pill.textContent = '—';
+        pill.className = 'wspill st-idle';
+        box.textContent = 'هنوز درخواستی ثبت نشده است.';
+        next.hidden = true;
+        return;
+      }
+      const c = rec.classification || {};
+      pill.textContent = rec.status || '—';
+      pill.className = 'wspill ' + (rec.status === 'APPROVED' ? 'st-on' : 'st-idle');
+      const domain = ((c.domain || {}).value) || 'نامشخص';
+      const platform = ((c.platform || {}).value) || 'نامشخص';
+      const risk = ((c.risk || {}).level) || 'نامشخص';
+      const complexity = ((c.complexity || {}).level) || 'نامشخص';
+      box.textContent = 'منظور: ' + ((rec.intent || {}).primary || 'نامشخص') +
+        ' | حوزه: ' + domain + ' | پلتفرم: ' + platform +
+        ' | خطر: ' + risk + ' | پیچیدگی: ' + complexity +
+        ' | بازبینی: ' + (rec.revision || 1);
+      const missing = ((rec.clarification || {}).missing || []).filter(m => m.essential);
+      if (missing.length) {
+        next.hidden = false;
+        next.textContent = 'قدم بعدی: پاسخ به سؤال ضروری «' + missing[0].id + '» — ' + missing[0].why;
+      } else if (rec.status === 'AWAITING_APPROVAL') {
+        next.hidden = false;
+        next.textContent = 'قدم بعدی: تأیید صریح برنامه در مرکز تصمیم.';
+      } else {
+        next.hidden = true;
+      }
+    } catch (e) {
+      box.textContent = 'دریافت وضعیت درخواست ممکن نشد.';
+    }
+  }
+  await refresh();
+  const sel = document.getElementById('projSel');
+  if (sel) sel.addEventListener('change', refresh);
+})();
+</script>
 </body>
 </html>

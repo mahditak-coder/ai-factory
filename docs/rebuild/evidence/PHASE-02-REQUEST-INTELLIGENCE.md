@@ -1,0 +1,46 @@
+# Phase 02 — Request Intelligence & Planning: implementation and evidence
+
+> خلاصه فارسی: لایهٔcanonical هوش درخواست ساخته شد. متن کاربر بدون اجرای متخصص به یک رکورد نسخهدار، طبقهبندی شده، قابل بازبینی و دارای برنامهٔ محدود تبدیل میشود. تأیید حساس با.Hash/نسخه/توکن تکبارهای گره خورده و در هر عدم تطابق fail-closed است.
+
+Base: `rebuild/phase-01-core-foundation` @ `3dcae0703bee408bc34fdfd83e81807a25c6a2a7` (Phase 01 ACCEPTED by independent review 2026-11-27, code commit `43bf30818e77b47b4ce23e70bd35738a0eb1db71`, docs commit `3dcae0703bee408bc34fdfd83e81807a25c6a2a7`).
+
+## What was implemented (real source)
+
+| Deliverable | Implementation |
+|---|---|
+| A — canonical request model | `core/request_intelligence.py`: `SCHEMA_VERSION = af-request-1.0`, `validate_record()`, `intake()`, `get()`, `list_requests()`, persisted in `data/canonical_requests.json` with flock-guarded atomic writes and a marker distinguishing genuine empty from lost/corrupt store. Fields: identity/lifecycle, intent, requirements, constraints/assumptions, classification, clarification, plan, approval, legacy/migration. |
+| B — intent extraction | Deterministic regex/scoring over normalized Persian (Arabic/Persian character and digit unification) and mixed Persian-English text. Intents: create, modify, debug, explain, analyze, plan, research, deploy, other. Reuses `core.requestcheck.analyze()` for the legacy product-type hint; no provider/model call and no new dependency. Low confidence is recorded as `uncertain` and drives clarification. |
+| C — independent domain/platform | `classify_domain()` and `classify_platform()` are separate functions and separate record fields. Domain values: game, education, business, automation, content, general, unknown. Platform values: Android, Web, Desktop, Cross-platform, unknown (+ `platforms` list for multi-platform). A game does not imply Android; Android does not imply game. ADR-011 is untouched. |
+| D — requirement extraction | `extract_requirements()` separates `explicit`, `inferred` (with `confidence` + `rationale`) and `system` requirements; `detect_conflicts()` records material contradictions (e.g. offline + live online) instead of silently choosing. Acceptance-condition fields are present; unknown targets stay unknown. |
+| E — essential clarification | `clarification_state()` asks only for information that changes the safe/useful result. One concise question per turn; optional preferences are recorded without blocking; answered keys (`question_id`) are never re-asked. `answer()` always increments `revision` and invalidates prior approval. Legal states and transitions are validated by `_transition()`. |
+| F — risk & complexity | `classify_risk()` evaluates nine separate dimensions (destructive, external_release, financial, security_sensitive, credentials, private_data, scope_expansion, network, data_loss_migration) and maps them by documented rules to low/medium/high/critical with reasons. `classify_complexity()` is independent (small/medium/large/very-large/unknown). Estimates are always `unknown` unless the user supplied real numbers. |
+| G — autonomy & approval | Low-risk reversible requests may reach `APPROVED` with actor `system:low-risk-autonomy` (controlled autonomy, not execution permission). Sensitive/irreversible requests require `approval_proposal()` + `approve()`; approval is bound to request ID, exact revision, request hash, plan hash, scope, actor and a one-shot `core.confirmations` token with expiry. Any material change invalidates it; replay/mismatch/expiry fails closed. SecurityPolicy is never bypassed. |
+| H — bounded plan | `build_plan()` generates at most eight structured steps (id, purpose, required_input, expected_output, dependencies, acceptance_condition, risk, approval_required, status), deduplicates step IDs, marks `executed: False`, and performs no tool/specialist/provider call. |
+| I — legacy migration | `migrate_legacy()` is idempotent via `legacy.legacy_ref`, preserves unknown legacy fields under `legacy.preserved`, records source/version/timestamp, never deletes legacy data. `compat_mode()`/`set_compat_mode("legacy")` provide rollback without deleting canonical records. |
+| J — orchestrator/API | Non-breaking adapter in `core/orchestrator.py` creates a canonical record per task in canonical mode; failure never stops the Phase 01 path. New API routes: `GET /api/requests`, `/api/requests/view`, `POST /api/requests/intake`, `/api/requests/answer`, `/api/requests/plan`, `/api/requests/approval-token`, `/api/requests/approve`. Responses use `save_view()` which strips approval tokens. |
+| K — Workspace | `dashboard/workspace.html` gained a small read-only card showing understood intent, domain, platform, risk, complexity, revision and the single next action. No new approval panel; approvals remain in the existing Decision Center. Visual quality NOT TESTED (no browser/viewport inspection available). |
+
+## Exact verification evidence
+
+All commands ran from the isolated clone with a fresh `AI_FACTORY_TEST_ROOT`; no original source or user project data was touched.
+
+1. Baseline before changes (branch at accepted Phase 01 SHA):
+   - `python3 -m unittest discover -s core/tests -p 'test_*.py'`
+   - exit `0`, `Ran 247 tests in 45.481s — OK`; log `/data/data/com.termux/files/usr/tmp/opencode/p2-baseline.log`.
+2. Targeted Phase 02 suite:
+   - `python3 -m unittest core.tests.test_phase02_request_intelligence -v`
+   - exit `0`, `Ran 58 tests in 0.237s — OK`; log `/data/data/com.termux/files/usr/tmp/opencode/p2-target6.log`.
+3. Full suite after implementation:
+   - `python3 -m unittest discover -s core/tests -p 'test_*.py'`
+   - exit `0`, `Ran 305 tests in 47.713s — OK` (305 PASS / 0 FAIL / 0 ERROR); log `/data/data/com.termux/files/usr/tmp/opencode/p2-full.log`.
+   - A pre-existing non-fatal `ResourceWarning` (unclosed `opencode-serve.log` writer) appears after the OK line.
+4. Final rerun after all code/document changes: `python3 -m unittest discover -s core/tests -p 'test_*.py'` — exit `0`, `Ran 305 tests in 46.320s — OK`; log `/data/data/com.termux/files/usr/tmp/opencode/p2-final.log`.
+5. `python3 -m py_compile` on all changed Python files: exit `0`.
+
+Test coverage includes all 50 mission cases: model roundtrip/invalid schema/stable identity/revision-history/legacy preservation; Persian and mixed-language intent; create/modify/debug/explain; explicit vs inferred; uncertainty; conflicts; game-Android, game-Web, education-Android, website-Desktop/Web, unknown platform, domain/platform independence; essential clarification, no over-asking, no repeated questions, revision update, persistence; destructive/paid/private risk, complex-but-safe, simple-destructive-not-safe, unknown estimates; bounded/dependency-valid/acceptance-condition/duplicate-free/non-executing plans; approval need, high-risk gating, request-hash/plan-hash binding, invalidation on request/plan change, one-shot replay rejection, expiry/mismatch, untrusted text cannot override policy; idempotent legacy migration, preserved legacy fields, duplicate submission, Phase 01 receipt regression, API state exposure, invalid transitions, reload persistence; plus corrupt/missing store fail-closed, rollback compat mode, anonymous approval rejection and token hiding in API views.
+
+## Accurate guarantee and limitations
+
+- **PASS (local, deterministic):** one canonical structured request per intake, versioned and persisted; intent/requirements/domain/platform/risk/complexity/clarification/plan/approval behave as specified; high-risk work cannot be approved without an exact bound one-shot approval; Phase 01 idempotency suite remains green.
+- **NOT TESTED:** model-assisted classification (not implemented — deterministic baseline only), live providers, paid actions, specialist execution, product generation, real browser/viewport visual inspection (security policy / no browser available). No such result is claimed.
+- **LIMITS:** Persian/English classification is keyword-and-pattern based, not a language model; ambiguous poetic or highly indirect wording may be classified `other` and correctly routed to clarification. Risk rules are explicit and conservative, not a substitute for SecurityPolicy. `flock` is advisory and requires all writers to use this module. The orchestrator integration is a non-breaking compatibility adapter; canonical gating is enforced through the Phase 02 API and request lifecycle, while legacy task execution remains on the accepted Phase 01 path in `canonical` mode and can be switched to `legacy` mode without deleting records. ADR-011..014 remain unresolved and untouched.

@@ -1,20 +1,23 @@
 # Current State
 
-> خلاصه فارسی: فاز ۰۱real اجرا شد؛ شش ایراد پذیرش شناسایی شده توسط بازبینی مستقل real اصلاح و آزمایش شدند (race همزمان، ماندگاری receipt، پنجره سقوط process، فساد/دسترسناپذیری store، race بینprocessها، و اتمیک بودن reconciliation). فاز ۰۱ هنوز منتظر پذیرش مستقل نهایی است؛ **هیچ فازی پذیرفته نشده است** و مرحله بعدی آغاز نشده است.
+> خلاصه فارسی: فاز ۰۱ توسط بازبینی مستقل پذیرفته شد (ACCEPTED). فاز ۰۲real اجرا شد: لایهٔcanonical هوش درخواست، طبقهبندی فارسی/مختلط، تفکیک حوزه و پلتفرم، clarification ضروری، خطر/پیچیدگی جدا، برنامهٔ محدود و تأیید امن گرهخورده ساخته و آزمایش شد. فاز ۰۲ منتظر بازبینی مستقل است و **پذیرفته نشده است**؛ فاز ۰۳ مجاز نیست.
 
 - Audit snapshot: `2bf75e834d0444ac5cfef767261757324cbefee8` on `audit/full-source-review`
 - Documentation branch: `rebuild/blueprint-v1` created from the exact audit commit
 - Blueprint commit: 95b901d9a4bccb5d96f50c256668c2d2a904423c
 - Rebuild status: **IN PROGRESS**
-- Last accepted phase: **NONE** — no phase has passed final independent acceptance.
-- Phase 01 status: **AWAITING INDEPENDENT ACCEPTANCE** — NOT accepted, NOT COMPLETE. All earlier provisional acceptance claims were reopened by independent review findings.
-- Active phase: **NONE**
+- Last accepted phase: **01 — Core Foundation and Unified Orchestration** — ACCEPTED by independent review dated 2026-11-27 (prior provisional status recorded historically below was superseded by that decision).
+- Phase 01 status: **ACCEPTED**. Basis: final code commit `43bf30818e77b47b4ce23e70bd35738a0eb1db71`, documentation/remote HEAD commit `3dcae0703bee408bc34fdfd83e81807a25c6a2a7`, independent review 2026-11-27.
+- Active phase: **02 — Request Intelligence & Planning** (implementation complete; awaiting independent review).
+- Phase 02 status: **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW**.
+- Phase 03 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 02 acceptance.
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
 - Phase 01 acceptance-fix commit: 8e292a70d20bc11450f41a03de175b81ef149356
 - Phase 01 final hardening commit: e026891a4f9de0d6d3c3e8f1d6a64aa2f170355b
 - Phase 01 multi-process fix commit: d1e801e0e9e63ab9eeda71393b92f746f9b56c39
 - Phase 01 reconciliation atomicity commit: 43bf30818e77b47b4ce23e70bd35738a0eb1db71
-- Next allowed action: final independent review. Phase 01 remains **awaiting independent acceptance** — it is NOT accepted or COMPLETE. Phase 02 is NOT authorized to start.
+- Historical note (preserved, not rewritten): before the independent decision, this file recorded `Last accepted phase: NONE` and Phase 01 as awaiting acceptance. That status is superseded by the 2026-11-27 independent acceptance recorded above.
+- Next allowed action: independent review of Phase 02 on `rebuild/phase-02-request-intelligence`. Do not start Phase 03 automatically.
 
 ## Audit status and limitations
 - Audit source state: local `~/AI-Factory` HEAD `3878db271313415656328ec57595d1fe87c5fa3a`, branch `main`, 151 uncommitted items, zero remotes, version `0.47.0`.
@@ -41,6 +44,20 @@
 - Tests after reconciliation atomicity: `Ran 247 tests in 43.440s — OK` (247 PASS, 0 FAIL, 0 ERROR, exit 0) with `AI_FACTORY_TEST_ROOT` isolated; targeted `Ran 20 tests in 4.919s — OK` (exit 0). Real child processes synchronised with `multiprocessing.Barrier`; the competing-reconciler race passed 5/5 stress reruns; no timing sleeps. Exact commands are reported in the final delivery message.
 - The historical `test_root_isolated_when_env_set` hardcoded-path failure was within Phase 01 state-isolation scope and was corrected in the isolated rebuild clone; it is not hidden.
 
+## Phase 02 evidence (real, implementation on `rebuild/phase-02-request-intelligence`)
+- Base: accepted Phase 01 SHA `3dcae0703bee408bc34fdfd83e81807a25c6a2a7`; branch created from that exact commit, clean tree, independent clone only.
+- `core/request_intelligence.py` — one canonical versioned request record (`af-request-1.0`), flock-guarded atomic persistence, schema validation and fail-closed corrupt/missing store handling; no competing request registry.
+- Deterministic Persian/mixed-language intent extraction (create/modify/debug/explain/analyze/plan/research/deploy/other) reusing `core.requestcheck` for the legacy product-type hint; no provider/model call and no new dependency.
+- Product domain and delivery platform are separate fields and separate classification functions; game≠Android and Android≠game; unknown and multi-platform cases supported; ADR-011 untouched.
+- Explicit/inferred/system requirements separated with rationale/confidence; material conflicts recorded; acceptance conditions present; unknown estimates stay unknown.
+- Essential-only clarification with one compact question, no repeated questions, revision increment on every answer, legal transition validation.
+- Risk (9 dimensions → low/medium/high/critical with reasons) is independent of complexity (small/medium/large/very-large/unknown); low-risk controlled autonomy is bounded; high-risk requires exact explicit approval.
+- Approval bound to request ID + revision + request hash + plan hash + scope + actor + one-shot expiring token; changed request/plan, replay, mismatch and expiry all fail closed; SecurityPolicy never bypassed.
+- Bounded plan (≤8 structured steps, deduplicated, dependency-valid, `executed: False`); no specialist/tool/provider execution in Phase 02.
+- Idempotent non-destructive legacy migration with preserved unknown fields and `legacy` rollback mode that does not delete canonical records.
+- API: `/api/requests`, `/api/requests/view`, `/api/requests/intake`, `/api/requests/answer`, `/api/requests/plan`, `/api/requests/approval-token`, `/api/requests/approve`; responses strip approval tokens. Workspace gained a small read-only summary card; visual inspection NOT TESTED.
+- Tests: baseline `Ran 247 tests ... OK`; targeted Phase 02 `Ran 58 tests in 0.237s — OK` (exit 0); full suite `Ran 305 tests in 47.713s — OK` (305 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`. Details: `docs/rebuild/evidence/PHASE-02-REQUEST-INTELLIGENCE.md`.
+
 ## Open blockers
 1. Checksum mismatch and stale test-status contradiction remain recorded until a separate audit-maintenance change.
 2. Canonical specialist registry and workflow registry are inconsistent (Phase 04).
@@ -50,4 +67,4 @@
 6. Receipts for call_ids already evicted from the old 600-event history before this fix cannot be reconstructed; no destructive migration was performed. This is a historical audit limitation, not a regression of the new mechanism.
 
 ## Next action
-The reconciliation atomicity fix is ready for final independent review. **Last accepted phase: NONE.** Phase 01 remains **awaiting independent acceptance**; do NOT mark it accepted or COMPLETE before that review. Do NOT start Phase 02 automatically; it requires a new explicit user authorization after independent acceptance.
+Phase 02 is **READY FOR INDEPENDENT REVIEW** and is NOT accepted or COMPLETE until that review. **Phase 03 has NOT started and is NOT authorized.** Wait for explicit user authorization after independent Phase 02 acceptance. Historical provisional Phase 01 status entries are preserved above, not deleted.
