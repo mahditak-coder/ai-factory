@@ -104,22 +104,35 @@ def execute(req: ToolRequest) -> ToolResult:
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
             error="tool-disabled", duration_ms=0), started)
     sig = _signature(req)
-    # Atomic claim: check durable receipts AND reserve the call_id under one
-    # lock, so concurrent duplicates cannot both become executors.
-    with _seen_lock:
-        receipt = tool_events.find(call_id)
-        known_sig = (receipt or {}).get("request_id") or _seen_sigs.get(call_id)
-        duplicate = receipt is not None or call_id in _seen_calls
-        if not duplicate:
-            _seen_calls.add(call_id)
-            _seen_sigs[call_id] = sig
-    if duplicate:
-        same = known_sig == sig
+    # Atomic claim + durable reservation under one lock: no adapter may run
+    # before a RESERVED receipt exists on disk.
+    try:
+        with _seen_lock:
+            receipt = tool_events.find(call_id)
+            known_sig = (receipt or {}).get("request_id") or _seen_sigs.get(call_id)
+            duplicate = receipt is not None or call_id in _seen_calls
+            if not duplicate:
+                receipt = tool_events.reserve(call_id, sig, req.tool_id, req.project)
+                tool_events.mark_in_progress(call_id)
+                _seen_calls.add(call_id)
+                _seen_sigs[call_id] = sig
+    except tool_events.ReceiptStoreError as exc:
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
-            error="duplicate-call" if same else "duplicate-call-signature-mismatch",
-            duration_ms=0,
-            evidence={"replayed": True, "durable": receipt is not None}), started)
+            error="receipt-store-unavailable:" + str(exc)[:160], duration_ms=0),
+            started, finalize_receipt=False)
+    if duplicate:
+        same = known_sig == sig
+        unresolved = (receipt or {}).get("lifecycle") in ("RESERVED", "IN_PROGRESS")
+        error = ("duplicate-call-signature-mismatch" if not same else
+                 "unresolved-in-progress:explicit-recovery-required" if unresolved else
+                 "duplicate-call")
+        return _record(req, call_id, ToolResult(
+            status=opstatus.BLOCKED, decision="none", call_id=call_id,
+            error=error, duration_ms=0,
+            evidence={"replayed": True, "durable": True,
+                      "lifecycle": (receipt or {}).get("lifecycle")}), started,
+            finalize_receipt=False)
 
     problem = spec.validate_inputs(req.inputs)
     if problem:
@@ -210,17 +223,29 @@ def state(call_id: str) -> dict:
 
 
 def _record(req: ToolRequest, call_id: str, result: ToolResult,
-            started: float) -> ToolResult:
+             started: float, *, finalize_receipt: bool = True) -> ToolResult:
     finished = time.time()
     sig = _signature(req)
-    record_event({"call_id": call_id,
-                  "request_id": sig, "tool": req.tool_id,
-                  "project": req.project, "task_id": req.task_id,
-                  "session_id": req.session_id,
-                  "decision": result.decision, "status": result.status,
-                  "started": started, "finished": finished,
-                  "duration_ms": result.duration_ms,
-                  "input": str(req.inputs),
-                  "output": str(result.output or ""),
-                  "error": result.error, "evidence": result.evidence})
+    event = {"call_id": call_id,
+             "request_id": sig, "tool": req.tool_id,
+             "project": req.project, "task_id": req.task_id,
+             "session_id": req.session_id,
+             "decision": result.decision, "status": result.status,
+             "started": started, "finished": finished,
+             "duration_ms": result.duration_ms,
+             "input": str(req.inputs),
+             "output": str(result.output or ""),
+             "error": result.error, "evidence": result.evidence}
+    if finalize_receipt:
+        try:
+            tool_events.finalize(call_id, event)
+        except tool_events.ReceiptStoreError as exc:
+            # Fail closed: no terminal receipt means the call stays unresolved
+            # and every replay is rejected until explicit reconciliation.
+            result.status = opstatus.BLOCKED
+            result.ok = False
+            result.error = "receipt-finalize-failed:" + str(exc)[:160]
+            event["status"] = opstatus.BLOCKED
+            event["error"] = result.error
+    record_event(event)
     return result
