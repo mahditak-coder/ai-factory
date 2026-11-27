@@ -271,6 +271,15 @@ def execute(task: dict, worker_id: str) -> None:
     """Called by the orchestrator worker for kind="pipeline" tasks.
     Defensive: an unexpected crash is recorded honestly on BOTH stores."""
     tid = task["id"]
+    # Phase 02 — no pipeline stage may run before the canonical gate.
+    from core import orchestrator as _orch
+    _gate = _orch.canonical_execution_gate(
+        tid, str(task.get("project") or ""), str(task.get("goal") or ""),
+        plan=None)
+    if not _gate["allowed"]:
+        tasksmod.fail_task(tid, "دروازهٔcanonical خط لوله را مسدود کرد: " +
+                           str(_gate["reason"])[:200], retry=False)
+        return
     pid = ((task.get("meta") or {}).get("pipeline_id")) or ""
     try:
         p = get(pid)

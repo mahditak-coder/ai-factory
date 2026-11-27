@@ -11,7 +11,8 @@ from pathlib import Path
 from unittest import mock
 
 import core.config as config
-from core import errreason, factory, git_sync, opencode_bridge, pipeline, tasks, typetests
+from core import (errreason, factory, git_sync, opencode_bridge, pipeline,
+                  request_intelligence as ri, tasks, typetests)
 
 
 class AF21DeclaredContractTest(unittest.TestCase):
@@ -52,6 +53,13 @@ class AF21DeclaredContractTest(unittest.TestCase):
 
 
 class AF22AndroidRoutingTest(unittest.TestCase):
+    def setUp(self):
+        self._prior_mode = ri.compat_mode()
+        ri.set_compat_mode("legacy")
+
+    def tearDown(self):
+        ri.set_compat_mode(self._prior_mode)
+
     def test_android_pipeline_uses_its_own_stage_runner(self):
         project = "af22-route"
         adir = config.AGENTS_DIR

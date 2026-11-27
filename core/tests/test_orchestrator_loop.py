@@ -10,10 +10,18 @@ from pathlib import Path
 from unittest import mock
 
 import core.config as config
-from core import memory as memorymod, orchestrator, tasks
+from core import memory as memorymod, orchestrator, request_intelligence as ri, tasks
 
 
 class OrchestratorLoopTest(unittest.TestCase):
+    def setUp(self):
+        # These tests exercise the documented legacy execution path.
+        self._prior_mode = ri.compat_mode()
+        ri.set_compat_mode("legacy")
+
+    def tearDown(self):
+        ri.set_compat_mode(self._prior_mode)
+
     def test_five_red_green_cycles_are_driven_by_real_evidence_flag(self):
         name = "af34-unit-loop"
         d = config.PROJECTS_DIR / name

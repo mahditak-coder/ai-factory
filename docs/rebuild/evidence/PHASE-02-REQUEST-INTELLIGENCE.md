@@ -63,6 +63,30 @@ Test coverage includes all 50 mission cases: model roundtrip/invalid schema/stab
 - Model-assisted classification, live providers, paid actions, specialist execution and product generation remain out of scope / NOT TESTED.
 - ADR-011..014 remain untouched and unresolved.
 
+## Final execution-boundary corrections (third independent-review round)
+
+| Defect | Fix | Evidence |
+|---|---|---|
+| Implicit execution authorization for low/medium risk | `can_execute()` now requires an explicit `execution` capability for EVERY risk level; `authorize_execution()` creates a one-shot token bound to request ID, revision, request hash, plan hash, exact step-list hash, project, goal hash, scope, actor and authoritative expiry; high/critical additionally require explicit user approval; no system-generated state is consent | `core/tests/test_phase02_execution_boundary.py` (`test_low_risk_*`, `test_medium_risk_*`, `test_high_critical_*`, `test_plan_ready_*`) |
+| Approval not bound to the actually executed plan | Boundary checks exact project, goal, scope, plan hash and exact step list; extra/modified steps, changed goal/project, stale plan, missing plan and unsupported scope fail closed | `test_approval_cannot_authorize_a_different_plan`, `test_approval_cannot_authorize_another_project`, `test_approval_cannot_authorize_changed_goal`, `test_extra_or_modified_steps_rejected`, `test_valid_approval_does_not_authorize_unrestricted_legacy_execution`, `test_unsupported_execution_adapter_fails_closed` |
+| Pipeline early-return bypass | Gate moved to the top of `orchestrator._execute()` before the `kind=="pipeline"` branch; also added at `pipeline.execute()` and `POST /api/factory/generate`; canonical failures never activate legacy mode; explicit legacy switch preserved | `test_pipeline_blocked_when_intake_fails`, `test_pipeline_blocked_on_clarification_and_approval_pending`, `test_pipeline_blocked_with_stale_authorization`, `test_no_pipeline_side_effect_before_gate`, `test_ordinary_task_behavior_under_explicit_legacy_mode` |
+
+### Verification commands (final round)
+1. `python3 -m unittest core.tests.test_phase02_execution_boundary -v` — exit `0`, `Ran 17 tests ... OK`; log `/data/data/com.termux/files/usr/tmp/opencode/p2final-t5.log`.
+2. `python3 -m unittest core.tests.test_phase02_request_intelligence core.tests.test_phase02_corrections core.tests.test_phase02_execution_boundary` — exit `0`, `Ran 96 tests in 0.625s — OK`; log `/data/data/com.termux/files/usr/tmp/opencode/p2final-target.log`.
+3. `python3 -m unittest discover -s core/tests -p 'test_*.py'` — exit `0`, `Ran 343 tests in 44.557s — OK` (343 PASS / 0 FAIL / 0 ERROR); log `/data/data/com.termux/files/usr/tmp/opencode/p2final-full3.log`.
+4. Fresh isolated `AI_FACTORY_TEST_ROOT` on every run; no CI or visual-browser verification was performed.
+
+### Execution-entry-point coverage (inspected call graph)
+- `orchestrator._execute()` — gate first, before pipeline early-return, agent work, tool calls and `factory.generate`.
+- `pipeline.execute()` — gate before any stage; called both from `_execute()` and directly by legacy tests.
+- `server.Handler._api_factory_generate()` — gate before direct model generation.
+- `orchestrator._worker()` / `start()` reach execution only through `_execute()`, so they inherit the gate.
+- `tool_executor.execute()` is a Phase 01 governed path; Phase 02 does not weaken its receipt/idempotency guarantees (full suite green).
+
+### Handoff contract and honest limitation
+Phase 02 does NOT implement specialist execution, product generation or bounded production adapters. The unrestricted legacy `Task` pipeline has no exact bounded plan to bind, so canonical mode FAILS CLOSED for it. A later authorized phase must provide an execution adapter that supplies the exact approved plan (steps, project, goal, scope) and a valid one-shot execution authorization; only then may `can_execute()` return allowed. This is deliberately not implemented here to avoid out-of-scope production functionality. CI/GitHub Actions and browser/viewport visual inspection remain NOT TESTED.
+
 ## Accurate guarantee and limitations
 
 - **PASS (local, deterministic):** one canonical structured request per intake, versioned and persisted; intent/requirements/domain/platform/risk/complexity/clarification/plan/approval behave as specified; high-risk work cannot be approved without an exact bound one-shot approval; Phase 01 idempotency suite remains green.

@@ -9,10 +9,19 @@ from pathlib import Path
 from unittest import mock
 
 import core.config as config
-from core import agent_loop, factory, memory as memorymod, orchestrator, tasks
+from core import (agent_loop, factory, memory as memorymod, orchestrator,
+                  request_intelligence as ri, tasks)
 
 
 class MidLoopAskTest(unittest.TestCase):
+    def setUp(self):
+        # These tests exercise the documented legacy execution path.
+        self._prior_mode = ri.compat_mode()
+        ri.set_compat_mode("legacy")
+
+    def tearDown(self):
+        ri.set_compat_mode(self._prior_mode)
+
     def test_ask_midloop_parks_with_context_and_resumes_same_cycle(self):
         p = "af37-loop"
         d = config.PROJECTS_DIR / p

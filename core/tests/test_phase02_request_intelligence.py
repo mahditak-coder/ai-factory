@@ -276,7 +276,9 @@ class RequestIntelligenceTest(unittest.TestCase):
         self.assertEqual(rec["status"], "PLANNED")
         self.assertEqual(rec["approval"]["status"], "NOT_REQUIRED")
         self.assertFalse(rec["approval"].get("actor"))
-        self.assertTrue(ri.can_execute(rec["request_id"])["allowed"])
+        check = ri.can_execute(rec["request_id"])
+        self.assertFalse(check["allowed"])
+        self.assertEqual(check["reason"], "no-execution-authorization")
 
     def test_36_high_risk_cannot_proceed_without_approval(self):
         rec = self._plan("ساخت سیستم پرداخت آنلاین وب")

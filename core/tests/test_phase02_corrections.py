@@ -122,7 +122,9 @@ class Phase02CorrectionsTest(unittest.TestCase):
         self.assertEqual(planned["approval"]["status"], "NOT_REQUIRED")
         self.assertFalse(planned["approval"].get("actor"))
         self.assertFalse(planned["approval"].get("actor_trusted"))
-        self.assertEqual(ri.can_execute(rec["request_id"])["allowed"], True)
+        check = ri.can_execute(rec["request_id"])
+        self.assertFalse(check["allowed"])
+        self.assertEqual(check["reason"], "no-execution-authorization")
 
     def test_no_fabricated_human_approval_in_history_or_view(self):
         rec = ri.intake("ساخت صفحه وب ساده", project=self.project)
@@ -188,7 +190,15 @@ class Phase02CorrectionsTest(unittest.TestCase):
         approved = ri.approve(rec["request_id"], proposal["confirm_token"],
                               "user-1", project=self.project)
         self.assertEqual(approved["status"], "APPROVED")
-        auth = ri.can_execute(rec["request_id"])
+        auth = ri.can_execute(rec["request_id"], project=self.project,
+                              goal="ساخت سیستم پرداخت وب", plan=approved["plan"])
+        self.assertFalse(auth["allowed"])
+        self.assertEqual(auth["reason"], "no-execution-authorization")
+        ri.authorize_execution(rec["request_id"], "user-1",
+                               "execute-bounded-plan", self.project,
+                               "ساخت سیستم پرداخت وب", approved["plan"]["steps"])
+        auth = ri.can_execute(rec["request_id"], project=self.project,
+                              goal="ساخت سیستم پرداخت وب", plan=approved["plan"])
         self.assertTrue(auth["allowed"])
         self.assertEqual(auth["scope"], "execute-bounded-plan")
         self.assertEqual(auth["actor"], "user-1")

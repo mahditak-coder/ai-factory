@@ -66,6 +66,13 @@
 - Risk correction: fixed the malformed public-release pattern and added honest public release/publish/deploy, paid, credentials, private data, network, destructive and migration cases; no risk level was lowered to pass tests; vague high-impact operations are not treated as low risk.
 - Tests: targeted Phase 02 suites `Ran 79 tests ... OK` (exit 0); full suite `Ran 326 tests in 49.636s — OK` (326 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`. Details: `docs/rebuild/evidence/PHASE-02-REQUEST-INTELLIGENCE.md`.
 
+## Phase 02 final execution-boundary corrections (same branch)
+- Removed implicit authorization: `can_execute()` never grants execution from `CLASSIFIED`, `READY_FOR_PLAN`, `PLANNED` or `NOT_REQUIRED`. A separately defined, explicit `authorize_execution()` issues a one-shot capability bound to request ID, revision, request hash, plan hash, exact step-list hash, project, goal hash, scope, actor and expiry. High/critical work additionally requires the existing explicit user approval. No system actor or system-generated state is treated as user consent.
+- Exact approved scope: execution authorization is checked against the actual project, goal and exact plan steps at the boundary; stale plans, changed goals/projects, extra or modified steps, missing plan binding and unsupported execution scopes fail closed. Phase 02 cannot enforce a bounded plan for the unrestricted legacy Task pipeline, so canonical mode fails closed there; the handoff contract for a later authorized phase is documented in the Phase 02 evidence file.
+- Pipeline bypass closed: `canonical_execution_gate()` now runs at the very top of `orchestrator._execute()` before the pipeline early-return, and also at `pipeline.execute()` and the direct `POST /api/factory/generate` entry point. Canonical intake failure, corrupt/missing store, clarification-pending, blocked/rejected, approval-pending and stale authorization all stop pipeline and ordinary tasks before any model/specialist/tool side effect. Explicit legacy compatibility switch remains documented and cannot activate on a canonical error.
+- Tests: targeted Phase 02 suites `Ran 96 tests ... OK` (exit 0); full suite `Ran 343 tests in 44.557s — OK` (343 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`. Legacy orchestrator tests now explicitly opt into the documented legacy compatibility switch; no test was deleted or weakened.
+- CI/GitHub Actions and browser/viewport visual inspection: NOT TESTED (no real run available).
+
 ## Open blockers
 1. Checksum mismatch and stale test-status contradiction remain recorded until a separate audit-maintenance change.
 2. Canonical specialist registry and workflow registry are inconsistent (Phase 04).

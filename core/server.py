@@ -1978,6 +1978,16 @@ class Handler(BaseHTTPRequestHandler):
         if not _Name.match(project):
             self._error(400, "پروژه نامعتبر")
             return
+        # Phase 02 — direct generation is an execution entry point and must
+        # pass the same canonical gate before any model side effect.
+        from core import orchestrator as _orch
+        _gate = _orch.canonical_execution_gate(
+            str(data.get("task_id") or "api-direct"), project, goal,
+            plan=None)
+        if not _gate["allowed"]:
+            self._error(403, "canonical-execution-blocked:" +
+                        str(_gate["reason"])[:160])
+            return
         if use_plan and not goal:
             plan_txt = factory.plan_text(project)
             if not plan_txt:

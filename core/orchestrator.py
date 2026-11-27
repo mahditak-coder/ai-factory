@@ -337,12 +337,16 @@ def _park_ask(tid: str, project: str, question: str, options: list,
     return cf["confirm_token"]
 
 
-def canonical_execution_gate(task_id: str, project: str, goal: str) -> dict:
-    """Authoritative Phase 02 boundary gate. Never trusts a caller status.
+def canonical_execution_gate(task_id: str, project: str, goal: str,
+                              plan: dict | None = None,
+                              execution_mode: str = "bounded") -> dict:
+    """Authoritative Phase 02 gate for EVERY execution entry point.
 
-    Canonical mode requires successful intake and an authoritative execution
-    authorization before any model/specialist work. A canonical failure never
-    silently falls back to the legacy path; legacy mode is an explicit switch.
+    Runs before pipeline, model, specialist, tool or external side effects.
+    A canonical failure never silently activates legacy compatibility.
+    Phase 02 cannot enforce a bounded plan for the unrestricted legacy Task
+    pipeline, so canonical mode fails closed when no exact bounded plan and
+    explicit execution authorization are supplied by a later phase.
     """
     from core import request_intelligence as ri
     if ri.compat_mode() == "legacy":
@@ -355,7 +359,8 @@ def canonical_execution_gate(task_id: str, project: str, goal: str) -> dict:
         return {"allowed": False, "mode": "canonical",
                 "reason": "canonical-intake-failed:%s:%s" %
                           (type(exc).__name__, str(exc)[:120])}
-    auth = ri.can_execute(rec["request_id"])
+    auth = ri.can_execute(rec["request_id"], project=project, goal=goal,
+                          plan=plan)
     if not auth["allowed"]:
         return {"allowed": False, "mode": "canonical",
                 "reason": auth["reason"], "status": rec.get("status"),
@@ -371,6 +376,34 @@ def _execute(task: dict, worker_id: str) -> None:
     tid, project = task["id"], task["project"]
     goal = task["goal"]
     agent_name = task["agent"]
+    t0 = time.time()
+    cycles = 1   # AF-52 — must exist before any early failure/quota path
+    log.info("worker %s executing task %s (project=%s agent=%s)",
+             worker_id, tid, project, agent_name)
+
+    # terminal-failure bookkeeping helper: bump agent perf ONLY when the
+    # task really ends failed (requeued attempts are not terminal)
+    def _fail(err: str, retry: bool = True, result: dict | None = None):
+        t = tasks.fail_task(tid, err, retry=retry, result=result)
+        if t["state"] == "failed":
+            memorymod.bump_agent(agent_name, ok=False,
+                                 duration_s=round(time.time() - t0, 1),
+                                 error=err, project=project)
+        return t
+
+    # AF NEXT Phase 02 — canonical gate FIRST, before pipeline, model,
+    # specialist, tool or external side effects. No legacy fallback on error.
+    gate = canonical_execution_gate(tid, project, goal, plan=None)
+    if not gate["allowed"]:
+        factory.append_history(project, "canonical-gate-blocked",
+                               str(gate["reason"])[:300])
+        _fail("دروازهٔcanonical اجرا را مسدود کرد: " + str(gate["reason"])[:200],
+              retry=False)
+        return
+    if gate["mode"] == "canonical":
+        factory.append_history(
+            project, "canonical-request",
+            "%s %s" % (gate.get("request_id", ""), gate.get("status", "")))
 
     # AF-18 — integrated request→delivery pipeline: delegate to the
     # pipeline state machine (same queue, same worker, same locks).
@@ -387,21 +420,6 @@ def _execute(task: dict, worker_id: str) -> None:
                 log.exception("pipeline fail_task also failed")
         return
 
-    t0 = time.time()
-    cycles = 1   # AF-52 — must exist before any early failure/quota path
-    log.info("worker %s executing task %s (project=%s agent=%s)",
-             worker_id, tid, project, agent_name)
-
-    # terminal-failure bookkeeping helper: bump agent perf ONLY when the
-    # task really ends failed (requeued attempts are not terminal)
-    def _fail(err: str, retry: bool = True, result: dict | None = None):
-        t = tasks.fail_task(tid, err, retry=retry, result=result)
-        if t["state"] == "failed":
-            memorymod.bump_agent(agent_name, ok=False,
-                                 duration_s=round(time.time() - t0, 1),
-                                 error=err, project=project)
-        return t
-
     try:
         agent = agentsmod.get_agent(agent_name)
     except agentsmod.AgentError as exc:
@@ -410,10 +428,6 @@ def _execute(task: dict, worker_id: str) -> None:
     if not agent.get("enabled"):
         _fail(f"عامل «{agent_name}» غیرفعال است", retry=False)
         return
-
-    # P8-4: agents may declare allowed project types (schema field existed
-    # since P7-1 but was never enforced) — declared scope is now REAL: an
-    # out-of-scope task fails fast, without burning a model turn.
     allowed = agent.get("allowed_types")
     if allowed:
         ptype = factory.read_meta(paths.project_dir(project)).get("type", "")
@@ -421,27 +435,6 @@ def _execute(task: dict, worker_id: str) -> None:
             _fail(f"عامل «{agent_name}» برای نوع «{ptype}» مجاز نیست "
                   f"(محدودهٔ عامل: {', '.join(allowed)})", retry=False)
             return
-
-    # P6-3 gate: dangerous requests never reach the model (no retry).
-    rc = requestcheck.analyze(goal)
-    if not rc["allowed"]:
-        factory.append_history(project, "task-rejected", rc["note"])
-        _fail("درخواست خطرناک رد شد: " + rc["note"], retry=False)
-        return
-
-    # AF NEXT Phase 02 — canonical intake and execution authorization are a
-    # hard gate. A canonical failure NEVER falls back to legacy execution.
-    gate = canonical_execution_gate(tid, project, goal)
-    if not gate["allowed"]:
-        factory.append_history(project, "canonical-gate-blocked",
-                               str(gate["reason"])[:300])
-        _fail("دروازهٔcanonical اجرا را مسدود کرد: " + str(gate["reason"])[:200],
-              retry=False)
-        return
-    if gate["mode"] == "canonical":
-        factory.append_history(
-            project, "canonical-request",
-            "%s %s" % (gate.get("request_id", ""), gate.get("status", "")))
 
     factory.append_history(project, "task-start",
                            f"agent={agent_name} goal={goal[:150]}")

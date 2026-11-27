@@ -716,11 +716,82 @@ def _route_after_answer(rec: dict, can_proceed: bool, reason: str) -> None:
             _transition(rec, "NEEDS_CLARIFICATION", reason)
 
 
-def can_execute(request_id: str) -> dict:
+def authorize_execution(request_id: str, actor: str, scope: str,
+                        project: str, goal: str, plan_steps: list,
+                        session_id: str = "") -> dict:
+    """Explicit, bound authorization for one bounded execution.
+
+    This is NOT approval: it is a separately defined, one-shot capability for
+    a low/medium-risk bounded action. It binds the exact request revision,
+    request hash, plan hash, explicit step list hash, project, goal, scope,
+    actor and an expiring one-shot token. High/critical requests additionally
+    require an explicit user approval before this can be granted.
+    """
+    actor = str(actor or "").strip()
+    if not actor:
+        raise RequestError("execution-actor-required")
+    if scope != "execute-bounded-plan":
+        raise RequestError("execution-scope-unsupported:" + scope)
+    from core import confirmations
+
+    with _request_lock():
+        items = _load_unlocked()
+        rec = items.get(str(request_id or ""))
+        if rec is None:
+            raise RequestError("request-not-found:" + request_id)
+        if rec.get("status") in ("BLOCKED", "REJECTED", "NEEDS_CLARIFICATION"):
+            raise RequestError("execution-not-ready:" + rec["status"])
+        plan = rec.get("plan") or {}
+        if not plan.get("hash") or not isinstance(plan.get("steps"), list):
+            raise RequestError("bounded-plan-required")
+        risk = (rec.get("classification") or {}).get("risk", {}).get("level")
+        ap = rec.get("approval") or {}
+        if risk in ("high", "critical") and \
+                not (ap.get("status") == "APPROVED" and not ap.get("invalidated")):
+            raise RequestError("explicit-approval-required-for-execution")
+        steps_hash = canonical_hash({"steps": plan["steps"]})
+        payload = {"request_id": rec["request_id"], "revision": rec["revision"],
+                   "request_hash": rec["request_hash"],
+                   "plan_hash": plan["hash"], "steps_hash": steps_hash,
+                   "project": str(project),
+                   "goal_hash": canonical_hash({"goal": str(goal)}),
+                   "scope": scope, "actor": actor}
+        cf = confirmations.create(str(project), "phase02-execution-authorization",
+                                  payload, "اجرای محدود تأیید شد",
+                                  session_id=session_id)
+        v = confirmations.peek(cf["confirm_token"], str(project),
+                               session_id=session_id)
+        trusted = False
+        if session_id:
+            from core import panelauth
+            trusted = bool(panelauth.session_token_valid(session_id))
+            if not trusted:
+                raise RequestError("execution-session-invalid")
+        confirmations.consume(cf["confirm_token"], str(project),
+                              session_id=session_id)
+        ex = {"authorized": True, "status": "AUTHORIZED", "actor": actor,
+              "actor_trusted": trusted, "scope": scope, "project": str(project),
+              "goal_hash": payload["goal_hash"],
+              "request_id": rec["request_id"], "revision": rec["revision"],
+              "request_hash": rec["request_hash"], "plan_hash": plan["hash"],
+              "steps_hash": steps_hash,
+              "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+              "expires": float(v.get("expires") or 0), "invalidated": False}
+        rec["execution"] = ex
+        items[rec["request_id"]] = rec
+        _save_unlocked(items)
+        return dict(ex)
+
+
+def can_execute(request_id: str, project: str = "", goal: str = "",
+                plan: dict | None = None,
+                scope: str = "execute-bounded-plan") -> dict:
     """Authoritative execution-boundary check read from the canonical store.
 
-    A caller-supplied status string is never trusted; a generated plan is not
-    permission, and an answer is not approval.
+    Plan readiness is NOT execution permission. An explicit, exact, unexpired
+    execution authorization is required for EVERY risk level; high/critical
+    work additionally requires a valid explicit user approval. The actual
+    bounded plan (steps), project and goal must match the authorization.
     """
     rec = get(request_id)
     if rec is None:
@@ -730,31 +801,48 @@ def can_execute(request_id: str) -> dict:
     if status in ("BLOCKED", "REJECTED", "NEEDS_CLARIFICATION", "AWAITING_APPROVAL"):
         return {"allowed": False, "reason": "status:" + status, "status": status,
                 "request_id": request_id}
+    ex = rec.get("execution") or {}
+    if not ex.get("authorized") or ex.get("status") != "AUTHORIZED" or \
+            ex.get("invalidated"):
+        return {"allowed": False, "reason": "no-execution-authorization",
+                "status": status, "request_id": request_id}
+    plan_rec = rec.get("plan") or {}
+    if ex.get("request_hash") != rec.get("request_hash") or \
+            ex.get("revision") != rec.get("revision") or \
+            ex.get("plan_hash") != plan_rec.get("hash"):
+        return {"allowed": False, "reason": "execution-authorization-stale",
+                "status": status, "request_id": request_id}
+    if ex.get("project") != str(project):
+        return {"allowed": False, "reason": "execution-project-mismatch",
+                "status": status, "request_id": request_id}
+    if ex.get("goal_hash") != canonical_hash({"goal": str(goal)}):
+        return {"allowed": False, "reason": "execution-goal-mismatch",
+                "status": status, "request_id": request_id}
+    if ex.get("scope") != scope:
+        return {"allowed": False, "reason": "execution-scope-mismatch",
+                "status": status, "request_id": request_id}
+    if plan is None or not isinstance(plan.get("steps"), list):
+        return {"allowed": False, "reason": "bounded-plan-required",
+                "status": status, "request_id": request_id}
+    if ex.get("steps_hash") != canonical_hash({"steps": plan["steps"]}):
+        return {"allowed": False, "reason": "execution-steps-mismatch",
+                "status": status, "request_id": request_id}
+    if ex.get("expires") and float(ex["expires"]) < time.time():
+        return {"allowed": False, "reason": "execution-authorization-expired",
+                "status": status, "request_id": request_id}
+    risk = (rec.get("classification") or {}).get("risk", {}).get("level")
     ap = rec.get("approval") or {}
-    if status == "APPROVED":
-        if ap.get("invalidated") or ap.get("status") != "APPROVED" or not ap.get("actor"):
-            return {"allowed": False, "reason": "approval-invalid", "status": status,
-                    "request_id": request_id}
+    if risk in ("high", "critical"):
+        if ap.get("status") != "APPROVED" or ap.get("invalidated") or \
+                not ap.get("actor"):
+            return {"allowed": False, "reason": "explicit-approval-required",
+                    "status": status, "request_id": request_id}
         if ap.get("request_hash") != rec.get("request_hash") or \
-                ap.get("plan_hash") != (rec.get("plan") or {}).get("hash"):
+                ap.get("plan_hash") != plan_rec.get("hash"):
             return {"allowed": False, "reason": "approval-bindings-stale",
                     "status": status, "request_id": request_id}
-        if ap.get("expires") and float(ap["expires"]) < time.time():
-            return {"allowed": False, "reason": "approval-expired",
-                    "status": status, "request_id": request_id}
-        return {"allowed": True, "reason": "explicit-approval", "status": status,
-                "scope": ap.get("scope", ""), "actor": ap.get("actor"),
-                "request_id": request_id}
-    # Controlled autonomy: a low/medium-risk request with no approval
-    # requirement may proceed from a classified state; a generated plan is
-    # NOT itself permission, it simply adds no new approval obligation.
-    if status in ("CLASSIFIED", "READY_FOR_PLAN", "PLANNED") and \
-            not ap.get("required") and \
-            (rec.get("classification") or {}).get("risk", {}).get("level") in \
-            ("low", "medium"):
-        return {"allowed": True, "reason": "controlled-autonomy-no-approval-required",
-                "status": status, "request_id": request_id}
-    return {"allowed": False, "reason": "status:" + str(status), "status": status,
+    return {"allowed": True, "reason": "explicit-execution-authorization",
+            "status": status, "scope": scope, "actor": ex.get("actor"),
             "request_id": request_id}
 
 
