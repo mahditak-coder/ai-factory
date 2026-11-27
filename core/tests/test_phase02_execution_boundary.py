@@ -153,7 +153,7 @@ class ExecutionBoundaryTest(unittest.TestCase):
         check = ri.can_execute(rec["request_id"], project="other-project",
                                goal=self.goal, plan=rec["plan"])
         self.assertFalse(check["allowed"])
-        self.assertEqual(check["reason"], "execution-project-mismatch")
+        self.assertEqual(check["reason"], "execution-project-ownership-mismatch")
 
     def test_approval_cannot_authorize_changed_goal(self):
         rec = self._low("scope-goal")

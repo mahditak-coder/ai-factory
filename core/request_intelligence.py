@@ -716,6 +716,12 @@ def _route_after_answer(rec: dict, can_proceed: bool, reason: str) -> None:
             _transition(rec, "NEEDS_CLARIFICATION", reason)
 
 
+def _assert_request_project(rec: dict, project: str) -> None:
+    """An execution may only be authorized in the request's own project."""
+    if str(project or "") != str(rec.get("project") or ""):
+        raise RequestError("execution-project-ownership-mismatch")
+
+
 def _execution_bindings(rec: dict, project: str, goal: str,
                         plan_steps: list) -> dict:
     """Canonical bindings that every execution capability must match."""
@@ -738,6 +744,9 @@ def _validate_execution(rec: dict, project: str, goal: str,
     ex = rec.get("execution") or {}
     if ex.get("state") != "AUTHORIZED" or ex.get("invalidated"):
         return {"allowed": False, "reason": "no-execution-authorization",
+                "status": status}
+    if str(project or "") != str(rec.get("project") or ""):
+        return {"allowed": False, "reason": "execution-project-ownership-mismatch",
                 "status": status}
     bindings = _execution_bindings(rec, project, goal,
                                    (plan or {}).get("steps") or [])
@@ -763,14 +772,22 @@ def _validate_execution(rec: dict, project: str, goal: str,
     if actor and ex.get("actor") != str(actor):
         return {"allowed": False, "reason": "execution-actor-mismatch",
                 "status": status}
-    if session_id:
-        from core import panelauth
-        if not panelauth.session_token_valid(session_id):
-            return {"allowed": False, "reason": "execution-session-invalid",
+    bound_session = str(ex.get("bound_session") or ex.get("session_id") or "")
+    from core import panelauth
+    if bound_session:
+        if not session_id:
+            return {"allowed": False, "reason": "execution-session-required",
                     "status": status}
-        if ex.get("session_id") and ex["session_id"] != session_id:
+        if str(session_id) != bound_session:
             return {"allowed": False, "reason": "execution-session-mismatch",
                     "status": status}
+        if not panelauth.session_token_valid(str(session_id)):
+            return {"allowed": False, "reason": "execution-session-invalid",
+                    "status": status}
+    elif session_id and not panelauth.session_token_valid(str(session_id)):
+        # An anonymous proposal never grants trust through a bare session string.
+        return {"allowed": False, "reason": "execution-session-invalid",
+                "status": status}
     if ex.get("expires") and float(ex["expires"]) < time.time():
         return {"allowed": False, "reason": "execution-authorization-expired",
                 "status": status}
@@ -810,6 +827,7 @@ def propose_execution(request_id: str, actor: str, scope: str,
         rec = items.get(str(request_id or ""))
         if rec is None:
             raise RequestError("request-not-found:" + request_id)
+        _assert_request_project(rec, project)
         if rec.get("status") in ("BLOCKED", "REJECTED", "NEEDS_CLARIFICATION"):
             raise RequestError("execution-not-ready:" + rec["status"])
         plan = rec.get("plan") or {}
@@ -821,14 +839,20 @@ def propose_execution(request_id: str, actor: str, scope: str,
                 not (ap.get("status") == "APPROVED" and not ap.get("invalidated")):
             raise RequestError("explicit-approval-required-for-execution")
         bindings = _execution_bindings(rec, project, goal, plan["steps"])
+        bound_session = str(session_id or "")
+        payload = dict(bindings)
+        payload["session_id"] = bound_session
         cf = confirmations.create(str(project), "phase02-execution-authorization",
-                                  bindings, "تأیید صریح اجرای محدود لازم است",
-                                  session_id=session_id)
+                                  payload, "تأیید صریح اجرای محدود لازم است",
+                                  session_id=bound_session)
         rec["execution"] = {"state": "PROPOSED", "authorized": False,
                             "actor": actor, "actor_trusted": False,
+                            "consent_confirmed": False,
+                            "identity_mode": "pending",
                             "scope": scope, "bindings": bindings,
                             "token": cf["confirm_token"],
-                            "session_id": str(session_id or ""),
+                            "bound_session": bound_session,
+                            "session_id": bound_session,
                             "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                             "invalidated": False}
         items[rec["request_id"]] = rec
@@ -859,42 +883,55 @@ def confirm_execution(request_id: str, token: str, actor: str, scope: str,
         rec = items.get(str(request_id or ""))
         if rec is None:
             raise RequestError("request-not-found:" + request_id)
+        _assert_request_project(rec, project)
         ex = rec.get("execution") or {}
         if ex.get("state") != "PROPOSED":
             raise RequestError("execution-not-proposed:" + str(ex.get("state")))
         if not token or ex.get("token") != str(token):
             raise RequestError("execution-token-mismatch")
+        # Peek WITHOUT the caller session so the ORIGINAL binding is readable;
+        # then enforce it strictly here (empty session may not bypass it).
         try:
-            v = confirmations.peek(str(token), str(project),
-                                   session_id=session_id)
+            v = confirmations.peek(str(token), str(project))
         except confirmations.ConfirmError as exc:
             raise RequestError("execution-confirmation-invalid:" + exc.message) \
                 from exc
+        bound_session = str(v.get("session_id") or
+                            ex.get("bound_session") or "")
+        if bound_session:
+            if not session_id or str(session_id) != bound_session:
+                raise RequestError("execution-session-binding-required")
+            from core import panelauth
+            if not panelauth.session_token_valid(str(session_id)):
+                raise RequestError("execution-session-invalid")
         payload = v.get("payload") or {}
         expected = _execution_bindings(rec, project, goal,
                                        (rec.get("plan") or {}).get("steps") or [])
+        expected["session_id"] = bound_session
         for key, value in expected.items():
             if payload.get(key) != value:
                 raise RequestError("execution-confirmation-binding:" + key)
+        # Consent and authenticated identity are distinct: the token proves
+        # explicit consent; only a validated session bound to the proposal
+        # makes the supplied actor an authenticated identity.
         trusted = False
-        if session_id:
+        if bound_session:
             from core import panelauth
-            trusted = bool(panelauth.session_token_valid(session_id))
-            if not trusted:
-                raise RequestError("execution-session-invalid")
-        # Presenting a genuine one-shot confirmation token is the explicit
-        # user action; an authenticated panel session also establishes trust.
-        trusted = True
-        confirmations.consume(str(token), str(project), session_id=session_id)
+            trusted = bool(panelauth.session_token_valid(str(session_id)))
+        confirmations.consume(str(token), str(project),
+                              session_id=bound_session)
         ex.update({"state": "AUTHORIZED", "authorized": True,
                    "actor": actor, "actor_trusted": trusted,
+                   "consent_confirmed": True,
+                   "identity_mode": "authenticated" if trusted else "self-declared",
                    "scope": scope, "project": str(project),
                    "goal_hash": expected["goal_hash"],
                    "revision": expected["revision"],
                    "request_hash": expected["request_hash"],
                    "plan_hash": expected["plan_hash"],
                    "steps_hash": expected["steps_hash"],
-                   "session_id": str(session_id or ""),
+                   "bound_session": bound_session,
+                   "session_id": bound_session,
                    "authorized_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                    "expires": float(v.get("expires") or 0),
                    "consumed_at": None})
@@ -1039,6 +1076,7 @@ def list_requests(project: str = "") -> list[dict]:
 
 def save_view(rec: dict) -> dict:
     """API-safe projection; never exposes approval tokens or raw secrets."""
+    ex = rec.get("execution") or {}
     return {"request_id": rec.get("request_id"), "project": rec.get("project"),
             "schema_version": rec.get("schema_version"),
             "revision": rec.get("revision"), "status": rec.get("status"),
@@ -1051,6 +1089,8 @@ def save_view(rec: dict) -> dict:
             "plan": rec.get("plan"),
             "approval": {k: v for k, v in (rec.get("approval") or {}).items()
                          if k not in ("token",)},
+            "execution": {k: v for k, v in ex.items()
+                          if k not in ("token", "session_id", "bound_session")},
             "request_hash": rec.get("request_hash"),
             "history": rec.get("history")}
 

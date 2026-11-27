@@ -117,7 +117,10 @@ class OneShotAuthorizationTest(unittest.TestCase):
         self.assertFalse(self._check(rec)["allowed"])
         self._grant(rec)
         self.assertTrue(self._check(rec)["allowed"])
-        self.assertTrue(ri.get(rec["request_id"])["execution"]["actor_trusted"])
+        granted = ri.get(rec["request_id"])["execution"]
+        self.assertTrue(granted["consent_confirmed"])
+        self.assertFalse(granted["actor_trusted"])
+        self.assertEqual(granted["identity_mode"], "self-declared")
 
     # ------------------------------------------------------------ 4-7 one-shot
     def test_valid_capability_succeeds_exactly_once(self):
@@ -205,7 +208,7 @@ class OneShotAuthorizationTest(unittest.TestCase):
         self._grant(rec2)
         self.assertEqual(ri.consume_execution(
             rec2["request_id"], "other-project", self.goal,
-            rec2["plan"])["reason"], "execution-project-mismatch")
+            rec2["plan"])["reason"], "execution-project-ownership-mismatch")
         self.assertEqual(ri.consume_execution(
             rec2["request_id"], self.project, "ساخت بازی اندرویدی",
             rec2["plan"])["reason"], "execution-goal-mismatch")

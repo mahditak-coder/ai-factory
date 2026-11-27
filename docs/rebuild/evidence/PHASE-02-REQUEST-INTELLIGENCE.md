@@ -57,7 +57,7 @@ Test coverage includes all 50 mission cases: model roundtrip/invalid schema/stab
 
 ### Honest limitations after corrections
 - Actor identity is **self-declared unless a trusted panel session is supplied**; the code records `actor_trusted` and does not claim authenticated identity otherwise.
-- Phase 02 still executes no bounded action; `can_execute()` is the authoritative boundary check, and approval permits only an explicitly implemented bounded action.
+- Phase 02 still executes no bounded action; `consume_execution()` is the one-shot execution boundary, and `can_execute()` is read-only. Approval alone never permits execution.
 - CI/GitHub Actions: **NOT TESTED** — no actual workflow run was performed.
 - Browser/mobile visual inspection: **NOT TESTED** — no real viewport/visual review was available.
 - Model-assisted classification, live providers, paid actions, specialist execution and product generation remain out of scope / NOT TESTED.
@@ -105,7 +105,18 @@ Phase 02 does NOT implement specialist execution, product generation or bounded 
 - Multi-process replay used `multiprocessing.Barrier` and two real child processes sharing the canonical store: exactly one consumption succeeded; no timing sleeps were used.
 
 ### Exact guarantee and limits
-One capability authorizes exactly one bounded consumption attempt for one exact request revision/plan/project/goal/scope/actor/session. It does NOT guarantee the external side effect itself is exactly-once; providers/adapters without transactional idempotency remain outside the guarantee (Phase 01 receipts govern tool execution). Actor identity is trusted only through an explicit confirmation token or a validated panel session; a caller-supplied name alone never grants trust. Canonical mode never falls back to unrestricted legacy execution, and no CI/browser/live-provider/payment/specialist claim is made.
+One capability authorizes exactly one bounded consumption attempt for one exact request revision/plan/project/goal/scope/actor/session. It does NOT guarantee the external side effect itself is exactly-once; providers/adapters without transactional idempotency remain outside the guarantee (Phase 01 receipts govern tool execution). Consent and identity are separate: a confirmation token proves explicit consent only; `actor_trusted=True` requires a validated authenticated panel session bound to the original proposal. A caller-supplied name alone never grants trust. Canonical mode never falls back to unrestricted legacy execution, and no CI/browser/live-provider/payment/specialist claim is made.
+
+
+## Final security & consistency corrections (session / ownership / consent)
+
+| Correction | Evidence |
+|---|---|
+| Session binding cannot be bypassed: the original confirmation record's `session_id` is read and strictly enforced at confirmation and consumption; missing, different, invalid or expired sessions are rejected; anonymous proposals cannot be upgraded by an arbitrary session string | `core/tests/test_phase02_session_trust.py` (`test_bound_proposal_*`, `test_consumption_bound_session_cannot_be_bypassed`, `test_anonymous_proposal_cannot_upgrade_identity`) |
+| Project ownership: `rec["project"]` must equal the supplied project at proposal, confirmation and atomic consumption; cross-project authorization fails closed | `test_wrong_project_at_proposal_rejected`, `test_wrong_project_at_confirmation_rejected`, `test_wrong_project_at_consumption_rejected`, `test_correct_project_through_all_steps_consumes_once` |
+| Consent vs authenticated identity: token → `consent_confirmed=True`; only a validated bound panel session → `actor_trusted=True` and `identity_mode="authenticated"`; otherwise `identity_mode="self-declared"`; high/critical approval remains separate; API views expose no token or session | `test_token_without_session_consent_only`, `test_fabricated_actor_never_trusted_without_session`, `test_high_critical_still_requires_approval`, `test_api_view_exposes_no_token_or_session` |
+
+Verification: `python3 -m unittest core.tests.test_phase02_session_trust -v` — exit `0`, `Ran 14 tests ... OK` (`…/p2consist-t4.log`); all Phase 02 suites `Ran 125 tests ... OK` (`…/p2consist-target.log`); full suite `Ran 372 tests in 55.612s — OK`, 372 PASS / 0 FAIL / 0 ERROR (`…/p2consist-full-final.log`). `py_compile` on changed Python files: exit `0`. CI/GitHub Actions, browser/mobile visual inspection, live providers and payments: NOT TESTED.
 
 ## Accurate guarantee and limitations
 
