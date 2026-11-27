@@ -11,7 +11,7 @@
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
 - Phase 01 acceptance-fix commit: 8e292a70d20bc11450f41a03de175b81ef149356
 - Phase 01 final hardening commit: e026891a4f9de0d6d3c3e8f1d6a64aa2f170355b
-- Phase 01 multi-process fix commit: MULTIPROCESS_COMMIT_PLACEHOLDER
+- Phase 01 multi-process fix commit: d1e801e0e9e63ab9eeda71393b92f746f9b56c39
 - Next allowed action: independent re-review of the multi-process fix; Phase 02 is NOT authorized to start. Phase 01 stays awaiting independent acceptance — it is NOT accepted or COMPLETE yet.
 
 ## Audit status and limitations
