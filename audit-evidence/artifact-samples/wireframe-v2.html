@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>روباه دانا — Wireframe v2</title>
+<style>
+:root{--paper:#F3E2C0;--paper2:#FBE3B3;--amber:#F6C76B;--fox:#E8792B;--scarf:#D64545;
+--turq:#2FB6A8;--book:#2B3A67;--gold:#D9A441;--purple:#8E5BD1;--ink:#3B2A24;
+--cta:#8A4B22;--cta2:#6E3A17;--feedback:#1F6B52;--muted:#5B4B37;--touch:110px;}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--paper);color:var(--ink)}
+body{font-family:"Vazir","Noto Naskh Arabic","DejaVu Sans",Tahoma,Arial,sans-serif;
+  min-height:100svh;display:flex;justify-content:center}
+.phone{width:min(100%,430px);background:var(--paper2);min-height:100svh;position:relative;
+  padding:24px 24px 40px;padding-top:max(24px,env(safe-area-inset-top));
+  padding-bottom:max(40px,env(safe-area-inset-bottom));overflow:visible}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.progress{display:flex;gap:8px;direction:rtl;align-items:center}
+.dot{width:12px;height:12px;border-radius:50%;background:#ffffffaa}
+.dot.on{background:var(--turq);box-shadow:0 0 0 4px #ffffff88}
+button{font-family:inherit;cursor:pointer}
+.sound{width:var(--touch);height:var(--touch);border-radius:50%;border:4px solid var(--book);
+  background:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+.sound svg{width:46px;height:46px;fill:var(--ink)}
+.sound.off svg{opacity:.55}
+.sound.off::after{content:'';position:absolute;width:54px;height:5px;background:var(--scarf);
+  transform:rotate(-35deg);border-radius:4px}
+h1{font-size:38px;margin:8px 0 4px;line-height:1.25}
+h2{font-size:30px;margin:10px 0}
+p{font-size:22px;line-height:1.5;margin:8px 0}
+.note{font-size:22px;color:var(--muted);margin-top:18px;text-align:center}
+.hero{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:18px}
+.hero img{width:190px;max-width:48%;filter:drop-shadow(0 10px 12px #0003)}
+.cta{display:block;width:100%;min-height:var(--touch);margin-top:18px;border:0;border-radius:999px;
+  background:var(--cta);color:#fff;font-size:26px;font-weight:bold;box-shadow:0 8px 0 var(--cta2)}
+.cta:active{transform:translateY(4px);box-shadow:0 4px 0 var(--cta2)}
+.ghost{min-height:var(--touch);min-width:var(--touch);border:4px solid var(--book);background:#fff;
+  border-radius:28px;font-size:24px;color:var(--ink);padding:10px 18px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px}
+.card{min-height:170px;border-radius:28px;background:#fff;border:0;padding:10px;
+  box-shadow:0 8px 0 #0002;overflow:hidden;text-align:right}
+.card img{width:100%;height:110px;object-fit:cover;border-radius:20px}
+.card b{display:block;font-size:22px;margin-top:6px}
+.options{display:flex;flex-direction:column;gap:16px;margin-top:14px}
+.opt{min-height:var(--touch);border-radius:28px;border:4px solid var(--book);background:#fff;
+  font-size:26px;display:flex;align-items:center;gap:14px;padding:12px 18px;text-align:right}
+.opt img{width:72px;height:72px;object-fit:contain;border-radius:16px}
+.opt.hint{outline:8px solid var(--gold)}
+.guide{display:flex;align-items:center;gap:12px;background:#fff8;border-radius:24px;padding:8px}
+.guide img{width:88px;height:88px;object-fit:contain}
+.prompt{background:#fff;border-radius:24px;padding:14px;margin-top:14px;font-size:26px}
+.feedback{background:var(--feedback);color:#fff;border-radius:22px;padding:14px;margin-top:12px;
+  font-size:24px;min-height:var(--touch);display:flex;align-items:center}
+.row{display:flex;gap:14px;margin-top:20px}.row>*{flex:1}
+.paw{width:var(--touch);height:var(--touch);border-radius:50%;background:#fff;border:6px solid var(--turq);
+  display:flex;align-items:center;justify-content:center;margin:18px auto}
+.paw svg{width:58px;height:58px;fill:var(--ink)}
+.switch{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:var(--touch);
+  background:#fff;border-radius:22px;padding:12px 18px;margin-bottom:12px;font-size:24px}
+.switch button{flex:none}
+.page{display:none}.page.active{display:block}
+.shimmer{height:120px;border-radius:24px;background:linear-gradient(90deg,#ffffff88,#ffffffdd,#ffffff88);
+  background-size:200% 100%;animation:sh 1.2s linear infinite;margin:16px 0}
+@keyframes sh{to{background-position:-200% 0}}
+.stars{display:flex;justify-content:center;gap:14px;margin:24px 0}
+.star{width:64px;height:64px;background:#bbb5a7;clip-path:polygon(50% 0,61% 35%,98% 35%,68% 57%,79% 91%,50% 70%,21% 91%,32% 57%,2% 35%,39% 35%)}
+.star.on{background:var(--gold);animation:pop 1.2s ease-out}
+@keyframes pop{0%{transform:scale(.2)}60%{transform:scale(1.15)}100%{transform:scale(1)}}
+.coin{width:110px;height:110px;border-radius:50%;background:var(--gold);color:var(--ink);
+  display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:bold;margin:12px auto}
+.gift{width:150px;height:130px;background:var(--scarf);border-radius:18px;margin:24px auto;
+  position:relative;box-shadow:0 10px 0 #0002}
+.gift:before{content:'';position:absolute;left:65px;top:0;width:20px;height:100%;background:var(--gold)}
+.gift:after{content:'';position:absolute;left:0;top:50px;width:100%;height:20px;background:var(--gold)}
+.bar{height:18px;background:#fff;border:3px solid var(--turq);border-radius:999px;overflow:hidden;margin:14px 0}
+.bar span{display:block;height:100%;width:0;background:var(--turq);transition:width 3s linear}
+.bar.run span{width:100%}
+.opt.correct{background:var(--feedback);color:#fff}
+.opt.wrong{background:#fff1;border-color:var(--scarf)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+</style>
+</head>
+<body>
+<main class="phone">
+  <section class="page active" id="home">
+    <div class="top"><div class="progress"><i class="dot on"></i><i class="dot"></i><i class="dot"></i></div>
+      <button class="sound" aria-label="صدا" aria-pressed="true" data-sound>
+        <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2-3.7v7.4a4.5 4.5 0 0 0 2-3.7z"/></svg>
+      </button></div>
+    <h1>روباه دانا</h1><p>بیا با هم بازی کنیم و چیزهای تازه یاد بگیریم!</p>
+    <div class="hero"><div><h2>سلام! من داناام</h2><p>راهنمای تو در همهٔ بازیها.</p></div>
+      <img src="../assets/generated-tests/character-universe-v3/dana-concept.png" alt="دانا، روباه نارنجی راهنمای بازی"></div>
+    <button class="cta" data-go="select">برویم بازی کنیم</button>
+    <button class="ghost" data-go="book" style="width:100%;margin-top:14px">کتاب دانوش</button>
+    <button class="ghost" data-go="gate" style="width:100%;margin-top:14px">بخش والدین</button>
+    <p class="note">فقط لمس کن — نیازی به خواندن نیست.</p>
+  </section>
+
+  <section class="page" id="select">
+    <div class="top"><h2>کدام بازی؟</h2><button class="sound" aria-label="صدا" aria-pressed="true" data-sound>
+      <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2-3.7v7.4a4.5 4.5 0 0 0 2-3.7z"/></svg>
+    </button></div>
+    <div class="grid">
+      <button class="card" data-go="play"><img src="../assets/generated-tests/environments-v3/autumn-forest-v3.png" alt="جنگل پاییزی گرم، محیط بازی حافظه و الگوها"><b>حافظه</b></button>
+      <button class="card" data-go="play"><img src="../assets/generated-tests/environments-v3/autumn-forest-v3.png" alt="جنگل پاییزی گرم، محیط بازی تشخیص الگو"><b>الگوها</b></button>
+      <button class="card" data-go="play"><img src="../assets/generated-tests/environments-v3/night-garden-v3.png" alt="باغ شبانه فیروزهای، محیط بازی شمارش"><b>شمارش</b></button>
+      <button class="card" data-go="play"><img src="../assets/generated-tests/environments-v3/night-garden-v3.png" alt="باغ شبانه فیروزهای، محیط بازی شناخت حیوانات"><b>حیوانات</b></button>
+      <button class="card" data-go="play"><img src="../assets/generated-tests/environments-v3/danoosh-library-v3.png" alt="کتابخانه گرم دانوش، محیط بازی حل مسئله"><b>حل مسئله</b></button>
+    </div>
+    <button class="ghost" data-go="home" style="width:100%;margin-top:18px">بازگشت</button>
+  </section>
+
+  <section class="page" id="play">
+    <div class="top"><div class="progress"><i class="dot on"></i><i class="dot on"></i><i class="dot"></i></div>
+      <button class="sound" aria-label="صدا" aria-pressed="true" data-sound>
+        <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2-3.7v7.4a4.5 4.5 0 0 0 2-3.7z"/></svg>
+      </button></div>
+    <div class="guide"><img src="../assets/generated-tests/character-universe-v3/dana-concept.png" alt="دانا">
+      <div><h2>گوش بده و لمس کن</h2><p>دانا کمکت میکند!</p></div></div>
+    <div class="prompt" id="prompt">«کدام یک دانا است؟»</div>
+    <div class="options" id="options">
+      <button class="opt" data-correct="false"><img src="../assets/generated-tests/character-universe-v3/chabak-concept.png" alt="چابک"> چابک</button>
+      <button class="opt" data-correct="true"><img src="../assets/generated-tests/character-universe-v3/dana-concept.png" alt="دانا"> دانا</button>
+      <button class="opt" data-correct="false"><img src="../assets/generated-tests/character-universe-v3/danoosh-concept.png" alt="دانوش"> دانوش</button>
+    </div>
+    <div id="feedback" class="feedback" hidden role="status"></div>
+    <button class="ghost" id="retry" data-go="play" hidden style="width:100%;margin-top:12px">دوباره تلاش کن</button>
+  </section>
+
+  <section class="page" id="result">
+    <h2 id="resultTitle">چه خوب!</h2>
+    <div class="stars" id="stars" aria-label="ستارهها"></div>
+    <div class="coin" id="coins">۱۰</div>
+    <div class="guide"><img src="../assets/generated-tests/character-universe-v3/dana-concept.png" alt="دانا"><p>با هم یاد گرفتیم!</p></div>
+    <div class="row"><button class="ghost" data-go="play">دوباره</button><button class="cta" style="margin:0" data-go="reward">جلو</button></div>
+  </section>
+
+  <section class="page" id="reward">
+    <h2>جایزهٔ تو!</h2><div class="gift" aria-hidden="true"></div>
+    <div class="guide"><img src="../assets/generated-tests/character-universe-v3/chabak-concept.png" alt="چابک"><p>چابک هم خوشحال است!</p></div>
+    <button class="cta" data-go="select">برگشت به نقشه</button>
+  </section>
+
+  <section class="page" id="book">
+    <div class="top"><h2>کتاب دانوش</h2><button class="sound" aria-label="صدا" aria-pressed="true" data-sound>
+      <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2-3.7v7.4a4.5 4.5 0 0 0 2-3.7z"/></svg>
+    </button></div>
+    <div class="guide"><img src="../assets/generated-tests/character-universe-v3/danoosh-concept.png" alt="دانوش، جغد یاریگر دانش غیرراهنما">
+      <div><h2>دانوش دانش میآورد</h2><p>او پاسخ بازی را نمیدهد؛ فقط حروف و واژهها را میآموزد.</p></div></div>
+    <button class="ghost" data-go="home" style="width:100%;margin-top:18px">بازگشت</button>
+  </section>
+
+  <section class="page" id="gate">
+    <h2>بخش والدین</h2>
+    <p>گروه سنی خود را انتخاب کن.</p>
+    <div class="row"><button class="ghost" id="age46">۴–۶ سال</button><button class="ghost" id="age78">۷–۸ سال</button></div>
+    <div id="gate46">
+      <p>انگشتت را ۳ ثانیه روی پنجه نگه دار.</p>
+      <button class="paw" id="paw" aria-label="نگه داشتن پنجه">
+        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="15" rx="6" ry="5"/><circle cx="6" cy="9" r="2"/><circle cx="10" cy="6" r="2"/><circle cx="14" cy="6" r="2"/><circle cx="18" cy="9" r="2"/></svg>
+      </button>
+      <div class="bar" id="holdBar"><span></span></div>
+    </div>
+    <div id="gate78" hidden>
+      <p id="mathQ">۳ + ۲ = ؟</p>
+      <div class="row" id="mathOpts">
+        <button class="ghost" data-answer="4">۴</button><button class="ghost" data-answer="5">۵</button><button class="ghost" data-answer="6">۶</button>
+      </div>
+    </div>
+    <div id="gateFeedback" class="feedback" hidden role="status"></div>
+    <button class="cta" id="enterDashboard" hidden>ورود به تنظیمات</button>
+    <button class="ghost" data-go="home" style="width:100%;margin-top:14px">بازگشت</button>
+  </section>
+
+  <section class="page" id="dashboard">
+    <h2>تنظیمات والدین</h2>
+    <div class="switch"><span>صدا</span><button class="ghost" id="soundSetting">روشن</button></div>
+    <div class="switch"><span>زیرنویس</span><button class="ghost" id="subSetting">خاموش</button></div>
+    <div class="switch"><span>گروه سنی</span><button class="ghost">۴–۶</button></div>
+    <div class="switch"><span>پاک کردن پیشرفت</span><button class="ghost" id="resetBtn">تأیید</button></div>
+    <button class="ghost" data-go="states" style="width:100%;margin-top:12px">پیشنمایش حالتها</button>
+    <button class="cta" data-go="home">بازگشت به بازی</button>
+  </section>
+
+  <section class="page" id="states">
+    <h2>حالتهای رابط</h2>
+    <button class="ghost" data-go="loading" style="width:100%;margin-bottom:12px">بارگذاری</button>
+    <button class="ghost" data-go="empty" style="width:100%;margin-bottom:12px">خالی</button>
+    <button class="ghost" data-go="error" style="width:100%;margin-bottom:12px">خطا</button>
+    <button class="cta" data-go="dashboard">بازگشت</button>
+  </section>
+
+  <section class="page" id="loading">
+    <h2>آماده میشویم...</h2><div class="shimmer"></div>
+    <div class="progress"><i class="dot on"></i><i class="dot"></i><i class="dot"></i></div>
+    <button class="cta" data-go="states">بازگشت</button>
+  </section>
+
+  <section class="page" id="empty">
+    <h2>هنوز بازیای نیست</h2><p>برگرد و یک بازی انتخاب کن.</p>
+    <button class="cta" data-go="select">انتخاب بازی</button>
+  </section>
+
+  <section class="page" id="error">
+    <h2>مشکلی پیش آمد</h2><p>بیا دوباره تلاش کنیم.</p>
+    <button class="cta" data-go="play">تلاش مجدد</button>
+    <button class="ghost" data-go="states" style="width:100%;margin-top:12px">بازگشت</button>
+  </section>
+</main>
+<script>
+const pages=[...document.querySelectorAll('.page')];
+function show(id){pages.forEach(x=>x.classList.remove('active'));
+  const p=document.getElementById(id);if(p){p.classList.add('active');scrollTo(0,0);}}
+document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>show(b.dataset.go)));
+
+let audioOn=true,ctx=null;
+function chime(){if(!audioOn)return;try{ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();
+  const o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);
+  o.type='sine';o.frequency.value=660;g.gain.setValueAtTime(.08,ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.18);o.start();o.stop(ctx.currentTime+.2);
+}catch(e){}}
+document.querySelectorAll('[data-sound]').forEach(b=>b.addEventListener('click',()=>{
+  audioOn=!audioOn;b.classList.toggle('off',!audioOn);b.setAttribute('aria-pressed',String(audioOn));
+  document.getElementById('soundSetting').textContent=audioOn?'روشن':'خاموش';if(audioOn)chime();
+}));
+
+let attempts=0,locked=false;
+const feedback=document.getElementById('feedback'),retry=document.getElementById('retry');
+document.querySelectorAll('#options .opt').forEach(btn=>btn.addEventListener('click',()=>{
+  if(locked)return;chime();
+  const ok=btn.dataset.correct==='true';
+  if(ok){btn.classList.add('correct');finish();return;}
+  attempts++;btn.classList.add('wrong');retry.hidden=false;
+  feedback.hidden=false;
+  if(attempts<3){feedback.textContent='بیا دوباره با هم نگاه کنیم.';}
+  else{feedback.textContent='دانا به تو کمک میکند؛ روی گزینهٔ مشخصشده لمس کن.';
+    document.querySelector('#options .opt[data-correct="true"]').classList.add('hint');locked=false;}
+}));
+function finish(){const stars=attempts===0?3:attempts===1?2:1;
+  const box=document.getElementById('stars');box.innerHTML='';
+  for(let i=0;i<3;i++){const s=document.createElement('span');s.className='star'+(i<stars?' on':'');box.appendChild(s);}
+  document.getElementById('coins').textContent=String(stars*5);
+  document.getElementById('resultTitle').textContent=stars===3?'عالی!':' چه خوب!';
+  show('result');attempts=0;retry.hidden=true;feedback.hidden=true;
+  document.querySelectorAll('#options .opt').forEach(o=>o.className='opt');
+}
+document.getElementById('resetBtn').addEventListener('click',e=>{
+  if(e.target.dataset.confirmed){e.target.textContent='تأیید';delete e.target.dataset.confirmed;}
+  else{e.target.dataset.confirmed='1';e.target.textContent='matlab؟ دوباره لمس کن';}
+});
+document.getElementById('subSetting').addEventListener('click',e=>{
+  e.target.textContent=e.target.textContent==='روشن'?'خاموش':'روشن';});
+
+let gateMode=null,holdTimer=null;
+function gateMsg(t){const f=document.getElementById('gateFeedback');f.hidden=false;f.textContent=t;}
+document.getElementById('age46').addEventListener('click',()=>{gateMode='46';
+  document.getElementById('gate46').hidden=false;document.getElementById('gate78').hidden=true;
+  document.getElementById('enterDashboard').hidden=true;});
+document.getElementById('age78').addEventListener('click',()=>{gateMode='78';
+  document.getElementById('gate46').hidden=true;document.getElementById('gate78').hidden=false;
+  document.getElementById('enterDashboard').hidden=true;});
+const paw=document.getElementById('paw'),bar=document.getElementById('holdBar');
+paw.addEventListener('pointerdown',()=>{if(gateMode!=='46')return;bar.classList.add('run');
+  holdTimer=setTimeout(()=>{gateMsg('پذیرفته شد. برای ورود لمس کن.');
+    document.getElementById('enterDashboard').hidden=false;},3000);});
+['pointerup','pointerleave','pointercancel'].forEach(ev=>paw.addEventListener(ev,()=>{
+  clearTimeout(holdTimer);bar.classList.remove('run');}));
+document.querySelectorAll('#mathOpts .ghost').forEach(b=>b.addEventListener('click',()=>{
+  if(gateMode!=='78')return;
+  if(b.dataset.answer==='5'){gateMsg('پاسخ درست است. برای ورود لمس کن.');
+    document.getElementById('enterDashboard').hidden=false;}
+  else{gateMsg('نه! دوباره امتحان کن.');}
+}));
+document.getElementById('enterDashboard').addEventListener('click',()=>show('dashboard'));
+</script>
+</body>
+</html>

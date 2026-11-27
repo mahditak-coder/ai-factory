@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>کارخانه تولید نرم‌افزار — AI Factory</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="design.css">
+</head>
+<body>
+<header>
+  <div class="row headrow" style="justify-content:space-between; width:100%;">
+    <div class="af-nav" role="navigation" aria-label="ناوبری اصلی">
+  <span class="af-brandmark">AI Factory</span>
+  <a href="/" data-page="/">🏠 خانه</a>
+  <a href="/workspace.html" data-page="workspace">💬 Workspace</a>
+  <a href="/factory.html" data-page="deliver">📦 تحویل</a>
+  <button class="af-theme" type="button" title="تغییر حالت روشن/تاریک" aria-label="تغییر تم">🌙</button>
+</div>
+    <button id="btnRefresh" class="btn small">↻ بروزرسانی</button>
+  </div>
+</header>
+
+<!-- AF-23: نوار وضعیت ضروری — سلامت سیستم، موتور مدل، وظایف، دسترسی سریع گفتگو -->
+<div id="afStrip" class="af-strip" aria-label="وضعیت ضروری Factory">در حال بارگذاری وضعیت…</div>
+
+<nav class="tabs" id="tabs">
+  <button data-t="projects" class="tab active">پروژه‌ها</button>
+  <button data-t="pipeline" class="tab">تولید</button>
+  <button data-t="files" class="tab">فایل‌ها</button>
+  <button data-t="runs" class="tab">اجرا</button>
+  <button data-t="tests" class="tab">آزمایش</button>
+  <details class="moretabs">
+    <summary class="tab" title="بخش‌های کم‌استفاده">بیشتر ▾</summary>
+    <div class="morewrap">
+      <button data-t="export" class="tab">خروجی</button>
+      <button data-t="android" class="tab">اندروید</button>
+      <button data-t="deploy" class="tab">استقرار</button>
+      <button data-t="settings" class="tab">تنظیمات</button>
+    </div>
+  </details>
+</nav>
+
+<main>
+
+<!-- ================= پروژه‌ها ================= -->
+<section class="tabcard" data-t="projects">
+  <div class="card">
+    <h2>ساخت پروژه جدید</h2>
+    <form id="fNew" class="row wrap">
+      <input type="text" id="npName" placeholder="نام پروژه (لاتین/فارسی)" required>
+      <select id="npType"></select>
+      <input type="text" id="npDesc" placeholder="توضیح (اختیاری)">
+      <button type="submit" class="btn">+ ساخت پروژه</button>
+    </form>
+    <div id="npMsg" class="msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>پروژه‌های موجود</h2>
+    <div id="projList" class="placeholder">در حال بارگذاری…</div>
+  </div>
+
+  <div class="card" id="projDetail" hidden>
+    <h2>پروژه: <span id="pdName"></span>
+      <span id="pdType" class="badge b-ok"></span></h2>
+    <div id="pdInfo" class="muted"></div>
+    <div class="row wrap" style="margin-top:.6rem">
+      <button class="btn small" id="btnGoPlan">🧭 برنامه‌ریزی/تولید</button>
+      <button class="btn small" id="btnGoFiles">📄 فایل‌ها</button>
+      <button class="btn small" id="btnGoRun">▶️ اجرا</button>
+      <button class="btn small" id="btnGoCheck">✅ آزمایش</button>
+      <button class="btn small" id="btnGoExport">📦 خروجی</button>
+      <button class="btn small" id="btnRename">✏️ تغییر نام</button>
+      <button class="btn small danger" id="btnDelete">🗑 حذف پروژه</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= تولید ================= -->
+<section class="tabcard" data-t="pipeline" hidden>
+  <div class="card">
+    <h2>۰) خط لولهٔ یکپارچه (AF-18) — درخواست تا تحویل
+      <span id="plpState" class="badge b-wait">—</span></h2>
+    <form id="fPipeline" class="row wrap">
+      <select id="plpProj" required></select>
+      <select id="plpAgent"><option value="">بدون عامل</option></select>
+      <input type="text" id="plpGoal" placeholder="درخواست محصول (یک خط)" style="flex:1;min-width:220px" required>
+      <button type="submit" class="btn">▶ شروع خط لوله</button>
+    </form>
+    <div id="plpMsg" class="msg"></div>
+    <div id="plpList" class="placeholder">در حال بارگذاری…</div>
+  </div>
+
+  <div class="card">
+    <h2>۱) هدف پروژه</h2>
+    <select id="plProj"></select>
+    <!-- AF-06.2: انتخاب اختیاری عامل — «بدون عامل» رفتار قبلی است -->
+    <select id="plAgent"><option value="">بدون عامل (حافظهٔ فقط پروژه)</option></select>
+    <textarea id="plGoal" rows="3" placeholder="مثلاً: یک سایت شرح خدمات با صفحه تماس بساز، رنگ آبی، واکنش‌گرا"></textarea>
+    <div class="row wrap">
+      <button id="btnPlan" class="btn">🧭 ساخت برنامه</button>
+      <button id="btnDirect" class="btn">⚡ تولید مستقیم (درخواست ساده)</button>
+    </div>
+    <div id="plMsg" class="msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>۲) برنامه اجرایی
+      <span id="plState" class="badge b-wait">در انتظار</span></h2>
+    <pre id="planBox" class="plain">—</pre>
+    <div class="row wrap">
+      <button id="btnApprove" class="btn">✅ تأیید برنامه و تولید</button>
+      <button id="btnReloadPlan" class="btn small">↻ بازخوانی برنامه</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>۳) وضعیت تولید
+      <span id="genState" class="badge b-wait">در انتظار</span></h2>
+    <pre id="genBox" class="plain">—</pre>
+    <button id="btnGenPoll" class="btn small">↻ بروزرسانی وضعیت</button>
+    <div class="row"><a href="/workspace.html" class="navlink">گفتگوی زنده در AI Workspace →</a></div>
+  </div>
+</section>
+
+<!-- ================= فایل‌ها ================= -->
+<section class="tabcard" data-t="files" hidden>
+  <div class="card">
+    <select id="flProj"></select>
+    <div id="files" class="placeholder">—</div>
+    <div id="editorWrap" hidden>
+      <div class="row">
+        <span id="openFile" class="muted"></span>
+        <button id="btnSave" class="btn small">💾 ذخیره</button>
+        <button id="btnDelFile" class="btn small danger">🗑 حذف فایل</button>
+      </div>
+      <textarea id="editor" rows="12" spellcheck="false"></textarea>
+      <div id="editorMsg" class="msg"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= اجرا ================= -->
+<section class="tabcard" data-t="runs" hidden>
+  <div class="card">
+    <h2>اجرا و پیش‌نمایش</h2>
+    <select id="rnProj"></select>
+    <div class="row wrap">
+      <button id="btnRun" class="btn">▶️ اجرا</button>
+      <button id="btnStop" class="btn danger">⏹ توقف</button>
+      <button id="btnRuns" class="btn small">↻ وضعیت همه</button>
+    </div>
+    <div id="runPanel" class="placeholder">—</div>
+    <a id="previewLink" hidden class="btn" target="_blank" rel="noopener">🔗 باز کردن پیش‌نمایش در مرورگر</a>
+    <h3>لاگ اجرا</h3>
+    <pre id="runLog" class="plain">—</pre>
+  </div>
+</section>
+
+<!-- ================= آزمایش ================= -->
+<section class="tabcard" data-t="tests" hidden>
+  <div class="card">
+    <h2>آزمایش خودکار</h2>
+    <select id="ckProj"></select>
+    <!-- AF-06.2: انتخاب اختیاری عامل برای چرخهٔ اصلاح -->
+    <select id="ckAgent"><option value="">بدون عامل (حافظهٔ فقط پروژه)</option></select>
+    <div class="row wrap">
+      <button id="btnCheck" class="btn">🔍 بررسی خطاها</button>
+      <button id="btnFix" class="btn">🛠 چرخه اصلاح خودکار (حداکثر ۲)</button>
+      <button id="btnTestRun" class="btn small">🧪 اجرای آزمون‌های پروژه</button>
+      <button id="btnDeps" class="btn small">📦 نصب وابستگی‌ها</button>
+    </div>
+    <div id="ckMsg" class="msg"></div>
+    <pre id="ckResult" class="plain">—</pre>
+  </div>
+</section>
+
+<!-- ================= خروجی ================= -->
+<section class="tabcard" data-t="export" hidden>
+  <div class="card">
+    <h2>خروجی ZIP</h2>
+    <select id="exProj"></select>
+    <div class="row wrap">
+      <button id="btnZip" class="btn">📦 ساخت ZIP</button>
+      <button id="btnRelease" class="btn">🚀 بستهٔ انتشار مستقل</button>
+      <button id="btnZipDl" class="btn small">📱 در Downloads گوشی</button>
+      <button id="btnZipList" class="btn small">↻ فهرست خروجی‌ها</button>
+    </div>
+    <div id="exMsg" class="msg"></div>
+    <div id="exportList" class="placeholder">—</div>
+  </div>
+</section>
+
+<!-- ================= اندروید (AF-03) ================= -->
+<section class="tabcard" data-t="android" hidden>
+  <div class="card">
+    <h2>موتور اندروید — ساخت APK / AAB واقعی</h2>
+    <div class="row wrap">
+      <select id="anProj"></select>
+      <button id="btnAnInspect" class="btn small">🔎 بررسی پروژه</button>
+    </div>
+    <div id="anInfo" class="muted">پروژهٔ اندرویدی را انتخاب کنید (چیدمان minimal: AndroidManifest.xml + res/ + java/)</div>
+  </div>
+
+  <div class="card">
+    <h2>ساخت</h2>
+    <div class="row wrap">
+      <select id="anKind"><option value="apk">APK</option><option value="aab">AAB</option></select>
+      <label class="row"><input type="checkbox" id="anSign" checked> امضای release</label>
+      <input type="text" id="anVerName" placeholder="versionName (مثل 1.0.0)" style="max-width:10rem">
+      <input type="text" id="anVerCode" placeholder="versionCode (مثل 1)" style="max-width:8rem">
+      <button id="btnAnBuild" class="btn">🔨 شروع ساخت</button>
+      <button id="btnAnStatus" class="btn small">↻ وضعیت</button>
+    </div>
+    <div id="anMsg" class="msg"></div>
+    <pre id="anSteps" class="placeholder" style="max-height:16rem; overflow:auto">—</pre>
+  </div>
+
+  <div class="card">
+    <h2>کلید امضای محصول</h2>
+    <div class="row wrap">
+      <button id="btnAnKeyCheck" class="btn small">🔎 وضعیت کلید</button>
+      <button id="btnAnKeyCreate" class="btn small danger">🔑 ساخت کلید جدید (نیازمند تأیید)</button>
+    </div>
+    <div id="anKeyMsg" class="muted">کلید هر محصول اختصاصی خودش است؛ خارج از پروژه و Git ذخیره می‌شود و رمزها هرگز نمایش داده نمی‌شوند.</div>
+  </div>
+
+  <div class="card">
+    <h2>Release Center — نسخه‌های تولیدشده</h2>
+    <div class="row wrap">
+      <button id="btnAnReleases" class="btn small">↻ فهرست نسخه‌ها</button>
+    </div>
+    <div id="anReleases" class="placeholder">—</div>
+  </div>
+</section>
+
+<!-- ================= استقرار ================= -->
+<section class="tabcard" data-t="deploy" hidden>
+  <div class="card">
+    <h2>استقرار محصول (Deployment)</h2>
+    <div class="row wrap">
+      <select id="dpProj"></select>
+      <select id="dpRelease"></select>
+      <select id="dpDest"></select>
+      <button id="btnDpRefresh" class="btn small">↻</button>
+      <button id="btnDpPre" class="btn small">🔎 بررسی آمادگی</button>
+      <button id="btnDpStart" class="btn">🚀 استقرار</button>
+      <button id="btnDpRollback" class="btn small">⏮ Rollback</button>
+      <button id="btnDpStop" class="btn small">⏹ توقف</button>
+    </div>
+    <div id="dpMsg" class="msg"></div>
+    <div id="dpSteps" class="placeholder">—</div>
+  </div>
+  <div class="card">
+    <h2>مقاصد استقرار</h2>
+    <div id="dpDestList" class="placeholder">—</div>
+    <h3>افزودن/به‌روزرسانی مقصد</h3>
+    <form id="fDest" class="row wrap">
+      <input type="text" id="dstName" placeholder="نام مقصد (مثل vps-1)" required>
+      <select id="dstKind"><option value="local">local</option><option value="remote">remote (SSH)</option></select>
+      <input type="text" id="dstRoot" placeholder="مسیر مطلق مقصد local (خالی= ~/deployments)">
+      <input type="text" id="dstHost" placeholder="host (فقط remote)">
+      <input type="text" id="dstPort" placeholder="پورت SSH (پیش‌فرض ۲۲)">
+      <input type="text" id="dstUser" placeholder="user (فقط remote)">
+      <input type="text" id="dstPath" placeholder="مسیر مطلق روی سرور (remote)">
+      <input type="text" id="dstKey" placeholder="مسیر کلید SSH (اختیاری — بدون رمز)">
+      <button type="submit" class="btn small">+ ذخیره مقصد</button>
+    </form>
+    <div id="dstMsg" class="msg"></div>
+    <p class="muted">احراز هویت remote فقط با SSH Key است؛ رمز یا محتوای کلید خصوصی هرگز ذخیره یا نمایش داده نمی‌شود. استقرار remote بدون تأیید صریح انجام نمی‌شود.</p>
+  </div>
+  <div class="card">
+    <h2>تاریخچهٔ استقرار</h2>
+    <button id="btnDpHist" class="btn small">↻ تاریخچه</button>
+    <div id="dpHist" class="placeholder">—</div>
+  </div>
+</section>
+
+<!-- ================= تنظیمات ================= -->
+<section class="tabcard" data-t="settings" hidden>
+  <div class="card">
+    <h2>تنظیمات مدل‌ها</h2>
+    <div id="setModel" class="placeholder">—</div>
+  </div>
+  <div class="card">
+    <h2>وضعیت اتصال‌ها</h2>
+    <div id="setStatus" class="placeholder">—</div>
+  </div>
+</section>
+
+</main>
+
+<footer>AI Factory <span class="af-version">—</span> — کارخانه تولید نرم‌افزار — فقط localhost</footer>
+
+<script src="design.js"></script>
+<script src="/panel.js"></script>
+<script src="common.js"></script>
+<script src="factory.js"></script>
+</body>
+</html>

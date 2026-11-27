@@ -1,0 +1,157 @@
+{
+ "schema": null,
+ "id": "WORKFLOW-1",
+ "status": "AWAITING_USER_REVIEW",
+ "current_stage": "s06-ui",
+ "rev": 92,
+ "stages": [
+  {
+   "id": "s01-product",
+   "role": "product-director",
+   "status": "APPROVED",
+   "versions": 3,
+   "approved_version": 3,
+   "approvals": 1
+  },
+  {
+   "id": "s02-gdd",
+   "role": "game-designer-gdd",
+   "status": "APPROVED",
+   "versions": 5,
+   "approved_version": 5,
+   "approvals": 1
+  },
+  {
+   "id": "s03-art",
+   "role": "art-director",
+   "status": "APPROVED",
+   "versions": 6,
+   "approved_version": 6,
+   "approvals": 1
+  },
+  {
+   "id": "s04-character",
+   "role": "character-artist",
+   "status": "APPROVED",
+   "versions": 3,
+   "approved_version": 3,
+   "approvals": 1
+  },
+  {
+   "id": "s05-environment",
+   "role": "environment-artist",
+   "status": "APPROVED",
+   "versions": 3,
+   "approved_version": 3,
+   "approvals": 1
+  },
+  {
+   "id": "s06-ui",
+   "role": "ui-game",
+   "status": "AWAITING_USER_REVIEW",
+   "versions": 1,
+   "approved_version": 0,
+   "approvals": 0
+  },
+  {
+   "id": "s07-tech25d",
+   "role": "technical-artist-25d",
+   "status": "PENDING",
+   "versions": 0,
+   "approved_version": 0,
+   "approvals": 0
+  },
+  {
+   "id": "s08-anim",
+   "role": "animator",
+   "status": "PENDING",
+   "versions": 0,
+   "approved_version": 0,
+   "approvals": 0
+  },
+  {
+   "id": "s09-audio",
+   "role": "audio-game",
+   "status": "PENDING",
+   "versions": 0,
+   "approved_version": 0,
+   "approvals": 0
+  },
+  {
+   "id": "s10-dev",
+   "role": "game-developer",
+   "status": "PENDING",
+   "versions": 0,
+   "approved_version": 0,
+   "approvals": 0
+  },
+  {
+   "id": "s11-qa",
+   "role": "qa-game",
+   "status": "PENDING",
+   "versions": 0,
+   "approved_version": 0,
+   "approvals": 0
+  },
+  {
+   "id": "s12-sec",
+   "role": "security-game",
+   "status": "PENDING",
+   "versions": 0,
+   "approved_version": 0,
+   "approvals": 0
+  },
+  {
+   "id": "s13-release",
+   "role": "release-engineer",
+   "status": "PENDING",
+   "versions": 0,
+   "approved_version": 0,
+   "approvals": 0
+  }
+ ],
+ "history_actions": [
+  "stage-started",
+  "stage-awaiting-review",
+  "stage-rejected",
+  "revision-requested",
+  "stage-started",
+  "stage-awaiting-review",
+  "stage-rejected",
+  "revision-requested",
+  "stage-started",
+  "stage-awaiting-review",
+  "stage-approved",
+  "stage-started",
+  "stage-awaiting-review",
+  "stage-rejected",
+  "revision-requested",
+  "stage-started",
+  "stage-failed",
+  "retry-requested",
+  "stage-started",
+  "stage-awaiting-review",
+  "stage-rejected",
+  "revision-requested",
+  "stage-started",
+  "stage-awaiting-review",
+  "artifact-amended",
+  "stage-approved",
+  "stage-started",
+  "stage-awaiting-review",
+  "artifact-amended",
+  "stage-rejected",
+  "revision-requested",
+  "stage-started",
+  "stage-awaiting-review",
+  "stage-rejected",
+  "revision-requested",
+  "stage-started",
+  "stage-awaiting-review",
+  "stage-approved",
+  "stage-started",
+  "stage-awaiting-review"
+ ],
+ "goal": "<PRODUCT_GOAL_REDACTED>",
+ "project_type": "webpage"
+}

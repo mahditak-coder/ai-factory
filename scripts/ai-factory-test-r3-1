@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# ai-factory-test-r3-1 — R3: standard release packaging for ALL 10 types.
+#   Part A: technology detection + exclusion rules (module level)
+#   Part B: for each of 10 real products — build release via API, verify ZIP,
+#           extract, structural checks, hidden-dependency scan
+#   Part C: RUN each extracted product independently (no Factory): static via
+#           generated run.sh, servers via run.sh with env; db boot-init proof
+#   Part D: source immutability — sha256 snapshot of all 10 product trees
+#           before/after everything
+#   Part E: regressions — p10-1 (P5..P8 battery + P10 checks) and r2-1
+# NOTE: run.bat is generated for Windows targets but CANNOT be executed in
+#       this (Android/Termux) environment — declared untested, honestly.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/r3/extract"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+cd "$ROOT"
+if ! curl -fsS "$BASE/api/health" >/dev/null 2>&1; then
+    bash "$ROOT/scripts/ai-factory-start" >/dev/null; sleep 2
+fi
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+# product per type (REAL, existing, model-built or scaffold-built products)
+P_WEBPAGE="p6-page-211542";  TY_WEBPAGE="webpage"
+P_WEBAPP="r2-webapp-calc";   TY_WEBAPP="webapp"
+P_PWA="p8-app-demo";         TY_PWA="pwa"
+P_SHOP="p6-shop-211542";     TY_SHOP="shop"
+P_DASH="r2-dash-sales";      TY_DASH="dashboard"
+P_TOOL="r2-tool-passgen";    TY_TOOL="webtool"
+P_API="r2-api-notes";        TY_API="api"
+P_AI="p6-ai-211542";         TY_AI="ai-tool"
+P_FS="af4mdl-115543";        TY_FS="fullstack"
+P_FSPY="r3-store-fspy";      TY_FSPY="fullstack-python"
+ALL="$P_WEBPAGE $P_WEBAPP $P_PWA $P_SHOP $P_DASH $P_TOOL $P_API $P_AI $P_FS $P_FSPY"
+PORT=8821
+
+snap() {
+    for P in $ALL; do
+        find "projects/$P" -type f ! -path "*__pycache__*" ! -name "*.pyc" 2>/dev/null \
+            | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1
+    done
+}
+
+echo "════ R3-1/P0 — محصول fullstack-python آماده (ساخت واقعی مدل)"
+BST=""
+for i in $(seq 1 150); do
+    BST=$(python3 -c "
+import json
+ts = [t for t in json.load(open('data/tasks.json')) if t.get('project')=='$P_FSPY']
+print(ts[-1].get('state','none') if ts else 'none')")
+    case "$BST" in done|none) break;; esac
+    sleep 8
+done
+check "R3-1-P0 وظیفهٔ builder برای $P_FSPY" "done" "$BST"
+check "R3-1-P0 فایل‌های کلیدی محصول" "ok" \
+    "$({ [ -f "projects/$P_FSPY/server.py" ] && [ -d "projects/$P_FSPY/ui" ] && [ -d "projects/$P_FSPY/data" ]; } && echo ok || echo missing)"
+
+SNAP_BEFORE=$(snap)
+
+echo "════ R3-1/A — تشخیص فناوری و قواعد استثنا"
+A=$(PYTHONDONTWRITEBYTECODE=1 python3 - <<'PYEOF'
+import json, sys
+sys.path.insert(0, ".")
+from core import release
+from pathlib import Path
+P = Path("projects")
+out = {}
+t = release.detect_technology(P/"r2-api-notes", "api")
+out["api"] = t["kind"] == "python-server" and t["entry"] == "server.py" \
+    and isinstance(t["deps"], list) and "PORT" in t["env"]
+t = release.detect_technology(P/"r2-tool-passgen", "webtool")
+out["static"] = t["kind"] == "static-web" and t["entry"] == "index.html" \
+    and t["deps"] == []
+t = release.detect_technology(P/"p8-app-demo", "pwa")
+out["pwa"] = t["kind"] == "static-web" and t.get("pwa", {}).get("manifest") is True \
+    and t["pwa"]["service_worker"] is True
+t = release.detect_technology(P/"af4mdl-115543", "fullstack")
+out["fs_env"] = "AI_FACTORY_PORT" in t["env"] and t["kind"] == "python-server"
+t = release.detect_technology(P/"r3-store-fspy", "fullstack-python")
+out["fspy"] = t["kind"] == "python-server" and t["entry"] == "server.py"
+bad = [("meta.json", "meta.json"), ("tests/test_api.py", "tests/test_api.py"),
+       ("test_x.py", "test_x.py"), ("data/app.db", "data/app.db"),
+       (".env", ".env"), ("x.pyc", "x.pyc"), (".factory/m", ".factory/m")]
+out["exclusions"] = all(not release._release_allowed(P/"r2-api-notes"/n, P/"r2-api-notes", rel)
+                        for n, rel in bad)
+out["allowed_normal"] = release._release_allowed(
+    P/"r2-api-notes"/"server.py", P/"r2-api-notes", "server.py")
+print(json.dumps(out))
+PYEOF
+)
+for k in api static pwa fs_env fspy exclusions allowed_normal; do
+    V=$(echo "$A" | python3 -c "import json,sys;print(json.load(sys.stdin)['$k'])")
+    check "R3-1-A:$k" "True" "$V"
+done
+
+echo "════ R3-1/B — بستهٔ انتشار برای هر ۱۰ نوع (ساخت + استخراج + ساختار + استقلال مسیرها)"
+build_one() { # NAME TYPE
+    local P="$1" TY="$2"
+    local EX="$T/r3/extract/$P" CODE="" ROK="" RVOK="" RPATH="" \
+        RVER="" RKIND="" RJ="" FGOOD="" HIDDEN="" ENTRY=""
+    CODE=$(curl -s -m40 -o "$T/r3/rel-$P.json" -w '%{http_code}' -X POST \
+        -d "{\"project\":\"$P\"}" -H 'Content-Type: application/json' \
+        "$BASE/api/factory/release")
+    eval "$(python3 -c "
+import json
+r = json.load(open('$T/r3/rel-$P.json'))
+print('ROK=%r; RVOK=%r; RPATH=%r; RVER=%r; RKIND=%r'
+      % (r.get('ok'), (r.get('verify') or {}).get('ok'), r.get('path'),
+         r.get('version'), (r.get('technology') or {}).get('kind')))")" 2>/dev/null || true
+    if [ "$CODE" = "201" ] && [ "$ROK" = "True" ] && [ "$RVOK" = "True" ] \
+       && [ "$RVER" != "None" ] && [ -n "$RKIND" ] && [ "$RKIND" != "None" ]; then
+        check "R3-1-B:$P API 201 + ok + verify + version($RVER/$RKIND)" "ok" "ok"
+    else
+        check "R3-1-B:$P API 201 + ok + verify + version" "ok" "code=$CODE ok=$ROK vok=$RVOK kind=$RKIND"
+    fi
+    rm -rf "$EX"; mkdir -p "$EX"
+    PYTHONDONTWRITEBYTECODE=1 python3 -c "import zipfile;zipfile.ZipFile(r'''$RPATH''').extractall(r'''$EX''')"
+    BAD=$(find "$EX" \( -name meta.json -o -name __pycache__ -o -name "*.db" -o \
+        -name "*.db-wal" -o -name "*.db-shm" -o -name tests -o -name "*.pyc" -o \
+        -name ".env" -o -name "*.token" -o -name "*.pem" -o -name "*.key" \) 2>/dev/null | wc -l)
+    check "R3-1-B:$P صفر فایل داخلی/محرمانه/کش/آزمایشی" "0" "$BAD"
+    RJ=$(PYTHONDONTWRITEBYTECODE=1 python3 -c "
+import json
+r = json.load(open(r'''$EX/$P/release.json'''))
+t = r.get('technology') or {}
+print('ok' if r.get('name')=='$P' and r.get('type')=='$TY'
+      and isinstance(r.get('version'), str) and isinstance(t.get('deps'), list)
+      and t.get('kind') in ('static-web','python-server','node-server')
+      and (r.get('file_count') or 0) > 0 else 'bad')" 2>/dev/null || echo bad)
+    check "R3-1-B:$P release.json (name/type/version/deps)" "ok" "$RJ"
+    ENTRY=$(PYTHONDONTWRITEBYTECODE=1 python3 -c "
+import json
+print((json.load(open(r'''$EX/$P/release.json''')).get('technology') or {}).get('entry') or '')")
+    FGOOD=ok
+    { [ -s "$EX/$P/README.md" ] && grep -q "اجرای سریع" "$EX/$P/README.md" \
+      && [ -f "$EX/$P/run.sh" ] && [ -f "$EX/$P/run.bat" ] \
+      && [ -n "$ENTRY" ] && [ -f "$EX/$P/$ENTRY" ]; } || FGOOD=missing
+    check "R3-1-B:$P README+راهنما+run.sh+run.bat+entry($ENTRY)" "ok" "$FGOOD"
+    HIDDEN=$(grep -rn -E "/data/data/com\.termux|127\.0\.0\.1:8580|/AI-Factory" "$EX" \
+        --include="*.py" --include="*.js" --include="*.html" --include="*.css" \
+        --include="*.json" --include="*.sh" --include="*.bat" --include="*.md" 2>/dev/null \
+        | grep -v "release.json:" | grep -v "README.md:" | wc -l)
+    check "R3-1-B:$P صفر وابستگی پنهان به Termux/Factory" "0" "$HIDDEN"
+}
+
+build_one "$P_WEBPAGE" "$TY_WEBPAGE"
+build_one "$P_WEBAPP" "$TY_WEBAPP"
+build_one "$P_PWA" "$TY_PWA"
+build_one "$P_SHOP" "$TY_SHOP"
+build_one "$P_DASH" "$TY_DASH"
+build_one "$P_TOOL" "$TY_TOOL"
+build_one "$P_API" "$TY_API"
+build_one "$P_AI" "$TY_AI"
+build_one "$P_FS" "$TY_FS"
+build_one "$P_FSPY" "$TY_FSPY"
+
+echo "════ R3-1/C — اجرای مستقل هر محصول از داخل ZIP استخراج‌شده"
+run_prod() { # dir log  (uses $PORT; sets RP_PID)
+    ( cd "$1" && exec env PORT="$PORT" sh run.sh ) > "$2" 2>&1 &
+    RP_PID=$!
+}
+kill_prod() { kill "$RP_PID" 2>/dev/null; sleep 0.5; kill -9 "$RP_PID" 2>/dev/null; wait "$RP_PID" 2>/dev/null; }
+wait_up() { # url
+    for i in $(seq 1 40); do
+        [ "$(curl -s -m2 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" != "000" ] && return 0
+        sleep 0.5
+    done; return 1
+}
+
+for P in $P_WEBPAGE $P_WEBAPP $P_PWA $P_SHOP $P_DASH $P_TOOL; do
+    run_prod "$T/r3/extract/$P/$P" "$T/r3/run-$P.log"
+    UP=ok; wait_up "http://127.0.0.1:$PORT/" || UP=down
+    LEN=$(curl -s -m5 "http://127.0.0.1:$PORT/" | wc -c)
+    kill_prod
+    if [ "$UP" = "ok" ] && [ "$LEN" -gt 100 ]; then
+        check "R3-1-C:$P اجرای مستقل با run.sh → 200 (بدون Factory)" "ok" "ok"
+    else
+        check "R3-1-C:$P اجرای مستقل با run.sh" "ok" "up=$UP len=$LEN"
+    fi
+done
+# pwa: دارایی‌های نصب‌شدنی هم باید سرو شوند
+run_prod "$T/r3/extract/$P_PWA/$P_PWA" "$T/r3/run-$P_PWA.log"
+wait_up "http://127.0.0.1:$PORT/" || true
+M=$(curl -s -m5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/manifest.json")
+S=$(curl -s -m5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/sw.js")
+kill_prod
+check "R3-1-C:pwa-assets manifest.json+sw.js → 200" "200/200" "$M/$S"
+
+# api — چرخهٔ واقعی CRUD روی محصول استخراج‌شده
+run_prod "$T/r3/extract/$P_API/$P_API" "$T/r3/run-$P_API.log"
+wait_up "http://127.0.0.1:$PORT/api/health" || true
+H=$(curl -s -m5 "http://127.0.0.1:$PORT/api/health")
+CR=$(curl -s -m5 -X POST -d '{"name":"r3-zip-probe"}' -H 'Content-Type: application/json' \
+    -o "$T/r3/api-create.json" -w '%{http_code}' "http://127.0.0.1:$PORT/api/items")
+L=$(curl -s -m5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/items")
+kill_prod
+HC=$(echo "$H" | python3 -c "import json,sys;print('ok' if json.load(sys.stdin).get('ok') else 'bad')" 2>/dev/null || echo bad)
+CC="ok"; { [ "$CR" = "200" ] || [ "$CR" = "201" ]; } || CC="$CR"
+python3 -c "
+import json
+r = json.load(open(r'''$T/r3/api-create.json'''))
+assert r.get('id'), r" 2>/dev/null || CC="schema-bad"
+check "R3-1-C:api health بدون Factory" "ok" "$HC"
+check "R3-1-C:api POST /api/items (200/201+id)" "ok" "$CC"
+check "R3-1-C:api GET /api/items" "200" "$L"
+
+# ai-tool — صفحهٔ تنظیمات AI و سلامت
+run_prod "$T/r3/extract/$P_AI/$P_AI" "$T/r3/run-$P_AI.log"
+wait_up "http://127.0.0.1:$PORT/api/health" || true
+H=$(curl -s -m5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/health")
+A2=$(curl -s -m5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/ai.html")
+kill_prod
+check "R3-1-C:ai-tool health+ai.html بدون Factory" "200/200" "$H/$A2"
+
+# fullstack و fullstack-python — UI + health + ساخت خودکار db در بوت
+for PP in "$P_FS|$TY_FS" "$P_FSPY|$TY_FSPY"; do
+    P="${PP%%|*}"; TY="${PP##*|}"
+    rm -f "$T/r3/extract/$P/$P/data/app.db"
+    run_prod "$T/r3/extract/$P/$P" "$T/r3/run-$P.log"
+    wait_up "http://127.0.0.1:$PORT/api/health" || true
+    R=$(curl -s -m5 -o "$T/r3/fs-root.html" -w '%{http_code}' "http://127.0.0.1:$PORT/")
+    H=$(curl -s -m5 "http://127.0.0.1:$PORT/api/health")
+    kill_prod
+    HC=$(echo "$H" | python3 -c "import json,sys;print('ok' if json.load(sys.stdin).get('ok') else 'bad')" 2>/dev/null || echo bad)
+    ROK="ok"; { [ "$R" = "200" ] && grep -qi "<html" "$T/r3/fs-root.html"; } || ROK="root=$R"
+    DBC="ok"; [ -f "$T/r3/extract/$P/$P/data/app.db" ] || DBC="db-missing"
+    check "R3-1-C:$TY ریشهٔ UI بدون Factory" "ok" "$ROK"
+    check "R3-1-C:$TY /api/health بدون Factory" "ok" "$HC"
+    check "R3-1-C:$TY db در بوت بدون بستهٔ db ساخته شد" "ok" "$DBC"
+done
+
+echo "════ R3-1/D — مصونیت سورس محصولات اصلی"
+SNAP_AFTER=$(snap)
+check "R3-1-D هر ۱۰ درخت سورس بایت‌به‌بایت دست‌نخورده" "ok" \
+    "$([ "$SNAP_BEFORE" = "$SNAP_AFTER" ] && echo ok || echo CHANGED)"
+
+echo "════ R3-1/E — رگرسیون P5..P10 + R2"
+for S in p10-1 r2-1; do
+    bash "$ROOT/scripts/ai-factory-test-$S" > "$T/r3/reg-$S.log" 2>&1
+    RC=$?
+    if [ "$RC" = "0" ]; then PASS=$((PASS+1)); echo "  ✅ reg-$S exit=0"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|reg-$S"; echo "  ❌ reg-$S exit=$RC (ببین: $T/r3/reg-$S.log)"; fi
+done
+
+echo "──────────────────"
+echo "نتیجهٔ R3-1: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

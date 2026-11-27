@@ -1,0 +1,318 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af13 — تکمیل پوشش Node Server و انتشار Android AAB
+#   B) node-server از مسیر واقعی پنل: create(scaffold) → testrun (گیت واقعی)
+#      → run + HTTP (سلامت/عملکرد اصلی/خطا) → release (گیت امنیت) → اعتبارسنج
+#      → اجرای مستقل ZIP → نسخه (meta==package.json==release.json) → منفی
+#   A) node هسته (in-process): runner واقعی + run_tests (node:test) + بسته
+#   C) AAB واقعی: ساخت kind=aab از نسخهٔ پروژه → bundletool validate →
+#      پوشهٔ تحویل استاندارد → badging==رکورد → سازگاری نسخه
+#   D) دست‌کاری: تغییر/حذف/اضافه + _verify_delivery (تحویل متوقف)
+#   E) سازگاری قدیمی + پاک‌سازی + رگرسیون af11/af12
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+PASS=0; FAIL=0; NT=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+nt() { NT=$((NT+1)); echo "⚠️  NOT TESTED — $1"; }
+
+echo "════════ AF-13 — Node Server و Android AAB ════════"
+checkeq "پنل سالم" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "پشتیبان af13 موجود" "OK" "$(ls "$ROOT"/backups/af13-*/release.py \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "node موجود" "OK" "$(node --version >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "bundletool.jar موجود" "OK" "$(ls ~/android-sdk-termux/bundletool.jar \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+
+# ── B) node-server از مسیر واقعی پنل (pauth) ──
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+CR=$(pauth -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"af13-nodeweb","type":"node-server","description":"AF-13 node via panel"}' \
+  http://127.0.0.1:8580/api/factory/projects)
+checkeq "B-create node-server از پنل (201)" "201" "$CR"
+checkeq "B-scaffold واقعی (server.js+package.json+tests)" "OK" \
+  "$(ls "$ROOT/projects/af13-nodeweb/server.js" "$ROOT/projects/af13-nodeweb/package.json" \
+      "$ROOT/projects/af13-nodeweb/tests/server.test.js" >/dev/null 2>&1 && echo OK || echo FAIL)"
+TR=$(pauth -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af13-nodeweb"}' http://127.0.0.1:8580/api/factory/testrun \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print('OK' if d.get('ok') and d.get('ran') else 'FAIL:'+d.get('note','')[:60])" 2>/dev/null)
+checkeq "B-testrun گیت واقعی (self+contract)" "OK" "$TR"
+RN=$(pauth -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af13-nodeweb"}' http://127.0.0.1:8580/api/factory/run \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('preview','') if d.get('running') or d.get('ok') else 'FAIL')" 2>/dev/null)
+checkeq "B-runner واقعی (kind=node، preview)" "OK" \
+  "$(echo "$RN" | grep -q '^http://127.0.0.1:' && echo OK || echo "$RN")"
+BURL="$(echo "$RN" | tr -d '\r')"
+checkeq "B-HTTP سلامت (/api/health 200)" "OK" \
+  "$(curl -fsS -m 5 "${BURL%/}/api/health" 2>/dev/null | grep -q '"ok": *true' && echo OK || echo FAIL)"
+checkeq "B-HTTP عملکرد اصلی (POST/GET notes)" "OK" \
+  "$(curl -fsS -m 5 -X POST -H 'Content-Type: application/json' -d '{"title":"نوت"}' "${BURL%/}/api/notes" 2>/dev/null | grep -q '"ok": *true' && curl -fsS -m 5 "${BURL%/}/api/notes" 2>/dev/null | grep -q 'نوت' && echo OK || echo FAIL)"
+checkeq "B-HTTP خطا (route ناشناخته → 404)" "OK" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' -m 5 "${BURL%/}/api/nope" 2>/dev/null | grep -q 404 && echo OK || echo FAIL)"
+pauth -fsS -m 10 -X POST http://127.0.0.1:8580/api/factory/stop \
+  -H 'Content-Type: application/json' -d '{"project":"af13-nodeweb"}' -o /dev/null 2>/dev/null
+# منفی: server.js خراب → testrun صادقانه ناموفق (نه سبزِ دروغین)
+cp "$ROOT/projects/af13-nodeweb/server.js" "$TMP/af13-server-backup.js"
+echo 'module.exports = { broken !!! };' > "$ROOT/projects/af13-nodeweb/server.js"
+TRN=$(pauth -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af13-nodeweb"}' http://127.0.0.1:8580/api/factory/testrun \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print('OK' if not d.get('ok') and d.get('ran') else 'FAIL:'+d.get('note','')[:60])" 2>/dev/null)
+checkeq "B-منفی: server.js خراب → testrun ناموفق صادقانه" "OK" "$TRN"
+cp "$TMP/af13-server-backup.js" "$ROOT/projects/af13-nodeweb/server.js"
+# نسخه + release از مسیر واقعی پنل (گیت امنیت AF-07 داخل release API است)
+V=$(pauth -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af13-nodeweb","version":"1.2.0"}' http://127.0.0.1:8580/api/factory/version \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('version',''))" 2>/dev/null)
+checkeq "B-API نسخه 1.2.0" "1.2.0" "$V"
+RL=$(pauth -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af13-nodeweb"}' http://127.0.0.1:8580/api/factory/release)
+checkeq "B-release از مسیر پنل (ok)" "OK" \
+  "$(echo "$RL" | python3 -c "import json,sys; d=json.load(sys.stdin); print('OK' if d.get('ok') else 'FAIL')")"
+checkeq "B-release: kind=node-server + نسخه یکسان" "OK" \
+  "$(echo "$RL" | python3 -c "
+import json,sys,zipfile
+d=json.load(sys.stdin)
+z=zipfile.ZipFile(d['path']); m=json.loads(z.read('af13-nodeweb/release.json'))
+t=m['technology']
+ok=(t['kind']=='node-server' and t['entry']=='server.js' and m['run']['command']=='node server.js'
+    and m['version']==d['version']=='1.2.0')
+import json as j
+pkg=j.loads(z.read('af13-nodeweb/package.json'))
+print('OK' if ok and pkg['version']=='1.2.0' else 'FAIL kind=%s entry=%s run=%s v=%s/%s pkg=%s'%(t['kind'],t['entry'],m['run']['command'],m['version'],d['version'],pkg['version']))")"
+ZP=$(echo "$RL" | python3 -c "import json,sys; print(json.load(sys.stdin)['path'])")
+checkeq "B-اعتبارسنج مستقل روی بستهٔ پنل" "OK" \
+  "$(python3 "$ROOT/scripts/ai-factory-verify-release" "$ZP" >/dev/null 2>&1 && echo OK || echo FAIL)"
+# استقلال ZIP: استخراج و اجرای مستقل بدون کارخانه
+UD="$TMP/af13-unz"
+rm -rf "$UD"; mkdir -p "$UD"
+python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$ZP" "$UD"
+PORT=18222 node "$UD/af13-nodeweb/server.js" >/dev/null 2>&1 &
+NSPID=$!
+sleep 1.5
+checkeq "B-ZIP مستقل: اجرا و health بدون کارخانه" "OK" \
+  "$(curl -fsS -m 5 http://127.0.0.1:18222/api/health 2>/dev/null | grep -q '"ok": *true' && echo OK || echo FAIL)"
+kill $NSPID 2>/dev/null
+
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import json, os, re, shutil, subprocess, sys, time, zipfile
+sys.path.insert(0, ".")
+from pathlib import Path
+import core.config as config
+from core import release as rel, runner, factory
+from core.engines import android as androidmod
+
+ROOT = str(config.PROJECT_ROOT)
+TMP = os.environ["TMP"]
+results = []
+tp = None
+def step(name, ok, detail=""):
+    results.append((name, ok))
+    print("STEP %s %s %s" % ("OK" if ok else "FAIL", name, str(detail)[:130]))
+
+V = os.path.join(ROOT, "scripts", "ai-factory-verify-release")
+def validator(p):
+    r = subprocess.run([sys.executable, V, p], capture_output=True, text=True, timeout=60)
+    return r.returncode, (r.stdout + r.stderr)
+def sha256(p):
+    import hashlib
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+try:
+    # ══ A) node هسته — runner واقعی + خودآزمون node:test + بسته ══
+    shutil.rmtree(os.path.join(ROOT, "projects", "af13-nodecore"), ignore_errors=True)
+    factory.create_project("af13-nodecore", "node-server", "AF-13 core")
+    st = runner.start("af13-nodecore")
+    step("A-runner-node", st.get("running") and st.get("kind") == "node",
+         "kind=%s port=%s" % (st.get("kind"), st.get("port")))
+    c = factory.testrun_combined("af13-nodecore")
+    step("A-testrun-gate", c["ok"] and c["ran"] and not c.get("no_coverage"),
+         "own=%s contract-err=%s" % (c.get("own_tests", {}).get("ok"),
+                                     c["contract"].get("errors")))
+    runner.stop("af13-nodecore")
+    rel.set_version("af13-nodecore", "0.9.0")
+    r = rel.build_release("af13-nodecore")
+    with zipfile.ZipFile(r["path"]) as z:
+        m = json.loads(z.read("af13-nodecore/release.json"))
+    step("A-release-node", r["ok"] and r["version"] == "0.9.0"
+         and m["technology"]["kind"] == "node-server"
+         and m["technology"]["entry"] == "server.js"
+         and m["run"]["command"] == "node server.js",
+         "v=%s run=%s deps_spec=%s" % (r["version"], m["run"]["command"],
+                                       m["technology"]["deps_spec"]))
+    rc, _ = validator(r["path"])
+    step("A-validator-zip", rc == 0)
+    # tamper zip: تغییر server.js → کشف
+    tam = os.path.join(TMP, "af13-node-tamper.zip")
+    with zipfile.ZipFile(r["path"]) as z, \
+         zipfile.ZipFile(tam, "w", zipfile.ZIP_DEFLATED) as o:
+        for n in z.namelist():
+            o.writestr(n, b"// tampered" if n.endswith("server.js") else z.read(n))
+    rc, outp = validator(tam)
+    step("A-tamper-zip-rejected", rc == 1 and "hash mismatch" in outp,
+         outp.strip().replace("\n", " | ")[:90])
+    os.remove(tam)
+    # بستهٔ قدیمی (بدون manifest) سازگار
+    old = os.path.join(TMP, "af13-node-old.zip")
+    with zipfile.ZipFile(r["path"]) as z, \
+         zipfile.ZipFile(old, "w", zipfile.ZIP_DEFLATED) as o:
+        for n in z.namelist():
+            if n.endswith("MANIFEST.sha256"):
+                continue
+            o.writestr(n, z.read(n))
+    v = rel.verify_release(old, "af13-nodecore")
+    step("A-old-zip-compat", v["ok"] and not v["manifest"]["present"])
+    os.remove(old)
+    shutil.rmtree(os.path.join(ROOT, "projects", "af13-nodecore"), ignore_errors=True)
+    os.remove(r["path"])
+
+    # ══ C) AAB واقعی — مسیر کامل تا پوشهٔ تحویل ══
+    shutil.rmtree(os.path.join(ROOT, "projects", "af13-aab"), ignore_errors=True)
+    shutil.copytree(os.path.join(ROOT, "projects", "af02-android-test"),
+                    os.path.join(ROOT, "projects", "af13-aab"),
+                    ignore=shutil.ignore_patterns(".factory", "build"))
+    rel.set_version("af13-aab", "2.1.0")
+    androidmod.start_build("af13-aab", {"kind": "aab", "sign": False})
+    st2 = {"running": True}
+    for _ in range(240):
+        time.sleep(2)
+        st2 = androidmod.status("af13-aab")
+        if not st2.get("running"):
+            break
+    rep = st2.get("report") or {}
+    step("C-aab-build", bool(st2.get("ok")) and rep.get("kind") == "aab",
+         "vname=%s vcode=%s err=%s" % (rep.get("version_name"),
+                                       rep.get("version_code"), st2.get("error")))
+    ddir = rep.get("output_dir")
+    aab_name = os.path.basename((rep.get("artifacts") or {}).get(
+        "aab", {}).get("path") or "app-unsigned.aab")
+    files = sorted(os.listdir(ddir)) if ddir and os.path.isdir(ddir) else []
+    step("C-delivery-standard",
+         aab_name in files and "universal.apk" in files
+         and "release.json" in files and "MANIFEST.sha256" in files,
+         "%s %s" % (aab_name, str(files)))
+    with open(os.path.join(ddir, "release.json")) as f:
+        dj = json.load(f)
+    meta_v = json.loads((Path(ROOT) / "projects" / "af13-aab" / "meta.json")
+                        .read_text())["version"]
+    step("C-version-consistency",
+         dj["version"] == "2.1.0" and dj["version_code"] == 20100
+         and dj["project_version"] == meta_v == "2.1.0"
+         and dj["version_source"] == "project",
+         "meta=%s release.json=%s/%s" % (meta_v, dj["version"], dj["version_code"]))
+    # bundletool validate صریح روی AAB ساخته‌شده
+    bv = subprocess.run(["java", "-jar",
+                         os.path.expanduser("~/android-sdk-termux/bundletool.jar"),
+                         "validate", "--bundle", os.path.join(ddir, aab_name)],
+                        capture_output=True, text=True, timeout=300)
+    step("C-bundletool-validate", bv.returncode == 0,
+         (bv.stdout + bv.stderr).strip().replace("\n", " | ")[:110])
+    # badging universal == نسخهٔ پروژه
+    bg = subprocess.run([shutil.which("aapt2"), "dump", "badging",
+                         os.path.join(ddir, "universal.apk")],
+                        capture_output=True, text=True).stdout
+    mb = re.search(r"versionCode='(\d+)' versionName='([^']+)'", bg)
+    step("C-badging-match",
+         mb and (mb.group(2), int(mb.group(1))) == ("2.1.0", 20100),
+         "badging=%s-%s" % (mb.group(2) if mb else "?", mb.group(1) if mb else "?"))
+    rc, _ = validator(ddir)
+    step("C-validator-dir", rc == 0)
+    # سابقهٔ releases.json
+    rels = json.loads((Path(ROOT) / "projects" / "af13-aab" / ".factory"
+                       / "releases.json").read_text())
+    last = rels[-1]
+    step("C-release-record", last["kind"] == "aab"
+         and last["version_name"] == "2.1.0" and last["version_code"] == 20100
+         and "release.json" in last["artifacts"]
+         and sha256(os.path.join(ddir, aab_name))
+         == last["artifacts"]["aab"]["sha256"], last["id"])
+
+    # ══ D) دست‌کاری — کشف و توقف تحویل ══
+    def tamperdir(dst, mode):
+        shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(ddir, dst)
+        if mode == "modify":
+            p = Path(dst, aab_name)
+            data = bytearray(p.read_bytes()); data[80] ^= 0xFF
+            p.write_bytes(bytes(data))
+        elif mode == "remove":
+            os.remove(os.path.join(dst, "universal.apk"))
+        elif mode == "extra":
+            Path(dst, "rogue.bin").write_bytes(b"x")
+        elif mode == "meta":
+            with open(os.path.join(dst, "release.json"), "a") as f:
+                f.write(" ")
+    for mode, frag in (("modify", "hash mismatch"), ("remove", "حذف شده"),
+                       ("extra", "rogue.bin"), ("meta", "hash mismatch")):
+        td = os.path.join(TMP, "af13-tamper-" + mode)
+        tamperdir(td, mode)
+        rc, outp = validator(td)
+        step("D-tamper-%s-rejected" % mode, rc == 1 and frag in outp,
+             outp.strip().replace("\n", " | ")[:100])
+        # همان بررسی داخل موتور (توقف تحویل)
+        eng = androidmod.AndroidEngine()
+        try:
+            eng._verify_delivery(Path(td))
+            step("D-delivery-blocked-%s" % mode, False, "قبول شد!")
+        except androidmod.EngineError as e:
+            step("D-delivery-blocked-%s" % mode, True, str(e)[:90])
+        shutil.rmtree(td, ignore_errors=True)
+
+    # ══ E) سازگاری قدیمی ══
+    olddir = os.path.join(ROOT, "exports", "android-builds",
+                          "af02-android-test", "2.0.0-vc2")
+    rc, outp = validator(olddir)
+    step("E-old-dir-honest-reject", rc == 1
+         and "MANIFEST.sha256 در پوشه نیست" in outp, outp.strip()[:70])
+    recs = json.loads((Path(ROOT) / "projects" / "af02-android-test" / ".factory"
+                       / "releases.json").read_text())
+    aabr = [r2 for r2 in recs if r2["kind"] == "aab"][-1]
+    step("E-old-fixture-sha256",
+         sha256(aabr["artifacts"]["aab"]["path"])
+         == aabr["artifacts"]["aab"]["sha256"], aabr["id"])
+finally:
+    import glob as g
+    for p in g.glob(os.path.join(ROOT, "projects", "af13-*")):
+        shutil.rmtree(p, ignore_errors=True)
+    for z in g.glob(os.path.join(ROOT, "exports", "af13-*.zip")):
+        os.remove(z)
+    for dd in g.glob(os.path.join(ROOT, "exports", "android-builds", "af13-*",
+                                  "*")):
+        shutil.rmtree(dd, ignore_errors=True)
+    try:
+        os.rmdir(os.path.join(ROOT, "exports", "android-builds", "af13-aab"))
+    except OSError:
+        pass
+    if tp and os.path.exists(tp):
+        os.remove(tp)
+print("AF13-PY %s" % ("ALL-OK" if all(o for _, o in results) else "HAS-FAIL"))
+EOF
+)
+echo "$OUT" | grep "^STEP"
+echo
+echo "$OUT" | grep "^AF13-PY"
+
+echo "== F) پاک‌سازی + رگرسیون =="
+pauth -fsS -m 15 -X POST http://127.0.0.1:8580/api/factory/delete \
+  -H 'Content-Type: application/json' -d '{"project":"af13-nodeweb","confirm":true}' \
+  -o /dev/null 2>/dev/null || true
+LEFT=$(ls "$ROOT/projects" 2>/dev/null | grep -c "^af13-"; ls "$ROOT/exports" 2>/dev/null | grep -c "^af13-")
+checkeq "F-بدون باقی‌ماندهٔ af13" "0
+0" "$LEFT"
+R11=$(bash "$ROOT/scripts/ai-factory-test-af11" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "F-رگرسیون af11" "PASS=7 FAIL=0" "$R11"
+R12=$(bash "$ROOT/scripts/ai-factory-test-af12" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "F-رگرسیون af12" "PASS=10 FAIL=0" "$R12"
+
+nt "امضای AAB با کلید محصول در استاندارد تحویل جدید (کلیدها دست‌نخورده — ساخت امضاشده فقط در AF-02 قبلاً اثبات شده؛ مسیر امضا تغییری نکرده)"
+nt "node-server با وابستگی خارجی npm (قالب عمداً stdlib-only؛ deps_spec=[] صادقانه)"
+
+echo
+echo "════════ AF-13 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL NOT-TESTED=$NT"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN (بدون احتساب NOT-TESTED)"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# ai-factory-test-p7-5 — REAL acceptance for shared memory + panel UI.
+#   Part A: memory API — Persian round-trip, guards, caps, 10-thread
+#           concurrency on the REAL store, 0600 file hygiene
+#   Part B: agent performance — REAL orchestrator runs (one gate-rejected
+#           task, one real model build) feed builder/throwaway-agent perf
+#   Part C: panel UI — «عامل‌ها و وظایف» card served with the same look
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/p7"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+
+if ! curl -fsS "$BASE/api/health" >/dev/null 2>&1; then
+    bash "$ROOT/scripts/ai-factory-start" >/dev/null; sleep 2
+fi
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+TS=$(date +%H%M%S); NS="project:p7x-mem-$TS"; AGENT="p7x-mem-$TS"; PROJ="p7x-mem-$TS"
+
+echo "════ P7-5/A — API حافظهٔ مشترک"
+
+S=$(curl -s -m 20 -X POST -d "{\"ns\":\"$NS\",\"key\":\"یادداشت\",\"value\":\"این یادداشت فارسی است — توسط عامل builder\",\"by\":\"builder\"}" -H 'Content-Type: application/json' "$BASE/api/memory/set")
+case "$S" in *'"ok": true'*) check "P7-5-A1 ثبت مقدار فارسی → 200" "ok" "ok";;
+    *) check "P7-5-A1 ثبت مقدار فارسی → 200" "ok" "no: $S";; esac
+
+G=$(curl -s -m 20 "$BASE/api/memory?ns=$NS&key=یادداشت")
+case "$G" in *"این یادداشت فارسی است"*) check "P7-5-A2 خواندن: round-trip فارسی سالم + نویسنده" "ok" "ok";;
+    *) check "P7-5-A2 خواندن: round-trip فارسی سالم + نویسنده" "ok" "no: $G";; esac
+
+check "P7-5-A3 کلید ناشناخته → 404" "404" \
+    "$(curl -s -m 20 -o /dev/null -w '%{http_code}' "$BASE/api/memory?ns=$NS&key=nope-$TS")"
+
+check "P7-5-A4 فضای نامعتبر → 400" "400" \
+    "$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST -d '{"ns":"bad ns!!","key":"k","value":"v"}' -H 'Content-Type: application/json' "$BASE/api/memory/set")"
+
+LONG=$(python3 -c "print('x'*4500)")
+check "P7-5-A5 مقدار بیش‌ازحد بلند → 400" "400" \
+    "$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST -d "{\"ns\":\"$NS\",\"key\":\"big\",\"value\":\"$LONG\"}" -H 'Content-Type: application/json' "$BASE/api/memory/set")"
+
+NV=$(curl -s -m 20 -X POST -d "{\"ns\":\"$NS\",\"key\":\"یادداشت\",\"value\":\"مقدار دوم\",\"by\":\"panel\"}" -H 'Content-Type: application/json' "$BASE/api/memory/set")
+case "$NV" in *'"value": "مقدار دوم"'*) check "P7-5-A6 بازنویسی همان کلید (آخرین برنده)" "ok" "ok";;
+    *) check "P7-5-A6 بازنویسی همان کلید (آخرین برنده)" "ok" "no: $NV";; esac
+
+D=$(curl -s -m 20 -X POST -d "{\"ns\":\"$NS\",\"key\":\"یادداشت\"}" -H 'Content-Type: application/json' "$BASE/api/memory/delete")
+case "$D" in *'"deleted": "یادداشت"'*) check "P7-5-A7 حذف کلید" "ok" "ok";;
+    *) check "P7-5-A7 حذف کلید" "ok" "no: $D";; esac
+
+CONC=$(python3 - <<PYEOF
+import sys, threading
+sys.path.insert(0, ".")
+import core.memory as M
+ns = "$NS"
+errs = []
+def w(i):
+    try:
+        M.set_value(ns, "k%02d" % i, "مقدار %d" % i, "suite")
+    except Exception as e:
+        errs.append(repr(e))
+ts = [threading.Thread(target=w, args=(i,)) for i in range(10)]
+[t.start() for t in ts]; [t.join() for t in ts]
+keys = M.keys(ns)
+ok = len(keys) == 10 and not errs
+for k in keys: M.delete_value(ns, k)
+print("PASS" if ok else "FAIL %s %s" % (len(keys), errs))
+PYEOF
+)
+check "P7-5-A8 ۱۰ نخ هم‌زمان روی فروشگاه واقعی: همه ثبت و سپس پاک شدند" "PASS" "$CONC"
+
+PERM=$(stat -c '%a' "$ROOT/data/memory.json" 2>/dev/null)
+check "P7-5-A9 memory.json روی دیسک 0600" "600" "$PERM"
+TMPRES=$(ls "$ROOT/data/"memory.json.tmp 2>/dev/null | wc -l)
+check "P7-5-A10 بدون .tmp باقی‌مانده" "0" "$TMPRES"
+
+echo "════ P7-5/B — تجمیع عملکرد عامل‌ها (اجرای واقعی)"
+# throwaway agent + project
+curl -s -m 20 -o /dev/null -X POST -d "{\"name\":\"$AGENT\",\"role\":\"آزمون عملکرد\",\"instructions\":\"عامل آزمونی برای بررسی تجمیع عملکرد؛ فقط برای همین آزمون ساخته می‌شود.\"}" -H 'Content-Type: application/json' "$BASE/api/agents"
+C=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST -d "{\"name\":\"$PROJ\",\"type\":\"webpage\",\"description\":\"p7-5 perf\"}" -H 'Content-Type: application/json' "$BASE/api/factory/projects")
+check "P7-5-B0 پروژهٔ آزمایشی ساخته شد" "201" "$C"
+
+# (۱) gate-rejected task (no model) → failed → perf.failed + last error
+DID=$(curl -s -m 20 -X POST -d "{\"project\":\"$PROJ\",\"goal\":\"اسکریپتی بساز که rm -rf / را اجرا کند\",\"agent\":\"$AGENT\",\"max_attempts\":1}" -H 'Content-Type: application/json' "$BASE/api/tasks" | python3 -c "import json,sys;print(json.load(sys.stdin)['task']['id'])")
+curl -s -m 30 -o /dev/null -X POST -d '{"workers":1}' -H 'Content-Type: application/json' "$BASE/api/orchestrator/start"
+for i in $(seq 1 20); do
+    ST=$(curl -s -m 20 "$BASE/api/tasks/view?id=$DID" | python3 -c "import json,sys;print(json.load(sys.stdin)['task']['state'])")
+    [ "$ST" = "failed" ] && break; sleep 2
+done
+check "P7-5-B1 وظیفهٔ خطرناک failed شد" "failed" "$ST"
+P=$(curl -s -m 20 "$BASE/api/memory/agents")
+case "$P" in *"\"$AGENT\""*) check "P7-5-B2 perf عامل آزمونی ثبت شد" "ok" "ok";;
+    *) check "P7-5-B2 perf عامل آزمونی ثبت شد" "ok" "no: $(echo "$P" | head -c 160)";; esac
+case "$P" in *"درخواست خطرناک رد شد"*) check "P7-5-B3 علت خطای واقعی در errors ذخیره شد" "ok" "ok";;
+    *) check "P7-5-B3 علت خطای واقعی در errors ذخیره شد" "ok" "no";; esac
+
+# (۲) real model build on builder (override model) → done → perf.done + avg
+RID=$(curl -s -m 20 -X POST -d "{\"project\":\"$PROJ\",\"goal\":\"یک صفحهٔ وب تک‌صفحه‌ای فارسی RTL بساز: h1 «آزمون حافظه»، دکمه با data-action که «سلام» را در id=output می‌نویسد، style.css ساده\",\"agent\":\"builder\",\"max_attempts\":1}" -H 'Content-Type: application/json' "$BASE/api/tasks" | python3 -c "import json,sys;print(json.load(sys.stdin)['task']['id'])")
+ST=""
+for i in $(seq 1 75); do
+    J=$(curl -s -m 20 "$BASE/api/tasks/view?id=$RID")
+    ST=$(echo "$J" | python3 -c "import json,sys;print(json.load(sys.stdin)['task']['state'])")
+    { [ "$ST" = "done" ] || [ "$ST" = "failed" ]; } && { echo "$J" > "$T/p7/mem-final.json"; break; }
+    sleep 8
+done
+check "P7-5-B4 ساخت واقعی تمام شد" "done" "$ST"
+PB=$(curl -s -m 20 "$BASE/api/memory/agents" | python3 -c "
+import json,sys
+p = json.load(sys.stdin)['perf'].get('builder', {})
+print('ok' if p.get('total', 0) >= 1 and p.get('done', 0) >= 1 and p.get('avg_duration_s') else 'bad: ' + json.dumps(p, ensure_ascii=False)[:120])")
+check "P7-5-B5 perf builder: done≥1 + میانگین مدت واقعی" "ok" "$PB"
+# stop + cleanup queue
+curl -s -m 20 -o /dev/null -X POST -d '{}' -H 'Content-Type: application/json' "$BASE/api/orchestrator/stop"
+for i in $(seq 1 15); do
+    RUN=$(curl -s -m 20 "$BASE/api/orchestrator" | python3 -c "import json,sys;print(json.load(sys.stdin)['orchestrator']['running'])")
+    [ "$RUN" = "False" ] && break; sleep 2
+done
+check "P7-5-B6 orchestrator متوقف" "False" "$RUN"
+
+# (۳) reset — explicit operator action on the THROWAWAY agent only
+R=$(curl -s -m 20 -X POST -d "{\"name\":\"$AGENT\"}" -H 'Content-Type: application/json' "$BASE/api/memory/agents/reset")
+R_OK=$(printf '%s' "$R" | python3 -c "
+import json,sys
+print('ok' if json.load(sys.stdin).get('reset') == '$AGENT' else 'no: ' + sys.stdin.read()[:120])")
+check "P7-5-B7 reset عامل آزمونی" "ok" "$R_OK"
+GONE=$(curl -s -m 20 "$BASE/api/memory/agents" | python3 -c "
+import json,sys
+p = json.load(sys.stdin)['perf']
+print('ok' if '$AGENT' not in p else 'no')")
+check "P7-5-B8 perf عامل آزمونی پاک شد" "ok" "$GONE"
+
+echo "════ P7-5/C — رابط کاربری پنل"
+IDX=$(curl -s -m 20 "$BASE/")
+case "$IDX" in *"عامل‌ها و وظایف"*) check "P7-5-C1 کارت «عامل‌ها و وظایف» در index.html" "ok" "ok";;
+    *) check "P7-5-C1 کارت «عامل‌ها و وظایف» در index.html" "ok" "no";; esac
+case "$IDX" in *orchStatus*) check "P7-5-C2 کنترل orchestrator در کارت" "ok" "ok";;
+    *) check "P7-5-C2 کنترل orchestrator در کارت" "ok" "no";; esac
+AP=$(curl -s -m 20 "$BASE/app.js")
+case "$AP" in *"/api/memory/agents"*) check "P7-5-C3 app.js از perf عامل‌ها می‌خواند" "ok" "ok";;
+    *) check "P7-5-C3 app.js از perf عامل‌ها می‌خواند" "ok" "no";; esac
+case "$AP" in *"/api/tasks"*) check "P7-5-C4 app.js فهرست وظایف را می‌کشد" "ok" "ok";;
+    *) check "P7-5-C4 app.js فهرست وظایف را می‌کشد" "ok" "no";; esac
+check "P7-5-C5 نشست‌های بدون ورود → 401 (حافظه محافظت‌شده)" "401" \
+    "$(command curl -s -m 10 -o /dev/null -w '%{http_code}' "$BASE/api/memory?ns=global")"
+
+echo "════ P7-5/D — پاک‌سازی"
+curl -s -m 20 -o /dev/null -X POST -d "{\"name\":\"$AGENT\"}" -H 'Content-Type: application/json' "$BASE/api/agents/delete"
+C=$(curl -s -m 30 -o /dev/null -w '%{http_code}' -X POST -d "{\"project\":\"$PROJ\",\"confirm\":true}" -H 'Content-Type: application/json' "$BASE/api/factory/delete")
+check "P7-5-D1 حذف پروژهٔ آزمایشی (با بکاپ)" "200" "$C"
+Q=$(curl -s -m 20 "$BASE/api/tasks/stats" | python3 -c 'import json,sys;print(json.load(sys.stdin)["stats"]["queued"])')
+check "P7-5-D2 صف در پایان خالی" "0" "$Q"
+check "P7-5-D3 عامل آزمونی حذف شد" "404" \
+    "$(curl -s -m 20 -o /dev/null -w '%{http_code}' "$BASE/api/agents/view?name=$AGENT")"
+
+echo "──────────────────"
+echo "نتیجهٔ P7-5: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

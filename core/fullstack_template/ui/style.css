@@ -1,0 +1,22 @@
+/* {{APP_TITLE}} styles — local preview, mobile first */
+:root { --bg:#0d1117; --card:#161b22; --acc:#2da44e; --txt:#e6edf3; --mut:#8b949e; }
+* { box-sizing: border-box; }
+body { font-family: sans-serif; background: var(--bg); color: var(--txt);
+       margin: 0; padding: 1rem; max-width: 720px; margin-inline: auto; }
+header h1 { font-size: 1.2rem; }
+.muted { color: var(--mut); font-size: .85rem; }
+.small { font-size: .75rem; }
+.card { background: var(--card); border: 1px solid #30363d; border-radius: 10px;
+        padding: 1rem; margin-bottom: 1rem; }
+input, button { font-size: 1rem; padding: .55rem .7rem; border-radius: 8px;
+        border: 1px solid #30363d; background: #0d1117; color: var(--txt); }
+button { background: var(--acc); color: #fff; border: none; cursor: pointer; }
+button.small { padding: .25rem .55rem; font-size: .8rem; }
+button.danger { background: #b62324; }
+form { display: flex; gap: .5rem; flex-wrap: wrap; }
+form input { flex: 1 1 140px; }
+table { width: 100%; border-collapse: collapse; margin-top: .7rem; font-size: .9rem; }
+th, td { border-bottom: 1px solid #30363d; padding: .45rem .4rem; text-align: right; }
+.msg { min-height: 1.2rem; font-size: .82rem; margin-top: .4rem; }
+.msg.err { color: #ff7b72; } .msg.ok { color: #7ee787; }
+footer { color: var(--mut); font-size: .75rem; margin-top: 2rem; text-align: center; }

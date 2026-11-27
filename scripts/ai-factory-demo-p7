@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# ai-factory-demo-p7 — REAL multi-agent demo (throwaway everything).
+#   project A: builder builds the base page → enhancer adds a footer
+#              (SAME project = sequential by per-project lock design)
+#   project B: designer builds a page (its OWN model from the registry:
+#              opencode/big-pickle) — runs in PARALLEL with project A
+#   memory:    per-agent perf auto-aggregated by the orchestrator; a real
+#              project-memory note written via the API
+# Everything (projects, extra agents) is deleted at the end with backups.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/p7/demo"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+TS=$(date +%H%M%S); PA="p7x-demo-a-$TS"; PB="p7x-demo-b-$TS"
+ENH="enh-$TS"; DES="des-$TS"
+
+echo "════ آماده‌سازی: عامل‌ها و پروژه‌های آزمایشی"
+curl -s -o /dev/null -X POST -d "{\"name\":\"$ENH\",\"role\":\"بهبوددهنده\",\"instructions\":\"تو «بهبوددهنده» هستی: فایل‌های موجود پروژه را می‌خوانی و فقط بخش خواسته‌شده را مینیمال و دقیق اضافه می‌کنی؛ بقیهٔ صفحه را بازنویسی نمی‌کنی. فارسی و RTL را حفظ کن.\"}" -H 'Content-Type: application/json' "$BASE/api/agents"
+curl -s -o /dev/null -X POST -d "{\"name\":\"$DES\",\"role\":\"طراح\",\"model\":\"opencode/big-pickle\",\"instructions\":\"تو «طراح» هستی: صفحات تمیز و مینیمال با HTML/CSS مدرن می‌سازی. فارسی و RTL.\"}" -H 'Content-Type: application/json' "$BASE/api/agents"
+M=$(curl -s "$BASE/api/agents/view?name=$DES" | python3 -c "import json,sys;print(json.load(sys.stdin)['agent'].get('model',''))")
+check "D1 عامل طراح با مدل اختصاصی از رجیستر (big-pickle)" "opencode/big-pickle" "$M"
+for P in "$PA" "$PB"; do
+    curl -s -o /dev/null -X POST -d "{\"name\":\"$P\",\"type\":\"webpage\",\"description\":\"p7 demo\"}" -H 'Content-Type: application/json' "$BASE/api/factory/projects"
+done
+
+echo "════ صف: سه وظیفه با سه عامل"
+q() { curl -s -X POST -d "$1" -H 'Content-Type: application/json' "$BASE/api/tasks" | python3 -c "import json,sys;print(json.load(sys.stdin)['task']['id'])"; }
+T1=$(q "{\"project\":\"$PA\",\"goal\":\"یک صفحهٔ وب تک‌صفحه‌ای فارسی RTL بساز: h1 «دموی چند-عامله»، یک پاراگراف معرفی، دکمه با data-action که «سلام» را در id=output می‌نویسد، style.css ساده\",\"agent\":\"builder\",\"max_attempts\":1}")
+T2=$(q "{\"project\":\"$PA\",\"goal\":\"فقط یک فوتر ساده با متن «ساخته‌شده توسط کارخانه» به انتهای index.html اضافه کن؛ بقیهٔ صفحه دست نخورد.\",\"agent\":\"$ENH\",\"max_attempts\":1}")
+T3=$(q "{\"project\":\"$PB\",\"goal\":\"یک کارت ویزیت دیجیتال فارسی RTL بساز: نام «کارخانه»، شعار، دو دکمه، index.html + style.css\",\"agent\":\"$DES\",\"max_attempts\":1}")
+check "D2 سه وظیفه ثبت شد" "3" "$(printf '%s\n%s\n%s\n' "$T1" "$T2" "$T3" | grep -c '^t-')"
+
+curl -s -o /dev/null -X POST -d '{"workers":2}' -H 'Content-Type: application/json' "$BASE/api/orchestrator/start"
+
+echo "════ اجرا و هم‌زمانی واقعی"
+BOTH=""
+for i in $(seq 1 60); do
+    N=$(curl -s "$BASE/api/tasks?state=running" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['tasks']))")
+    [ "$N" -ge 2 ] && { BOTH=yes; break; }
+    sleep 2
+done
+check "D3 دو وظیفهٔ دو پروژهٔ متفاوت هم‌زمان running شدند" "yes" "$BOTH"
+
+ALL=""
+for i in $(seq 1 100); do
+    ALL=$(python3 -c "
+import json
+ts = {t['id']: t['state'] for t in json.load(open('data/tasks.json'))}
+want = ['$T1', '$T2', '$T3']
+print('all' if all(ts.get(w) == 'done' for w in want) else 'wait')")
+    [ "$ALL" = "all" ] && break
+    sleep 6
+done
+check "D4 هر سه وظیفه done شدند (مدل واقعی)" "all" "$ALL"
+
+echo "════ شواهد واقعی"
+OKART=$(python3 -c "
+import json, pathlib
+ok = True
+for proj in ('$PA', '$PB'):
+    ok = ok and (pathlib.Path('projects/%s/index.html' % proj)).is_file()
+h = json.load(open('projects/$PA/.factory/history.json'))
+acts = [e['action'] for e in h]
+ok = ok and acts.count('task-start') >= 2 and acts.count('task-done') >= 2
+print('ok' if ok else 'no')")
+check "D5 index.html روی هر دو پروژه + تاریخچهٔ دو-مرحله‌ای پروژهٔ A" "ok" "$OKART"
+FOOT=$(grep -l "ساخته‌شده توسط کارخانه" "projects/$PA/index.html" 2>/dev/null | wc -l)
+check "D6 فوترِ عامل «بهبوددهنده» واقعاً در index.html است" "1" "$FOOT"
+
+PERF=$(curl -s "$BASE/api/memory/agents" | python3 -c "
+import json,sys
+p = json.load(sys.stdin)['perf']
+need = ['builder', '$ENH', '$DES']
+print('ok' if all(n in p and p[n]['total'] >= 1 for n in need) else 'missing:' + ','.join(set(need)-set(p)))")
+check "D7 عملکرد هر سه عامل در حافظهٔ مشترک تجمیع شد" "ok" "$PERF"
+
+curl -s -o /dev/null -X POST -d "{\"ns\":\"project:$PA\",\"key\":\"demo-note\",\"value\":\"این یادداشت توسط اپراتور دمو نوشته شد — حافظهٔ پروژه کار می‌کند\",\"by\":\"operator\"}" -H 'Content-Type: application/json' "$BASE/api/memory/set"
+MEM=$(curl -s "$BASE/api/memory?ns=project:$PA&key=demo-note" | python3 -c "import json,sys;print('ok' if 'اپراتور دمو' in json.load(sys.stdin).get('value','') else 'no')")
+check "D8 حافظهٔ پروژه: نوشتن/خواندن واقعی" "ok" "$MEM"
+
+curl -s -o /dev/null -X POST -d '{}' -H 'Content-Type: application/json' "$BASE/api/orchestrator/stop"
+for i in $(seq 1 15); do
+    RUN=$(curl -s "$BASE/api/orchestrator" | python3 -c "import json,sys;print(json.load(sys.stdin)['orchestrator']['running'])")
+    [ "$RUN" = "False" ] && break; sleep 2
+done
+check "D9 توقف orchestrator" "False" "$RUN"
+
+echo "════ پاک‌سازی دمو"
+curl -s -o /dev/null -X POST -d "{\"name\":\"$ENH\"}" -H 'Content-Type: application/json' "$BASE/api/agents/delete"
+curl -s -o /dev/null -X POST -d "{\"name\":\"$DES\"}" -H 'Content-Type: application/json' "$BASE/api/agents/delete"
+for P in "$PA" "$PB"; do
+    curl -s -o /dev/null -X POST -d "{\"project\":\"$P\",\"confirm\":true}" -H 'Content-Type: application/json' "$BASE/api/factory/delete"
+done
+LEFT=$(ls projects/ 2>/dev/null | grep -c "p7x-demo")
+check "D10 بدون بقایای دمو" "0" "$LEFT"
+
+echo "──────────────────"
+echo "نتیجهٔ دمو: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "DEMO ALL GREEN" && exit 0
+exit 1

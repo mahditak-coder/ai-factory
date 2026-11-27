@@ -1,0 +1,9 @@
+{
+  "active": {
+    "provider": "opencode",
+    "model": "glm-5.3-flash-free",
+    "engine": "opencode v2.2.6 (bridge: local HTTP API, see docs/AI_WORKSPACE.md)",
+    "updated": "auto-filled by server"
+  },
+  "_notes": "کلیدهای API را در این فایل ذخیره نکنید؛ به‌جای آن از متغیرهای محیطی Termux استفاده کنید (مثال: export OPENCODE_API_KEY=...)"
+}

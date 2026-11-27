@@ -1,0 +1,385 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af07 — AF-07: کنترل کیفیت واقعی محصولات تولیدشده
+#   A) دروازهٔ امنیت انتشار — واحد، ایزوله (راز/Path/تنظیمات خطرناک، ماسک، تفکیک مشوک/قطعی)
+#   B) مسیر واقعی انتشار: export/release روی پنل واقعی + HTTP — راز → ۴۰۹ و توقف
+#   C) قرارداد رفتاری Fullstack از مسیر واقعی /api/factory/testrun + شکست عمدی
+#   D) قرارداد Android بدون ساخت جدید (apksigner/bundletool validate + خروجی ناقص)
+#   E) fail-closed: دروازهٔ خراب → انتشار متوقف (۵۰۰)
+#   F) پاک‌سازی داده‌های همین مأموریت + رگرسیون af061/af062
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+PASS=0; FAIL=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+
+echo "== 0) syntax =="
+for f in core/security_gate.py core/server.py core/typetests.py; do
+  if python3 -m py_compile "$ROOT/$f" 2>/dev/null; then PASS=$((PASS+1)); echo "✅ py_compile $f";
+  else FAIL=$((FAIL+1)); echo "❌ py_compile $f"; fi
+done
+
+echo "== A) دروازهٔ امنیت انتشار (واحد، ایزوله) =="
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import sys, json, shutil
+sys.path.insert(0, ".")
+from pathlib import Path
+from core import security_gate as sg
+
+def mk(name, files, mtype="webpage"):
+    d = Path("projects") / name
+    if d.exists(): shutil.rmtree(d)
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({"type": mtype, "name": name}))
+    for fn, txt in files.items():
+        p = d / fn
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(txt)
+    return d
+
+AWS = "AKIAIOSFODNN7EXAMPLE"           # documented AWS example key (fake)
+STRIPE = "xoxb-AAAAAAAAAAAAAAAA"  # provider-neutral fake token (public-audit sanitized)
+
+# A1 — پروژهٔ پاک: بلاک نیست
+mk("af07-g-clean", {"app.py": "def add(a, b):\n    return a + b\n",
+                    "README.md": "# demo\n\nHOST=0.0.0.0 documentation\n"})
+r = sg.scan("af07-g-clean", mode="export")
+assert not r["blocked"] and r["ok"], r
+assert r["files_scanned"] >= 2, r
+print("A1-OK")
+
+# A2 — راز تعبیه‌شده در .py: بلاک قطعی با kind درست
+mk("af07-g-leak", {
+    "payments.py": 'AWS = "%s"\nSTRIPE = "%s"\n' % (AWS, STRIPE),
+    "keydata.py": 'PEM = """-----BEGIN RSA PRIVATE KEY-----\nMIIBOg\n-----END RSA PRIVATE KEY-----"""\n',
+})
+r = sg.scan("af07-g-leak", mode="export")
+assert r["blocked"], r
+kinds = {f["kind"] for f in r["critical"]}
+assert {"secret-aws-key", "secret-slack-token", "secret-pem-key"} <= kinds, kinds
+print("A2-OK")
+
+# A3 — گزارش ماسک‌شده: مقدار واقعی راز در هیچ‌جای گزارش نیست
+blob = json.dumps(r)
+assert AWS not in blob and STRIPE not in blob, "LEAK in gate report!"
+assert "MIIBOg" not in blob, "LEAK (pem) in gate report!"
+assert all(f["preview"].endswith("]") for f in r["critical"]), r["critical"]
+print("A3-OK")
+
+# A4 — مشوک: مقدار placeholder فقط هشدار است، بلاک نیست
+mk("af07-g-warn", {"cfg.py": 'password = "changeme-placeholder"\nshell_run = {"shell": True}\n'})
+r = sg.scan("af07-g-warn", mode="export")
+assert not r["blocked"], r
+assert any(f["kind"] == "suspicious-secret-literal" for f in r["warnings"]), r
+print("A4-OK")
+
+# A5 — .env از مجموعهٔ فایل‌های ارسالی حذف است → رازش اسکن نمی‌شود (قرارداد exporter)
+mk("af07-g-env", {"app.py": "print(1)\n", ".env": 'API_KEY = "%s"\n' % AWS})
+r = sg.scan("af07-g-env", mode="export")
+assert not r["blocked"], r           # .env به‌هرحال در خروجی نیست
+print("A5-OK")
+
+# A6 — تنظیمات خطرناک اندروید (نوع‌محور): debuggable قطعی، cleartext مشوک
+mk("af07-g-android", {
+    "AndroidManifest.xml":
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" '
+        'package="com.af.test">\n<application android:debuggable="true" '
+        'android:usesCleartextTraffic="true"/>\n</manifest>\n',
+}, mtype="android")
+r = sg.scan("af07-g-android", mode="export")
+assert r["blocked"], r
+kc = [f["kind"] for f in r["critical"]]
+kw = [f["kind"] for f in r["warnings"]]
+assert "danger-android-debuggable" in kc, kc
+assert "warning-android-cleartext" in kw, kw
+print("A6-OK")
+
+# A7 — آگاهی از mode: راز داخل tests/ در release حذف می‌شود ولی در export هست
+mk("af07-g-mode", {"tests/leak_test.py": 'X = "%s"\n' % AWS,
+                   "app.py": "print(1)\n"}, mtype="fullstack-python")
+r_exp = sg.scan("af07-g-mode", mode="export")
+r_rel = sg.scan("af07-g-mode", mode="release")
+assert r_exp["blocked"], r_exp
+assert not r_rel["blocked"], r_rel     # tests/ در release مستثناست (قرارداد release.py)
+print("A7-OK")
+
+for n in ("af07-g-clean", "af07-g-leak", "af07-g-warn",
+          "af07-g-env", "af07-g-android", "af07-g-mode"):
+    shutil.rmtree(Path("projects") / n, ignore_errors=True)
+print("A-DONE")
+EOF
+); for t in A1 A2 A3 A4 A5 A6 A7; do
+  check "$t" "$(echo "$OUT" | grep -q "${t}-OK" && echo OK || echo "FAIL: $(echo "$OUT" | tail -2 | tr '\n' ' ')")" "OK"
+done
+
+echo "== B) مسیر واقعی انتشار: پنل واقعی + HTTP =="
+# B-pre: restart کنترل‌شدهٔ پنل تا کد فعلی server.py (دروازهٔ امنیت) سرو شود
+bash "$ROOT/scripts/ai-factory-stop" >/dev/null 2>&1; sleep 2
+bash "$ROOT/scripts/ai-factory-start" >/dev/null 2>&1; sleep 1
+curl -fsS http://127.0.0.1:8580/api/health >/dev/null 2>&1 || bash "$ROOT/scripts/ai-factory-start" >/dev/null 2>&1
+sleep 1
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+
+# B-0: دو پروژهٔ آزمایشی موقت (ساختهٔ همین سوئیت — در F پاک می‌شوند)
+for P in af07-clean af07-leak; do
+  pauth -fsS -X POST -H 'Content-Type: application/json' \
+    -d "{\"name\":\"$P\",\"type\":\"fullstack-python\",\"description\":\"AF-07 tmp\"}" \
+    http://127.0.0.1:8580/api/factory/projects -o /dev/null -w '%{http_code}' >/dev/null 2>&1
+  pauth -fsS -X POST -H 'Content-Type: application/json' -d "{\"project\":\"$P\"}" \
+    http://127.0.0.1:8580/api/factory/scaffold -o /dev/null 2>&1
+done
+cat > "$ROOT/projects/af07-leak/payments.py" <<'PYEOF'
+AWS = "AKIAIOSFODNN7EXAMPLE"
+STRIPE = "xoxb-AAAAAAAAAAAAAAAA"
+PYEOF
+checkeq "B-0 ساخت دو پروژهٔ آزمایشی" "ok" \
+  "$([ -f "$ROOT/projects/af07-clean/server.py" ] && [ -f "$ROOT/projects/af07-leak/payments.py" ] && echo ok)"
+
+COUNT0=$(ls "$ROOT"/exports/*.zip 2>/dev/null | wc -l)
+# B1: export پروژهٔ آلوده → ۴۰۹ + بدون zip جدید + گزارش ماسک
+CODE=$(pauth -sS -X POST -H 'Content-Type: application/json' -d '{"project":"af07-leak"}' \
+  http://127.0.0.1:8580/api/factory/export -o "$TMP/af07-b1.json" -w '%{http_code}')
+checkeq "B1 export آلوده → 409 (توقف)" "409" "$CODE"
+checkeq "B1 بدون zip جدید" "$COUNT0" "$(ls "$ROOT"/exports/*.zip 2>/dev/null | wc -l)"
+OUT=$(python3 - "$TMP/af07-b1.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+kinds = [e.get("kind") for e in d.get("errors") or []]
+assert "secret-aws-key" in kinds or any("aws" in str(k) for k in kinds), d
+blob = open(sys.argv[1]).read()
+assert "AKIAIOSFODNN7EXAMPLE" not in blob, "secret leaked in API response!"
+print("OK")
+EOF
+); check "B1 گزارش دروازه: kind قطعی + بدون مقدار راز" "$OUT"
+
+# B2: release پروژهٔ آلوده → ۴۰۹ + بدون release zip
+CODE=$(pauth -sS -X POST -H 'Content-Type: application/json' -d '{"project":"af07-leak"}' \
+  http://127.0.0.1:8580/api/factory/release -o "$TMP/af07-b2.json" -w '%{http_code}')
+checkeq "B2 release آلوده → 409 (توقف)" "409" "$CODE"
+checkeq "B2 بدون release zip جدید" "0" \
+  "$(ls "$ROOT"/exports/af07-leak-release-*.zip 2>/dev/null | wc -l)"
+
+# B3: export پروژهٔ پاک → 200 + zip سالم
+CODE=$(pauth -fsS -X POST -H 'Content-Type: application/json' -d '{"project":"af07-clean"}' \
+  http://127.0.0.1:8580/api/factory/export -o "$TMP/af07-b3.json" -w '%{http_code}')
+checkeq "B3 export پاک → 200" "200" "$CODE"
+OUT=$(python3 - "$TMP/af07-b3.json" <<'EOF'
+import json, sys, zipfile
+d = json.load(open(sys.argv[1]))
+assert d.get("ok"), d
+p = d["path"]
+with zipfile.ZipFile(p) as z:
+    assert z.testzip() is None, "zip broken"
+assert d.get("security_gate", {}).get("ok") is True, d.get("security_gate")
+print("OK")
+EOF
+); check "B3 zip سالم + دروازه سبز در پاسخ" "$OUT"
+
+# B4: release پروژهٔ پاک → 201 + verify ساختاری
+CODE=$(pauth -fsS -X POST -H 'Content-Type: application/json' -d '{"project":"af07-clean"}' \
+  http://127.0.0.1:8580/api/factory/release -o "$TMP/af07-b4.json" -w '%{http_code}')
+checkeq "B4 release پاک → 201" "201" "$CODE"
+OUT=$(python3 - "$TMP/af07-b4.json" <<'EOF'
+import json, sys, zipfile
+d = json.load(open(sys.argv[1]))
+assert d.get("ok") and d.get("verify", {}).get("ok"), d
+assert d.get("security_gate", {}).get("ok") is True
+with zipfile.ZipFile(d["path"]) as z:
+    assert z.testzip() is None
+    assert any(n.endswith("release.json") for n in z.namelist())
+print("OK")
+EOF
+); check "B4 release سالم + release.json + دروازه سبز" "$OUT"
+
+echo "== C) قرارداد رفتاری Fullstack از مسیر واقعی testrun =="
+pauth -fsS -X POST -H 'Content-Type: application/json' -d '{"project":"af07-clean"}' \
+  http://127.0.0.1:8580/api/factory/testrun -o "$TMP/af07-c1.json" -w '%{http_code}' >/dev/null
+OUT=$(python3 - "$TMP/af07-c1.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+c = d.get("contract") or {}
+assert c.get("ran") is True, c
+assert c.get("ok") is True, json.dumps(c.get("errors"), ensure_ascii=False)
+assert not c.get("no_coverage"), c
+assert d.get("ok") is True, d
+print("OK")
+EOF
+); check "C1 testrun پروژهٔ سالم → قرارداد fullstack سبز (auth/roles/CRUD)" "$OUT"
+
+# C2: شکست عمدی — همهٔ کاربران مدیر شوند → قرارداد باید FAIL بدهد
+python3 - <<'EOF'
+from pathlib import Path
+p = Path("projects/af07-clean/app/auth.py")
+src = p.read_text(encoding="utf-8")
+bad = src.replace('role = "admin" if row["c"] == 0 else "user"',
+                  'role = "admin"')
+assert bad != src, "sabotage target not found"
+p.write_text(bad, encoding="utf-8")
+print("sabotaged")
+EOF
+pauth -fsS -X POST -H 'Content-Type: application/json' -d '{"project":"af07-clean"}' \
+  http://127.0.0.1:8580/api/factory/testrun -o "$TMP/af07-c2.json" -w '%{http_code}' >/dev/null
+OUT=$(python3 - "$TMP/af07-c2.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+c = d.get("contract") or {}
+assert c.get("ran") is True and c.get("ok") is not True, c
+kinds = {e.get("kind") for e in c.get("errors") or []}
+assert "fs-roles" in kinds, kinds
+assert "fs-admin-user" in kinds, kinds
+assert "fs-isolation" in kinds, kinds
+print("OK")
+EOF
+); check "C2 شکست عمدی → قرارداد FAIL می‌دهد (fs-roles/fs-admin-user/fs-isolation)" "$OUT"
+
+echo "== D) قرارداد Android بدون ساخت جدید (فیکسچر موجود) =="
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import sys, json, shutil, subprocess, zipfile
+sys.path.insert(0, ".")
+from pathlib import Path
+from core.engines import registry, get_engine
+
+engs = registry.list_engines()
+assert any(e["id"] == "android-minimal" for e in engs), engs
+e = get_engine("android")
+av = e.available()
+assert av["ok"], av["notes"]
+print("D1-OK")
+
+fx = Path("projects/af02-android-test")
+d = e.detect(fx)
+assert d.get("supported") and d.get("mode") == "minimal", d
+v = e.validate(fx)
+assert v["ok"] and v["info"].get("package") == "com.aifactory.test", v
+pf = e.preflight(fx)
+assert pf["ok"], pf
+print("D1B-OK")
+
+rels = json.loads((fx / ".factory" / "releases.json").read_text())
+apk = [r for r in rels if r.get("kind") == "apk"][-1]
+aab = [r for r in rels if r.get("kind") == "aab"][-1]
+apk_p = Path(apk["artifacts"]["apk"]["path"])
+aab_p = Path(aab["artifacts"]["aab"]["path"])
+assert apk_p.is_file() and aab_p.is_file(), (apk_p, aab_p)
+# D2: سلامت APK — testzip + apksigner verify مستقل
+assert zipfile.ZipFile(apk_p).testzip() is None
+rc = subprocess.run(["apksigner", "verify", str(apk_p)],
+                    capture_output=True, timeout=120).returncode
+assert rc == 0, f"apksigner verify rc={rc}"
+print("D2-OK")
+# D3: اعتبار AAB با bundletool validate (مستقل، بدون build جدید)
+rc = subprocess.run(["java", "-jar", av["tools"]["bundletool"], "validate",
+                     "--bundle", str(aab_p)],
+                    capture_output=True, text=True, timeout=300)
+assert rc.returncode == 0, f"bundletool validate rc={rc.returncode}: {rc.stderr[-300:]}"
+assert zipfile.ZipFile(aab_p).testzip() is None
+print("D3-OK")
+
+# D4: خروجی ناقص/خراب — دروازه‌ها باید رد کنند (روی نسخهٔ کپی در tmp)
+nd = Path("/data/data/com.termux/files/usr/tmp/opencode/af07-d4")
+if nd.exists(): shutil.rmtree(nd)
+nd.mkdir(parents=True)
+bad_aab = nd / "broken.aab"
+bad_aab.write_bytes(aab_p.read_bytes()[:200])   # ناقص
+rc = subprocess.run(["java", "-jar", av["tools"]["bundletool"], "validate",
+                     "--bundle", str(bad_aab)],
+                    capture_output=True, timeout=300).returncode
+assert rc != 0, "bundletool accepted a truncated AAB!"
+bad_apk = nd / "broken.apk"
+data = bytearray(apk_p.read_bytes())
+data[-64] ^= 0xFF                                # خراب‌کردن انتهای zip
+bad_apk.write_bytes(bytes(data))
+rc = subprocess.run(["apksigner", "verify", str(bad_apk)],
+                    capture_output=True, timeout=120).returncode
+assert rc != 0, "apksigner accepted a tampered APK!"
+shutil.rmtree(nd, ignore_errors=True)
+print("D4-OK")
+
+# D5: مدیریت خطای ساختار ناقص — detect/validate صادقانه ناموفق
+bad1 = Path("projects/af07-d5-incomplete")
+if bad1.exists(): shutil.rmtree(bad1)
+(bad1 / "java/com/x").mkdir(parents=True)
+(bad1 / "AndroidManifest.xml").write_text('<manifest package="com.x.y"/>')
+d = e.detect(bad1)
+assert not d.get("supported"), d
+bad2 = Path("projects/af07-d5-badmanifest")
+if bad2.exists(): shutil.rmtree(bad2)
+(bad2 / "res").mkdir(parents=True); (bad2 / "java").mkdir()
+(bad2 / "AndroidManifest.xml").write_text("<manifest broken")
+v = e.validate(bad2)
+assert not v["ok"] and v["problems"], v
+shutil.rmtree(bad1, ignore_errors=True); shutil.rmtree(bad2, ignore_errors=True)
+print("D5-OK")
+EOF
+); for t in D1 D1B D2 D3 D4 D5; do
+  check "$t" "$(echo "$OUT" | grep -q "^${t}-OK$" && echo OK || echo "FAIL: $(echo "$OUT" | tail -2 | tr '\n' ' ')")" "OK"
+done
+
+echo "== E) fail-closed: دروازهٔ خراب → انتشار متوقف =="
+COUNT1=$(ls "$ROOT"/exports/*.zip 2>/dev/null | wc -l)
+bash "$ROOT/scripts/ai-factory-stop" >/dev/null 2>&1; sleep 2
+cat > "$TMP/af07-wrapper.py" <<PYEOF
+import os, sys, runpy
+ROOT = "$ROOT"
+sys.path.insert(0, ROOT)
+os.chdir(ROOT)
+import core.security_gate as sg
+def _boom(*a, **k):
+    raise RuntimeError("gate crashed (AF-07 fail-closed probe)")
+sg.scan = _boom
+runpy.run_path(os.path.join(ROOT, "core", "server.py"), run_name="__main__")
+PYEOF
+setsid nohup python3 "$TMP/af07-wrapper.py" >> "$TMP/af07-wrapper.log" 2>&1 &
+WRAPPERPID=$!
+for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:8580/api/health >/dev/null 2>&1 && break; sleep 0.5; done
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+CODE=$(pauth -sS -X POST -H 'Content-Type: application/json' -d '{"project":"af07-clean"}' \
+  http://127.0.0.1:8580/api/factory/export -o /dev/null -w '%{http_code}')
+checkeq "E export با دروازهٔ خراب → 500 (متوقف)" "500" "$CODE"
+checkeq "E بدون zip جدید (شئ بی‌اسکن منتشر نشد)" "$COUNT1" "$(ls "$ROOT"/exports/*.zip 2>/dev/null | wc -l)"
+kill "$WRAPPERPID" 2>/dev/null; sleep 1; kill -9 "$WRAPPERPID" 2>/dev/null
+bash "$ROOT/scripts/ai-factory-stop" >/dev/null 2>&1; sleep 2
+bash "$ROOT/scripts/ai-factory-start" >/dev/null 2>&1; sleep 1
+checkeq "E بازگردانی پنل واقعی" "OK" "$(curl -fsS http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK)"
+SPID=$(cat "$ROOT/logs/server.pid" 2>/dev/null)
+checkeq "E پنل واقعی (نه wrapper)" "core/server.py" \
+  "$(tr '\0' ' ' < "/proc/$SPID/cmdline" 2>/dev/null | grep -o 'core/server.py' | head -1)"
+
+echo "== F) پاک‌سازی + رگرسیون =="
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+for P in af07-clean af07-leak; do
+  pauth -fsS -X POST -H 'Content-Type: application/json' \
+    -d "{\"project\":\"$P\",\"confirm\":true}" \
+    http://127.0.0.1:8580/api/factory/delete -o /dev/null 2>/dev/null
+  rm -f "$ROOT"/exports/${P}-*.zip "$ROOT"/exports/${P}-release-*.zip 2>/dev/null
+  rm -rf "$ROOT/backups/$P" 2>/dev/null
+done
+checkeq "F پاک‌سازی پروژه‌های آزمایشی" "0" \
+  "$([ ! -d "$ROOT/projects/af07-clean" ] && [ ! -d "$ROOT/projects/af07-leak" ] && echo 0 || echo 1)"
+checkeq "F پاک‌سازی zipهای همین مأموریت" "OK" \
+  "$(ls "$ROOT"/exports/af07-*.zip 2>/dev/null | head -1 | grep -q . && echo LEFT || echo OK)"
+
+if bash "$ROOT/scripts/ai-factory-test-af061" >"$TMP/af07-af061.log" 2>&1 && grep -q "PASS=7 FAIL=0" "$TMP/af07-af061.log"; then
+  PASS=$((PASS+1)); echo "✅ رگرسیون ai-factory-test-af061 → 7/0"
+else
+  FAIL=$((FAIL+1)); echo "❌ رگرسیون ai-factory-test-af061 (see $TMP/af07-af061.log)"
+fi
+if bash "$ROOT/scripts/ai-factory-test-af062" >"$TMP/af07-af062.log" 2>&1 && grep -q "PASS=18 FAIL=0" "$TMP/af07-af062.log"; then
+  PASS=$((PASS+1)); echo "✅ رگرسیون ai-factory-test-af062 → 18/0"
+else
+  FAIL=$((FAIL+1)); echo "❌ رگرسیون ai-factory-test-af062 (see $TMP/af07-af062.log)"
+fi
+
+echo
+echo "════════ AF-07 RESULT ════════"
+if [ "$FAIL" = "0" ]; then
+  echo "✅ RESULT: PASS=$PASS FAIL=$FAIL — ALL GREEN"
+  exit 0
+else
+  echo "❌ RESULT: PASS=$PASS FAIL=$FAIL"
+  exit 1
+fi

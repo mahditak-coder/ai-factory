@@ -1,0 +1,477 @@
+[
+ {
+  "role": "product-architect",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T06:42:07",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/product-brief.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "software-architect",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T06:43:16",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/architecture.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "game-designer",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T06:44:16",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/game-design.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "ui-ux-designer",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T06:47:17",
+  "artifact_count": 2,
+  "artifact_paths": [
+   "spec/design-spec.md",
+   "spec/wireframe.html"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "visual-artist",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T06:49:29",
+  "artifact_count": 2,
+  "artifact_paths": [
+   "spec/art-direction.md",
+   "spec/asset-manifest.json"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "audio-designer",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T06:49:56",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/audio-spec.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "developer",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T06:56:07",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "src/game.py"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "qa-engineer",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T06:56:07",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/test-report.md"
+  ],
+  "evidence_keys": [
+   "checks"
+  ],
+  "note": "independent tool execution"
+ },
+ {
+  "role": "security-reviewer",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T06:58:04",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/security-report.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "product-architect",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T11:56:03",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/product-brief.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "product-director",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T12:26:19",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/product-brief.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "product-director",
+  "status": "PASS",
+  "version": 2,
+  "at": "2026-11-26T12:56:31",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/product-brief.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "product-director",
+  "status": "PASS",
+  "version": 3,
+  "at": "2026-11-26T13:10:00",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/product-brief.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "game-designer-gdd",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T13:25:46",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/game-design.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "game-designer-gdd",
+  "status": "PASS",
+  "version": 2,
+  "at": "2026-11-26T13:43:08",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/game-design.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "game-designer-gdd",
+  "status": "PASS",
+  "version": 3,
+  "at": "2026-11-26T13:56:26",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/game-design.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "game-designer-gdd",
+  "status": "FAIL",
+  "version": 4,
+  "at": "2026-11-26T15:04:33",
+  "artifact_count": 0,
+  "artifact_paths": [],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "game-designer-gdd",
+  "status": "PASS",
+  "version": 5,
+  "at": "2026-11-26T15:18:07",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/game-design.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "game-designer-gdd",
+  "status": "PASS",
+  "version": 6,
+  "at": "2026-11-26T15:40:21",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/game-design.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "art-director",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T15:53:13",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/art-direction.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "art-director",
+  "status": "PASS",
+  "version": 2,
+  "at": "2026-11-26T17:24:25",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/art-direction.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "art-director",
+  "status": "FAIL",
+  "version": 3,
+  "at": "2026-11-26T22:20:30",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/art-direction.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": "spec/art-direction.md:بخش اجباریmissing: ## Palette"
+ },
+ {
+  "role": "art-director",
+  "status": "PASS",
+  "version": 4,
+  "at": "2026-11-26T22:22:18",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/art-direction.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "art-director",
+  "status": "PASS",
+  "version": 5,
+  "at": "2026-11-26T22:27:18",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/art-direction.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "art-director",
+  "status": "PASS",
+  "version": 6,
+  "at": "2026-11-26T23:29:06",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/art-direction.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "art-director",
+  "status": "PASS",
+  "version": 7,
+  "at": "2026-11-26T23:36:20",
+  "artifact_count": 1,
+  "artifact_paths": [
+   "spec/art-direction.md"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "character-artist",
+  "status": "PASS",
+  "version": 1,
+  "at": "2026-11-26T23:55:51",
+  "artifact_count": 2,
+  "artifact_paths": [
+   "spec/character-bible.md",
+   "spec/character-sheet.svg"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": ""
+ },
+ {
+  "role": "character-artist",
+  "status": "FAIL",
+  "version": 2,
+  "at": "2026-11-27T00:10:32",
+  "artifact_count": 2,
+  "artifact_paths": [
+   "spec/character-bible.md",
+   "spec/character-sheet.svg"
+  ],
+  "evidence_keys": [
+   "message_id",
+   "model",
+   "scopes",
+   "session_id"
+  ],
+  "note": "spec/character-bible.md:بخش اجباریmissing: ## Identity; spec/character-sheet.svg:SVG معتبر یافت نشد"
+ }
+]

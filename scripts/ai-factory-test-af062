@@ -1,0 +1,368 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af062 — AF-06.2: انتقال عامل انتخابی UI تا payload مدل
+# بخش A: اجرای واقعی dashboard/factory.js در node (مسیر UI → body درخواست)
+# بخش B: مسیر کامل endpoint پنل واقعی → factory → memory → payload با
+#        OpenCode ماک محلی + فروشگاه حافظه ایزوله — بدون API واقعی و بدون
+#        دست‌زدن به data/memory.json واقعی
+# بخش C: رگرسیون AF-06.1 و Workspace
+# Run: bash scripts/ai-factory-test-af062
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+mkdir -p "$TMP"
+PASS=0; FAIL=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+
+echo "== 0) syntax =="
+for f in core/server.py; do
+  if python3 -m py_compile "$ROOT/$f" 2>/dev/null; then PASS=$((PASS+1)); echo "✅ py_compile $f";
+  else FAIL=$((FAIL+1)); echo "❌ py_compile $f"; fi
+done
+if node --check "$ROOT/dashboard/factory.js" 2>/dev/null; then PASS=$((PASS+1)); echo "✅ node --check factory.js";
+else FAIL=$((FAIL+1)); echo "❌ node --check factory.js"; fi
+
+echo "== A) اجرای واقعی UI JS: انتخاب عامل → body درخواست =="
+OUT=$(node - <<'JSEOF'
+const fs = require("fs"), vm = require("vm");
+const listeners = {};
+const store = Object.create(null);
+function makeEl(sel) {
+  return { _sel: sel, value: "", textContent: "", className: "", innerHTML: "",
+    classList: { add(){}, remove(){}, toggle(){} },
+    addEventListener(type, fn) { listeners[sel + "|" + type] = fn; },
+    appendChild(){}, focus(){}, disabled: false, style: {} };
+}
+global.document = { querySelector: (s) => (store[s] ??= makeEl(s)),
+  querySelectorAll: () => [], addEventListener: () => {} };
+global.window = { confirm: () => true, addEventListener: () => {} };
+global.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+global.location = { pathname: "/", search: "" };
+const captured = [];
+global.fetch = async (url, opts = {}) => {
+  captured.push({ url, opts });
+  return { ok: true, json: async () => ({ ok: true, session_id: "sess-x", message_id: "m1",
+    types: [], projects: [], has_plan: true, plan: "p", errors: [], cycles: [],
+    fixed: true, checked: {js:0,py:0,json:0,html:0}, not_checked_kinds: [],
+    backup: "b", result: null,
+    agents: [{name:"builder",enabled:true},{name:"qa",enabled:true},
+             {name:"planner",enabled:true}] }) };
+};
+vm.runInThisContext(fs.readFileSync("dashboard/factory.js", "utf8"),
+                    { filename: "factory.js" });
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+async function main() {
+  await sleep(300);
+  const a = (c, why) => { if (!c) { console.log("FAIL:", why); process.exit(1); } };
+  // JA1: پر شدن selectها از /api/agents (فقط عامل‌های فعال)
+  const pl = document.querySelector("#plAgent"), ck = document.querySelector("#ckAgent");
+  a(pl.innerHTML.includes("builder") && pl.innerHTML.includes("qa"),
+    "agent options not populated");
+  // JA2: انتخاب عامل A در UI → plan
+  document.querySelector("#plProj").value = "af02-android-test";
+  document.querySelector("#plGoal").value = "هدف آزمایشی";
+  document.querySelector("#plAgent").value = "builder";
+  await listeners["#btnPlan|click"](); await sleep(100);
+  const planBodies = () => captured.filter(c => c.url === "/api/factory/plan" && c.opts.body)
+    .map(c => JSON.parse(c.opts.body));
+  a(planBodies().at(-1).agent === "builder", "plan body agent != builder");
+  // JA3: انتخاب عامل B → plan
+  document.querySelector("#plAgent").value = "qa";
+  await listeners["#btnPlan|click"](); await sleep(100);
+  a(planBodies().at(-1).agent === "qa", "plan body agent != qa");
+  // JA4: عامل انتخابی → fix
+  document.querySelector("#ckProj").value = "af02-android-test";
+  document.querySelector("#ckAgent").value = "qa";
+  await listeners["#btnFix|click"](); await sleep(100);
+  const fixBodies = captured.filter(c => c.url === "/api/factory/fix" && c.opts.body)
+    .map(c => JSON.parse(c.opts.body));
+  a(fixBodies.length >= 1 && fixBodies.at(-1).agent === "qa", "fix body agent != qa");
+  // JA5: بدون انتخاب → رفتار قبلی (agent خالی = بدون عامل)
+  document.querySelector("#plAgent").value = "";
+  await listeners["#btnPlan|click"](); await sleep(100);
+  a(planBodies().at(-1).agent === "", "no-selection must send empty agent");
+  console.log("OK");
+  process.exit(0);   // factory.js setInterval را زنده نگه می‌دارد — خروج صریح
+}
+main().catch(e => { console.log("EXC:", e.message); process.exit(1); });
+JSEOF
+); check "A1-A5 UI→body: populate/A→plan/B→plan/fix/بدون-انتخاب" "$OUT"
+
+echo "== B) مسیر کامل endpoint→factory→memory→payload (پنل واقعی + ماک) =="
+# B-0: فروشگاه حافظه ایزوله با رکوردهای عامل/پروژه
+ISOMEM="$TMP/af062-memory.json"
+python3 - <<'EOF'
+import sys, pathlib, tempfile
+sys.path.insert(0, ".")
+import core.memory as memory
+p = pathlib.Path("/data/data/com.termux/files/usr/tmp/opencode/af062-memory.json")
+if p.exists(): p.unlink()
+memory._STORE = p
+memory.set_value("project:af02-android-test", "proj_rule", "قاعدهٔ پروژهٔ آزمایشی AF062")
+memory.set_value("project:دستیار", "fa_rule", "قاعدهٔ پروژهٔ دستیار — نباید نشت کند")
+memory.set_value("agent:builder", "b_rule", "قاعدهٔ اختصاصی عامل builder")
+memory.set_value("agent:qa", "q_rule", "قاعدهٔ اختصاصی عامل qa")
+print("isolated store ready:", p, "| mode:", oct(p.stat().st_mode & 0o777))
+EOF
+# B-1: پروژهٔ موقت اصلاح با خطای سینتکس (ساختهٔ خود این آزمون — در پایان حذف می‌شود)
+FIXPROJ="$ROOT/projects/af062-fixtmp"
+mkdir -p "$FIXPROJ"
+printf 'def broken(:\n    pass\n' > "$FIXPROJ/broken.py"
+PAYLOADS="$TMP/af062-payloads.jsonl"; : > "$PAYLOADS"
+# B-2: ماک OpenCode روی پورت آزاد (خودکفا — فایل ماک در همین سوئیت ساخته می‌شود)
+cat > "$TMP/af062-mock-oc.py" <<'MOCKEOF'
+#!/usr/bin/env python3
+"""Mock OpenCode server for AF-06.2 endpoint tests (local only).
+Usage: python3 mock_oc.py <payloads.jsonl> <port> <dirs-json>
+Captures every POST /prompt body into the payloads file (one JSON per line)."""
+import json
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+PAYLOADS = Path(sys.argv[1])
+PORT = int(sys.argv[2])
+DIRS = json.loads(sys.argv[3])          # pre-seeded sid -> directory
+
+lock = threading.Lock()
+dir_by_sid = dict(DIRS)
+counter = [0]
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+
+    def _send(self, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def do_GET(self):
+        p = self.path
+        if p == "/api/info":
+            self._send({"ok": True})                       # ensure_running
+        elif "/message" in p:
+            rec = dir_by_sid.get("_last_prompt", {})
+            ts = rec.get("created") or time.time()
+            self._send({"data": [
+                {"type": "idle", "id": "idle-1", "time": {"created": ts + 10}},
+                {"type": "user", "id": rec.get("id", "none"),
+                 "time": {"created": ts}}]})
+        elif p.startswith("/api/session/"):
+            sid = p.split("/api/session/")[1].split("?")[0]
+            self._send({"data": {"location": {"directory": dir_by_sid.get(sid, "")}}})
+        elif p.startswith("/api/session"):
+            self._send({"data": [
+                {"id": "sess-gen-f1", "title": "🏭 تولید — af062",
+                 "location": {"directory": dir_by_sid.get("sess-gen-f1", "")},
+                 "time": {}}]})
+        else:
+            self._send({})
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(n)
+        if self.path.endswith("/prompt"):
+            body = json.loads(raw.decode())
+            counter[0] += 1
+            mid = f"msg-u-{counter[0]}"
+            with lock:
+                dir_by_sid["_last_prompt"] = {"id": mid, "created": time.time()}
+                with PAYLOADS.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sid": self.path,
+                                        "text": body.get("text", "")},
+                                       ensure_ascii=False) + "\n")
+            self._send({"data": {"id": mid}})
+        else:                                              # create session
+            body = json.loads(raw.decode()) if raw else {}
+            d = (body.get("location") or {}).get("directory") or ""
+            counter[0] += 1
+            sid = f"sess-new-{counter[0]}"
+            dir_by_sid[sid] = d
+            self._send({"data": {"id": sid, "location": {"directory": d}}})
+
+
+ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+MOCKEOF
+MOCKPORT=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
+SEEDS=$(python3 -c "import json;print(json.dumps({'sess-gen-f1': '$FIXPROJ'}))")
+setsid nohup python3 "$TMP/af062-mock-oc.py" "$PAYLOADS" "$MOCKPORT" "$SEEDS" \
+  >"$TMP/af062-mock.log" 2>&1 &
+MOCKPID=$!
+sleep 1
+curl -fsS "http://127.0.0.1:$MOCKPORT/api/info" >/dev/null || { echo "mock not up"; cat "$TMP/af062-mock.log"; exit 1; }
+# B-3: restart کنترل‌شدهٔ پنل با wrapper (OC_BASE_URL→ماک، memory._STORE→ایزوله)
+bash scripts/ai-factory-stop >/dev/null 2>&1
+sleep 2
+cat > "$TMP/af062-server-wrapper.py" <<PYEOF
+import os, sys, runpy
+ROOT = "$ROOT"
+sys.path.insert(0, ROOT)
+os.chdir(ROOT)
+import core.config as config
+config.OC_BASE_URL = "http://127.0.0.1:$MOCKPORT"
+import core.memory as memory
+memory._STORE = __import__("pathlib").Path("$ISOMEM")
+runpy.run_path(os.path.join(ROOT, "core", "server.py"), run_name="__main__")
+PYEOF
+setsid nohup python3 "$TMP/af062-server-wrapper.py" >> "$TMP/af062-wrapper.log" 2>&1 &
+WRAPPERPID=$!
+for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:8580/api/health >/dev/null 2>&1 && break; sleep 0.5; done
+curl -fsS http://127.0.0.1:8580/api/health >/dev/null || { echo "panel wrapper not up"; exit 1; }
+# B-4: ورود واقعی
+. scripts/ai-factory-panel-login http://127.0.0.1:8580
+
+pcount() { [ -f "$PAYLOADS" ] && wc -l < "$PAYLOADS" || echo 0; }
+
+# B-T1: plan با عامل builder → payload
+OUT=$(pauth -fsS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af02-android-test","goal":"یک صفحهٔ تماس ساده بساز","agent":"builder"}' \
+  http://127.0.0.1:8580/api/factory/plan -o /dev/null -w '%{http_code}')
+checkeq "B-T1 plan با عامل builder → 200" "200" "$OUT"
+OUT=$(python3 - <<'EOF'
+import json, time, pathlib
+p = pathlib.Path("/data/data/com.termux/files/usr/tmp/opencode/af062-payloads.jsonl")
+for _ in range(20):
+    lines = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+    if lines: break
+    time.sleep(0.5)
+assert lines, "no payload captured"
+t = lines[-1]["text"]
+assert "[agent builder]" in t and "قاعدهٔ اختصاصی عامل builder" in t, "agent memory missing"
+assert "قاعدهٔ پروژهٔ آزمایشی AF062" in t and "[project af02-android-test]" in t, "project memory missing"
+assert "قاعدهٔ اختصاصی عامل qa" not in t, "LEAK: qa agent memory"
+assert "قاعدهٔ پروژهٔ دستیار" not in t, "LEAK: دستیار memory"
+assert "[agent qa]" not in t and "[project دستیار]" not in t, "LEAK labels"
+print("OK")
+EOF
+); check "B-T1 payload: حافظهٔ builder+پروژه، بدون نشت qa/دستیار" "$OUT"
+
+# B-T2: plan با عامل qa → payload
+OUT=$(pauth -fsS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af02-android-test","goal":"یک صفحهٔ تماس ساده بساز","agent":"qa"}' \
+  http://127.0.0.1:8580/api/factory/plan -o /dev/null -w '%{http_code}')
+checkeq "B-T2 plan با عامل qa → 200" "200" "$OUT"
+OUT=$(python3 - <<'EOF'
+import json, pathlib
+p = pathlib.Path("/data/data/com.termux/files/usr/tmp/opencode/af062-payloads.jsonl")
+lines = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+t = lines[-1]["text"]
+assert "[agent qa]" in t and "قاعدهٔ اختصاصی عامل qa" in t, "qa memory missing"
+assert "قاعدهٔ اختصاصی عامل builder" not in t, "LEAK: builder memory into qa plan"
+print("OK")
+EOF
+); check "B-T2 payload: حافظهٔ qa، بدون حافظهٔ builder" "$OUT"
+
+# B-T3: plan بدون عامل → رفتار قبلی
+OUT=$(pauth -fsS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af02-android-test","goal":"یک صفحهٔ تماس ساده بساز"}' \
+  http://127.0.0.1:8580/api/factory/plan -o /dev/null -w '%{http_code}')
+checkeq "B-T3 plan بدون عامل → 200" "200" "$OUT"
+OUT=$(python3 - <<'EOF'
+import json, pathlib
+p = pathlib.Path("/data/data/com.termux/files/usr/tmp/opencode/af062-payloads.jsonl")
+lines = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+t = lines[-1]["text"]
+assert "[agent" not in t, "agent memory injected without agent selection"
+assert "[project af02-android-test]" in t, "AF-06 project injection must remain"
+print("OK")
+EOF
+); check "B-T3 بدون عامل: بدون حافظهٔ عاملی، تزریق پروژه حفظ شده" "$OUT"
+
+# B-T4: عامل ناموجود در رجیستری → رد در سرور، بدون prompt
+N0=$(pcount)
+OUT=$(pauth -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af02-android-test","goal":"یک صفحهٔ تماس ساده بساز","agent":"ghost-agent"}' \
+  http://127.0.0.1:8580/api/factory/plan -o /dev/null -w '%{http_code}')
+checkeq "B-T4 عامل نامعتبر → رد (404)" "404" "$OUT"
+check "B-T4 بدون prompt اضافه" "$( [ "$(pcount)" = "$N0" ] && echo OK || echo NO )" "OK"
+OUT=$(pauth -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af02-android-test","goal":"یک صفحهٔ تماس ساده بساز","agent":"ghost-agent"}' \
+  http://127.0.0.1:8580/api/factory/plan | python3 -c "import json,sys;print(json.load(sys.stdin).get('message','')[:30])")
+echo "   ↳ پیام سرور: $OUT"
+
+# B-T5: fix با عامل builder روی پروژهٔ موقت دارای خطای سینتکس → payload
+FIXPROJNAME="af062-fixtmp"
+OUT=$(pauth -fsS -X POST -H 'Content-Type: application/json' \
+  -d "{\"project\":\"$FIXPROJNAME\",\"attempts\":2,\"agent\":\"builder\"}" \
+  http://127.0.0.1:8580/api/factory/fix -o /dev/null -w '%{http_code}')
+checkeq "B-T5 fix با عامل builder → 200" "200" "$OUT"
+OUT=$(python3 - <<'EOF'
+import json, pathlib
+p = pathlib.Path("/data/data/com.termux/files/usr/tmp/opencode/af062-payloads.jsonl")
+lines = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+fixes = [l for l in lines if "بررسی خودکار خطا یافت کرد" in l["text"]]
+assert fixes, "no fix prompt captured"
+t = fixes[-1]["text"]
+assert "[agent builder]" in t and "قاعدهٔ اختصاصی عامل builder" in t, \
+    "agent memory missing in fix payload"
+assert "قاعدهٔ اختصاصی عامل qa" not in t, "LEAK: qa memory in fix"
+assert "قاعدهٔ پروژهٔ دستیار" not in t, "LEAK: دستیار memory in fix"
+assert "broken.py" in t, "fix instruction (errors) must stay intact"
+print("OK")
+EOF
+); check "B-T5 payload fix: حافظهٔ builder، بدون نشت، دستور اصلاح سالم" "$OUT"
+
+# B-T6: عامل غیرفعال — آزمون واحد منطق اعتبارسنجی سرور (بدون دست‌کاری رجیستری واقعی)
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import sys
+sys.path.insert(0, ".")
+from core import agents as agentsmod
+real_get = agentsmod.get_agent
+def fake_get(name):
+    return {"name": name, "enabled": False}
+agentsmod.get_agent = fake_get
+import core.server as srv
+try:
+    agent, err = srv.Handler._valid_agent_or_none(None, "builder")
+finally:
+    agentsmod.get_agent = real_get
+assert agent is None and err and err[0] == 400 and "غیرفعال" in err[1], f"got {agent}, {err}"
+print("OK")
+EOF
+); check "B-T6 عامل غیرفعال → 400 با پیام فارسی" "$OUT"
+
+# B-7: بازگردانی پنل واقعی و پاک‌سازی
+kill "$MOCKPID" 2>/dev/null
+kill "$WRAPPERPID" 2>/dev/null; sleep 1; kill -9 "$WRAPPERPID" 2>/dev/null
+bash scripts/ai-factory-stop >/dev/null 2>&1
+sleep 2
+bash scripts/ai-factory-start >/dev/null 2>&1
+sleep 2
+OUT=$(curl -fsS http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK)
+checkeq "بازگردانی پنل واقعی (health)" "OK" "$OUT"
+SPID=$(cat "$ROOT/logs/server.pid" 2>/dev/null)
+SCMD=$(tr '\0' ' ' < "/proc/$SPID/cmdline" 2>/dev/null)
+checkeq "پنل واقعی (نه wrapper) در حال سرویس" "core/server.py" \
+  "$(echo "$SCMD" | grep -o 'core/server.py' | head -1)"
+rm -rf "$FIXPROJ" "$ROOT/backups/af062-fixtmp" 2>/dev/null
+[ -d "$FIXPROJ" ] || echo "   ↳ پروژهٔ موقت اصلاح پاک‌سازی شد"
+
+echo "== C) رگرسیون =="
+if bash "$ROOT/scripts/ai-factory-test-af061" >"$TMP/af061-reg.log" 2>&1 && grep -q "PASS=7 FAIL=0" "$TMP/af061-reg.log"; then
+  PASS=$((PASS+1)); echo "✅ ai-factory-test-af061 → 7/0"
+else
+  FAIL=$((FAIL+1)); echo "❌ ai-factory-test-af061 (see $TMP/af061-reg.log)"
+fi
+if bash "$ROOT/scripts/ai-factory-test-workspace" >"$TMP/ws-reg.log" 2>&1 && grep -q "PASS=48 FAIL=0" "$TMP/ws-reg.log"; then
+  PASS=$((PASS+1)); echo "✅ ai-factory-test-workspace → 48/0"
+else
+  FAIL=$((FAIL+1)); echo "❌ ai-factory-test-workspace (see $TMP/ws-reg.log)"
+fi
+
+echo
+echo "════════ AF-06.2 RESULT ════════"
+if [ "$FAIL" = "0" ]; then
+  echo "✅ RESULT: PASS=$PASS FAIL=$FAIL — ALL GREEN"
+  exit 0
+else
+  echo "❌ RESULT: PASS=$PASS FAIL=$FAIL"
+  exit 1
+fi

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Workspace — AI Factory</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="workspace.css">
+<link rel="stylesheet" href="design.css">
+</head>
+<body class="ws">
+
+<nav class="ws-topnav">
+  <div class="af-nav" role="navigation" aria-label="ناوبری اصلی">
+  <span class="af-brandmark">AI Factory</span>
+  <a href="/" data-page="/">🏠 خانه</a>
+  <a href="/workspace.html" data-page="workspace">💬 Workspace</a>
+  <a href="/factory.html" data-page="deliver">📦 تحویل</a>
+  <a href="/workflow.html" data-page="workflow">🎬 استودیو</a>
+  <button class="af-theme" type="button" title="تغییر حالت روشن/تاریک" aria-label="تغییر تم">🌙</button>
+</div>
+</nav>
+
+<!-- ═══ نوار بالایی: وضعیت همیشه‌نمایان ═══ -->
+<header class="ws-topbar">
+  <h1>🤖 AI Workspace</h1>
+  <div class="ws-pills">
+    <span id="ocBadge" class="wspill st-off" title="وضعیت اتصال OpenCode">⬤ در حال بررسی…</span>
+    <span id="versBadge" class="wspill ver" title="نسخه واقعی AI Factory (از /api/health)">v —</span>
+    <span id="modelBadge" class="wspill model" title="مدل فعال">مدل: —</span>
+    <span id="sesBadge" class="wspill st-idle" title="وضعیت نشست فعال">آماده</span>
+  </div>
+</header>
+
+<!-- ═══ نوار وضعیت دقیق عملیات ═══ -->
+<section class="ws-statuscard" id="statusCard">
+  <div class="ws-statusrow">
+    <span id="statePill" class="wspill st-idle">● آماده</span>
+    <span id="elapsed" class="ws-stime" hidden>⏱ ۰ ثانیه</span>
+    <span id="lastAct" class="ws-astime">آخرین فعالیت: —</span>
+    <button id="btnAbort" disabled class="btn small danger" title="فقط در حین اجرای واقعی فعال می‌شود">⏹ لغو عملیات</button>
+  </div>
+  <div id="stallWarn" class="ws-warnrow" hidden></div>
+  <div id="detailBar" class="ws-detail" hidden></div>
+  <div id="permBar" class="ws-permbar" hidden></div>
+  <div id="errBar" class="ws-errbar" hidden></div>
+</section>
+
+<main class="ws-main">
+
+  <!-- ═══ تنظیمات پروژه ═══ -->
+  <section class="wscard" id="cfgCard">
+    <details id="cfgDetails" open>
+      <summary class="ws-summary">⚙️ پروژه، مدل و تنظیمات <span class="muted">برای تغییر بزنید</span></summary>
+    <div class="ws-row">
+      <label class="ws-lb" for="projSel">پروژه</label>
+      <select id="projSel"></select>
+      <button id="btnNewProj" class="btn small ghost">+ پروژه</button>
+    </div>
+    <div class="ws-row">
+      <label class="ws-lb" for="provSel">Provider</label>
+      <select id="provSel"></select>
+      <button id="btnTestModel" class="btn small ghost" title="درخواست کم‌هزینهٔ واقعی برای سنجش اتصال">🧪 تست اتصال</button>
+    </div>
+    <div class="ws-row">
+      <label class="ws-lb" for="modelSel">مدل</label>
+      <select id="modelSel"></select>
+      <select id="modelVariant" hidden></select>
+    </div>
+    <div class="ws-row">
+      <label class="ws-lb" for="reasonSel" title="میزان تفکر مدل — متناسب با واقعیت مدل انتخابی">تفکر</label>
+      <select id="reasonSel">
+        <option value="auto">خودکار</option>
+        <option value="low">کم</option>
+        <option value="medium">متوسط</option>
+        <option value="high">زیاد</option>
+        <option value="maximum">حداکثر</option>
+      </select>
+      <span id="reasonBadge" class="wspill ver" title="سازگاری سطح تفکر با مدل">—</span>
+    </div>
+    <div id="reasonInfo" class="ws-note">سطح تفکر پیش از آغاز مأموریت روی نشست اعمال میشود.</div>
+    <div id="modelInfo" class="ws-note">—</div>
+    <div id="testResult" class="ws-note" hidden></div>
+    <div class="ws-row">
+      <label class="ws-lb" for="sessSel">نشست</label>
+      <select id="sessSel"></select>
+      <button id="btnNew" class="btn small ghost">+ نشست</button>
+      <button id="btnHistory" class="btn small ghost">تاریخچه</button>
+    </div>
+    </details>
+  </section>
+
+  <!-- ═══ گفتگو ═══ -->
+  <section class="wscard" id="chatCard">
+    <h2>💬 گفتگوی مدل</h2>
+    <div id="chat" class="ws-chat"><div class="info">پروژه و نشست را انتخاب کنید…</div></div>
+    <form id="msgForm" class="ws-composer">
+      <textarea id="msgInput" rows="2" placeholder="پیام خود را بنویسید… (Enter = ارسال، Shift+Enter = خط جدید)"></textarea>
+      <button type="submit" class="btn" id="btnSend">ارسال</button>
+    </form>
+    <div id="usage" class="ws-usage"></div>
+  </section>
+
+  <!-- ═══ مرکز تعامل زنده ═══ -->
+  <section class="wscard" id="interactCard">
+    <h2>🔔 مرکز تصمیم <span id="askCount" class="wspill st-idle">۰</span></h2>
+    <div class="ws-row">
+      <label class="ws-lb"><input type="checkbox" id="askScope" checked> فقط همین پروژه</label>
+      <button id="btnArchiveOld" class="btn small ghost" type="button">بایگانی درخواستهای قدیمی</button>
+    </div>
+    <div id="interactList" class="ws-interactions"><div class="af-empty">در حال حاضر تصمیمی از طرف شما لازم نیست.</div></div>
+  </section>
+
+  <!-- ═══ ابزارهای پروژه ═══ -->
+  <section class="wscard" id="toolsCard">
+    <h2>🧰 ابزارهای پروژه</h2>
+    <div class="ws-tabs" id="toolTabs">
+      <button class="wtab active" data-t="files">فایل‌ها</button>
+      <button class="wtab" data-t="edit">ویرایش</button>
+      <button class="wtab" data-t="logs">لاگ‌ها</button>
+      <button class="wtab" data-t="run">اجرا</button>
+      <button class="wtab" data-t="preview">پیش‌نمایش</button>
+      <button class="wtab" data-t="tests">آزمون</button>
+      <button class="wtab" data-t="zip">ZIP</button>
+    </div>
+
+    <div class="wtabpane" id="tp-files">
+      <div class="ws-row">
+        <button id="btnRefreshFiles" class="btn small ghost">♻️ بازخوانی</button>
+        <span id="filesNote" class="ws-note"></span>
+      </div>
+      <ul id="fileList" class="ws-filelist"></ul>
+      <div class="ws-row" style="margin-top:.5rem">
+        <input id="newFileRel" placeholder="فایل جدید (مثلاً web/about.html)" style="flex:1">
+        <button id="btnNewFile" class="btn small ghost">＋ ایجاد</button>
+      </div>
+    </div>
+
+    <div class="wtabpane" id="tp-edit" hidden>
+      <div class="ws-row">
+        <input id="editPath" placeholder="مسیر فایل (مثلاً ui/index.html)" style="flex:1">
+        <button id="btnEditLoad" class="btn small">خواندن</button>
+        <button id="btnEditSave" class="btn small">💾 ذخیره</button>
+      </div>
+      <textarea id="editor" spellcheck="false"></textarea>
+      <div id="editMsg" class="ws-note"></div>
+    </div>
+
+    <div class="wtabpane" id="tp-logs" hidden>
+      <div class="ws-row">
+        <button class="btn small ghost" id="btnLogServer" data-w="server">سرور</button>
+        <button class="btn small ghost" id="btnLogError" data-w="error">خطاها</button>
+        <button class="btn small ghost" id="btnLogRun">اجرای پروژه</button>
+        <button id="btnLogRefresh" class="btn small ghost">♻️</button>
+      </div>
+      <pre id="logsBox">—</pre>
+      <div class="ws-row" style="margin-top:.5rem">
+        <button id="btnLogCopy" class="btn small ghost">📋 کپی خطا/خروجی</button>
+        <button id="btnLogToOC" class="btn small ghost">🧩 ارسال به OpenCode…</button>
+        <span id="logActMsg" class="ws-note"></span>
+      </div>
+    </div>
+
+    <div class="wtabpane" id="tp-run" hidden>
+      <div class="ws-row">
+        <button id="btnRunStart" class="btn small">▶️ اجرا</button>
+        <button id="btnRunStop" class="btn small danger">⏹ توقف</button>
+        <a id="btnPreview" class="btn small ghost" target="_blank" rel="noopener">🌐 پیش‌نمایش</a>
+      </div>
+      <div id="runStatus" class="ws-note">برای وضعیت، دکمه اجرا یا بازخوانی وضعیت را بزنید.</div>
+      <div id="runLog" class="ws-plain" hidden></div>
+    </div>
+
+    <div class="wtabpane" id="tp-preview" hidden>
+      <div class="ws-row">
+        <button id="btnPrevRefresh" class="btn small ghost">♻️ بازخوانی</button>
+        <button id="btnPrevStart" class="btn small">▶️ اجرای پروژه</button>
+        <a id="btnPrevNewTab" class="btn small ghost" target="_blank" rel="noopener">↗ تب جدید</a>
+      </div>
+      <div id="prevNote" class="ws-note">ابتدا پروژه را اجرا کنید؛ سپس نمای زندهٔ همین‌جا نمایش داده می‌شود.</div>
+      <iframe id="prevFrame" class="ws-preview" hidden title="پیش‌نمایش زندهٔ پروژه"
+              sandbox="allow-scripts allow-forms allow-same-origin"
+              referrerpolicy="no-referrer"></iframe>
+    </div>
+
+    <div class="wtabpane" id="tp-tests" hidden>
+      <div class="ws-row">
+        <button id="btnTests" class="btn small">🧪 اجرای آزمون‌های پروژه</button>
+        <button id="btnDeps" class="btn small ghost">📦 نصب وابستگی‌ها</button>
+      </div>
+      <pre id="testOut" class="ws-plain">—</pre>
+    </div>
+
+    <div class="wtabpane" id="tp-zip" hidden>
+      <div class="ws-row">
+        <button id="btnZip" class="btn small">📦 ساخت ZIP</button>
+      </div>
+      <div id="zipOut" class="ws-note">—</div>
+    </div>
+  </section>
+</main>
+
+<footer>AI Factory <span class="af-version">—</span> · AI Workspace · فقط localhost</footer>
+
+<script src="design.js"></script>
+<script src="/panel.js"></script>
+<script src="/static/msgtime.js"></script>
+<script src="work.js"></script>
+</body>
+</html>

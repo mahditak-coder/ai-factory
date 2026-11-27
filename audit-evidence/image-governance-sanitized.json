@@ -1,0 +1,11 @@
+{
+ "approval_count": 19,
+ "approval_decisions": {
+  "approved": 19
+ },
+ "usage_count": 18,
+ "total_cost_usd": 0.0,
+ "models": [
+  "recraft/recraft-v4.1-flash-v2:free"
+ ]
+}

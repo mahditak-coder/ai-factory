@@ -1,0 +1,238 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af061 — AF-06.1: namespace فارسی + انتقال عامل در plan/fix
+# همهٔ داده‌ها ایزوله (patch memory._STORE به tmp)؛ اثبات payload با ماک HTTP
+# محلی روی پورت آزاد — هیچ API واقعی مصرف نمی‌شود و هیچ دست‌زدنی به
+# data/memory.json واقعی یا پروژه‌های مستقل انجام نمی‌شود.
+# Run: bash scripts/ai-factory-test-af061
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+mkdir -p "$TMP"
+PASS=0; FAIL=0
+
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+
+echo "== 0) py_compile ماژول‌های تغییرکرده =="
+for f in core/memory.py core/factory.py core/server.py core/orchestrator.py; do
+  if python3 -m py_compile "$ROOT/$f" 2>/dev/null; then PASS=$((PASS+1)); echo "✅ py_compile $f";
+  else FAIL=$((FAIL+1)); echo "❌ py_compile $f"; fi
+done
+
+echo "== 1-5) namespace: فارسی/انگلیسی/ترکیبی/جداسازی/سازگاری =="
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import sys, tempfile, pathlib
+sys.path.insert(0, ".")
+import core.memory as memory
+from core.memory import build_context, MemoryError
+
+memory._STORE = pathlib.Path(tempfile.mkdtemp(
+    dir="/data/data/com.termux/files/usr/tmp/opencode")) / "memory.json"
+
+# T1: نام کاملاً فارسی (با فاصله — مثل پروژهٔ واقعی «معلم من»)
+memory.set_value("project:معلم من", "سیاست", "پاسخ‌ها همیشه فارسی باشند")
+c = build_context("معلم من")
+assert "پاسخ‌ها همیشه فارسی باشند" in c, "persian record missing"
+assert "[project معلم من]" in c, "persian label missing"
+
+# T1b: پروژهٔ واقعی موجود «دستیار»
+memory.set_value("project:دستیار", "قاعده", "فقط ابزارهای داخلی")
+assert "فقط ابزارهای داخلی" in build_context("دستیار")
+
+# T2: نام انگلیسی
+memory.set_value("project:proj-en", "rule", "keep builds small")
+assert "keep builds small" in build_context("proj-en")
+
+# T3: نام ترکیبی فارسی-انگلیسی
+memory.set_value("project:af-دستیار", "rule", "مخلوط")
+assert "مخلوط" in build_context("af-دستیار")
+
+# T4: جداسازی دو پروژهٔ فارسی متفاوت
+ca = build_context("معلم من")
+assert "فقط ابزارهای داخلی" not in ca, "LEAK دستیار→معلم من"
+assert "keep builds small" not in ca, "LEAK en→fa"
+cb = build_context("دستیار")
+assert "پاسخ‌ها همیشه فارسی" not in cb, "LEAK معلم من→دستیار"
+assert "مخلوط" not in cb, "LEAK mixed→دستیار"
+
+# T5: سازگاری با حافظه‌های قبلی (ns لاتین قدیمی — قالب فروشگاه قدیمی دستی)
+d = pathlib.Path(tempfile.mkdtemp(dir="/data/data/com.termux/files/usr/tmp/opencode"))
+memory._STORE = d / "legacy.json"
+memory._STORE.write_text(
+    '{"version":1,"ns":{"project:p7x-demo-a-180533":{"old_note":'
+    '{"value":"دادهٔ قدیمی لاتین","ts":1700000000.0,"by":"panel"}}}}',
+    encoding="utf-8")
+c = build_context("p7x-demo-a-180533")
+assert "دادهٔ قدیمی لاتین" in c, "legacy latin ns lost"
+assert "[project p7x-demo-a-180533]" in c
+
+# پایداری: NFC/فاصلهٔ اضافی → همان ns
+memory._STORE = d / "norm.json"
+memory.set_value("project:معلم من ", "k", "v1")     # با فاصلهٔ انتهایی
+assert memory.get_value("project:معلم من", "k"), "canonicalization failed"
+memory.set_value("project:معلم من", "k2", "v2")
+ent = memory.namespace_dump("project:معلم من")
+assert set(ent) == {"k", "k2"}, f"two distinct ns created: {sorted(ent)}"
+
+# اعتبارسنجی: نام‌های خطرناک/نامعتبر رد می‌شوند
+for bad in ("project:", "project: " + "x" * 70, "project:bad/name",
+            "project:a\nb", "bad-ns", "agent:UPPER"):
+    try:
+        memory.set_value(bad, "k", "v")
+        raise SystemExit(f"invalid ns accepted: {bad!r}")
+    except MemoryError:
+        pass
+print("OK")
+EOF
+); check "T1-T5 namespace فارسی/انگلیسی/ترکیبی + جداسازی + سازگاری" "$OUT"
+
+echo "== 6-9) انتقال عامل در plan/fix + تزریق درست + عدم نشت (ماک HTTP) =="
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import sys, tempfile, pathlib, threading, json
+sys.path.insert(0, ".")
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import core.config as config
+import core.memory as memory
+from core import paths, factory
+from core import opencode_bridge as bridge
+
+# فروشگاه ایزوله — بدون دست‌زدن به data/memory.json واقعی
+memory._STORE = pathlib.Path(tempfile.mkdtemp(
+    dir="/data/data/com.termux/files/usr/tmp/opencode")) / "memory.json"
+memory.set_value("project:af02-android-test", "build_rule", "قاعدهٔ پروژهٔ A")
+memory.set_value("project:دستیار", "fa_rule", "قاعدهٔ پروژهٔ فارسی")
+memory.set_value("agent:coder", "style", "قاعدهٔ عامل coder")
+memory.set_value("agent:writer", "style", "قاعدهٔ عامل writer")
+memory.set_value("project:other-proj", "secret", "دادهٔ پروژهٔ دیگر")
+
+PROJ = "af02-android-test"
+FA = "دستیار"
+pdir = str(paths.project_dir(PROJ).resolve())
+captured = []          # هر مورد: {"path":..., "text":...}
+dir_by_sid = {"sess-gen-1": pdir}   # location هر session ساخته‌شده
+_sid_counter = [0]
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def do_GET(self):
+        if self.path == "/api/info":
+            self._send({"ok": True})                     # ensure_running
+        elif "/message" in self.path:
+            self._send({"data": []})
+        elif self.path.startswith("/api/session/"):      # single-session info
+            sid = self.path.split("/api/session/")[1].split("?")[0]
+            d = dir_by_sid.get(sid, pdir)
+            self._send({"data": {"location": {"directory": d}}})
+        elif self.path.startswith("/api/session"):       # sessions list
+            self._send({"data": [
+                {"id": "sess-gen-1", "title": "🏭 تولید — قدیمی",
+                 "location": {"directory": pdir}, "time": {}}]})
+        else:
+            self._send({})
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        if self.path.endswith("/prompt"):
+            captured.append({"path": self.path,
+                             "text": json.loads(self.rfile.read(n).decode())["text"]})
+            self._send({"data": {"id": "msg-mock-1"}})
+        else:                                            # create session
+            body = json.loads(self.rfile.read(n).decode()) if n else {}
+            d = (body.get("location") or {}).get("directory") or pdir
+            _sid_counter[0] += 1
+            sid = f"sess-new-{_sid_counter[0]}"
+            dir_by_sid[sid] = d
+            self._send({"data": {"id": sid, "location": {"directory": d}}})
+
+srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+port = srv.server_address[1]
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+import time as _t, urllib.request as _ur
+_deadline = _t.time() + 5
+while True:
+    try:
+        _ur.urlopen(f"http://127.0.0.1:{port}/api/info", timeout=1).read()
+        break
+    except Exception:
+        if _t.time() > _deadline:
+            raise
+        _t.sleep(0.1)
+
+old_url = config.OC_BASE_URL
+config.OC_BASE_URL = f"http://127.0.0.1:{port}"
+try:
+    # T6: انتقال عامل در مسیر plan — payload واقعی POST
+    factory.plan(PROJ, "هدف آزمایشی برنامه‌ریزی", agent="coder")
+    assert len(captured) == 1, f"plan POST count={len(captured)}"
+    body = captured[-1]["text"]
+    assert "[agent coder]" in body and "قاعدهٔ عامل coder" in body, \
+        "agent memory NOT injected in plan payload"
+    assert "[project af02-android-test]" in body and "قاعدهٔ پروژهٔ A" in body, \
+        "project memory NOT injected in plan payload"
+    assert "قاعدهٔ عامل writer" not in body, "LEAK: writer agent in plan"
+    assert "دادهٔ پروژهٔ دیگر" not in body, "LEAK: other project in plan"
+
+    # T7: انتقال عامل در مسیر fix — payload واقعی POST
+    factory.fix_request(PROJ, [{"file": "a.py", "kind": "static",
+                                "message": "خطای آزمایشی"}], 2, agent="coder")
+    assert len(captured) == 2, f"fix POST count={len(captured)}"
+    body = captured[-1]["text"]
+    assert "[agent coder]" in body and "قاعدهٔ عامل coder" in body, \
+        "agent memory NOT injected in fix payload"
+    assert "[project af02-android-test]" in body, \
+        "project memory NOT injected in fix payload"
+    assert "قاعدهٔ عامل writer" not in body, "LEAK: writer agent in fix"
+
+    # T8 (بخش دوم): تزریق درست حافظهٔ عامل در مسیرهای plan/fix با پروژهٔ فارسی
+    factory.plan(FA, "هدف فارسی", agent="coder")
+    assert len(captured) == 3
+    body = captured[-1]["text"]
+    assert "[project دستیار]" in body and "قاعدهٔ پروژهٔ فارسی" in body, \
+        "persian project memory missing in plan payload"
+    assert "[agent coder]" in body, "agent memory missing for persian project"
+    assert "قاعدهٔ پروژهٔ A" not in body, "LEAK: af02 data into دستیار plan"
+
+    # T9: بدون عامل مشخص → رفتار قبلی (هیچ حافظهٔ عاملی تزریق نمی‌شود)
+    factory.plan(PROJ, "هدف بدون عامل")
+    assert len(captured) == 4
+    body = captured[-1]["text"]
+    assert "[agent" not in body and "قاعدهٔ عامل" not in body, \
+        "agent memory injected without agent"
+    assert "[project af02-android-test]" in body, \
+        "AF-06 project injection must still work without agent"
+    factory.fix_request(PROJ, [{"file": "b.py", "kind": "static",
+                                "message": "خطای دوم"}], 3)
+    assert len(captured) == 5
+    body = captured[-1]["text"]
+    assert "[agent" not in body, "agent memory injected without agent (fix)"
+    assert "خطای دوم" in body, "fix instruction must stay intact"
+finally:
+    config.OC_BASE_URL = old_url
+    srv.shutdown()
+print("OK")
+EOF
+); check "T6-T9 plan/fix agent propagation + تزریق درست + بدون‌عامل=رفتار قبلی" "$OUT"
+
+echo "== 10) رگرسیون AF-06 کامل =="
+if bash "$ROOT/scripts/ai-factory-test-af06" >"$TMP/af06-reg.log" 2>&1 && grep -q "PASS=14 FAIL=0" "$TMP/af06-reg.log"; then
+  PASS=$((PASS+1)); echo "✅ ai-factory-test-af06 → 14/0"
+else
+  FAIL=$((FAIL+1)); echo "❌ ai-factory-test-af06 (see $TMP/af06-reg.log)"
+fi
+
+echo
+echo "════════ AF-06.1 RESULT ════════"
+if [ "$FAIL" = "0" ]; then
+  echo "✅ RESULT: PASS=$PASS FAIL=$FAIL — ALL GREEN"
+  exit 0
+else
+  echo "❌ RESULT: PASS=$PASS FAIL=$FAIL"
+  exit 1
+fi

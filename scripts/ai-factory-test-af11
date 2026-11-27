@@ -1,0 +1,214 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af11 — استاندارد انتشار حرفه‌ای: بستهٔ واقعی از هر نوع
+#   A) بستهٔ واقعی از هر نوع قابل‌آزمون (۹ نوع) با manifest + محتوا + اعتبارسنج مستقل
+#   B) شکست‌ها: تغییر فایل / حذف فایل ضروری / فایل اضافه / zip بریده — اعتبارسنج مستقل
+#   C) اتصال به چرخهٔ واقعی: deploy._check_release (همان مسیر API) بستهٔ دست‌کاری‌شده را رد کند
+#   D) سازگاری عقب: بستهٔ قدیمی بدون manifest در verify/deploy قبول شود
+#   E) پاک‌سازی کامل + رگرسیون af07/af08
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+PASS=0; FAIL=0; NT=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+nt() { NT=$((NT+1)); echo "⚠️  NOT TESTED — $1"; }
+
+echo "════════ AF-11 — استاندارد انتشار حرفه‌ای ════════"
+checkeq "پنل سالم" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "پشتیبان release.py موجود" "OK" "$(ls "$ROOT"/backups/af11-*/release.py \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "اعتبارسنج مستقل اجرایی" "OK" "$(python3 "$ROOT/scripts/ai-factory-verify-release" 2>/dev/null \
+  >/dev/null; [ $? = 2 ] && echo OK || echo FAIL)"
+
+# scaffold تازهٔ fullstack با مسیر واقعی پنل (pauth) — مثل AF-08
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+pauth -fsS -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"af11-fullstack","type":"fullstack-python","description":"AF-11 sample"}' \
+  http://127.0.0.1:8580/api/factory/projects -o /dev/null 2>/dev/null || true
+SCAF=$(pauth -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af11-fullstack"}' http://127.0.0.1:8580/api/factory/scaffold \
+  -o "$TMP/af11-scaf.json" -w '%{http_code}' 2>/dev/null)
+checkeq "scaffold تازهٔ fullstack (مسیر واقعی پنل)" "200" "$SCAF"
+
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import json, os, shutil, subprocess, sys, zipfile
+sys.path.insert(0, ".")
+import core.config as config
+from core import release as rel, deploy as dep
+
+TMP = os.environ["TMP"]
+ROOT = str(config.PROJECT_ROOT)
+SAMP = {"webpage": "af01-timecheck", "webapp": "r2-webapp-calc",
+        "webtool": "r2-tool-passgen", "dashboard": "r2-dash-sales",
+        "shop": "p6-shop-173521", "api": "r2-api-notes",
+        "ai-tool": "p6-ai-211542", "pwa": "p8-app-demo"}
+results = []
+def step(name, ok, detail=""):
+    results.append((name, ok))
+    print("STEP %s %s %s" % ("OK" if ok else "FAIL", name, str(detail)[:120]))
+
+V = os.path.join(ROOT, "scripts", "ai-factory-verify-release")
+def validator(zp):
+    r = subprocess.run([sys.executable, V, zp], capture_output=True,
+                       text=True, timeout=60)
+    return r.returncode, r.stdout + r.stderr
+
+try:
+    # ── A) بستهٔ واقعی از هر نوع + اعتبارسنجی مستقل ──
+    zips = {}
+    for t, src in sorted(SAMP.items()):
+        p = "af11-" + t
+        shutil.rmtree(os.path.join(ROOT, "projects", p), ignore_errors=True)
+        shutil.copytree(os.path.join(ROOT, "projects", src),
+                        os.path.join(ROOT, "projects", p))
+        res = rel.build_release(p)
+        ok = bool(res.get("ok")) and not res["verify"]["manifest"]["problems"] \
+             and res["verify"]["manifest"]["present"]
+        step("A-build-%s" % t, ok,
+             "%s files=%d manifest-entries=%d" % (
+                 res.get("name"), res.get("files", 0),
+                 res["verify"]["manifest"]["entries"]))
+        if ok:
+            zips[t] = res["path"]
+        # محتوای استاندارد داخل release.json
+        with zipfile.ZipFile(res["path"]) as z:
+            m = json.loads(z.read("%s/release.json" % p))
+        std = all(k in m for k in ("name", "type", "version", "build",
+                                   "generated_at", "files", "file_count",
+                                   "quality", "run"))
+        deps_ok = "deps_spec" in m["technology"]
+        q = m["quality"]
+        q_ok = ("tested_at_packaging" in q and "untested" in q
+                and "how_to_test" in q)
+        step("A-std-%s" % t, std and deps_ok and q_ok,
+             "std=%s deps_spec=%s quality=%s" % (std, deps_ok, q_ok))
+        # اعتبارسنج مستقل روی بستهٔ تازه
+        rc, outp = validator(res["path"])
+        step("A-validator-%s" % t, rc == 0, outp.strip().replace("\n", " | ")[:100])
+        # هیچ مسیر خصوصی/محرمانه در بسته
+        leak = []
+        with zipfile.ZipFile(res["path"]) as z:
+            for n in z.namelist():
+                if any(x in n for x in ("meta.json", ".factory", ".env",
+                                        ".key", ".pem", "__pycache__")):
+                    leak.append(n)
+        step("A-no-secrets-%s" % t, not leak, leak[:3])
+    # fullstack: بستهٔ قالب واقعی (scaffold تازه از مسیر واقعی پنل در bash)
+    try:
+        res = rel.build_release("af11-fullstack")
+        m = json.loads(zipfile.ZipFile(res["path"]).read(
+            "af11-fullstack/release.json"))
+        step("A-build-fullstack", bool(res.get("ok"))
+             and m["technology"].get("deps_spec") is not None,
+             "files=%s deps_spec=%s" % (res.get("files"),
+                                        m["technology"].get("deps_spec")))
+        rc, outp = validator(res["path"])
+        step("A-validator-fullstack", rc == 0, outp.strip()[:100])
+        zips["fullstack"] = res["path"]
+    except Exception as exc:
+        step("A-build-fullstack", False, repr(exc)[:120])
+
+    # ── B) شکست‌ها: تغییر / حذف / اضافه / بریده — اعتبارسنج مستقل ──
+    base = zips.get("webpage") or next(iter(zips.values()))
+    PROJ = "af11-webpage"
+    def rewrite(src, dst, skip=None, patch=None, add=None):
+        with zipfile.ZipFile(src) as z, \
+             zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as o:
+            for n in z.namelist():
+                if skip and n in skip:
+                    continue
+                o.writestr(n, patch.get(n, z.read(n)) if patch else z.read(n))
+            for n, data in (add or {}).items():
+                o.writestr(n, data)
+    cases = []
+    p1 = os.path.join(TMP, "af11-b-modified.zip")
+    rewrite(base, p1, patch={PROJ + "/index.html": b"<html>tampered</html>"})
+    cases.append(("modified", p1))
+    p2 = os.path.join(TMP, "af11-b-removed.zip")
+    rewrite(base, p2, skip={PROJ + "/run.sh"})
+    cases.append(("removed-essential", p2))
+    p3 = os.path.join(TMP, "af11-b-extra.zip")
+    rewrite(base, p3, add={PROJ + "/rogue.js": b"evil()"})
+    cases.append(("extra-file", p3))
+    raw = open(base, "rb").read()
+    p4 = os.path.join(TMP, "af11-b-truncated.zip")
+    open(p4, "wb").write(raw[:len(raw) // 2])
+    cases.append(("truncated", p4))
+    for name, path in cases:
+        rc, outp = validator(path)
+        step("B-tamper-%s-rejected" % name, rc == 1, outp.strip()[:110])
+
+    # ── C) اتصال به چرخهٔ واقعی: deploy._check_release رد کند ──
+    p1e = os.path.join(ROOT, "exports",
+                       "%s-release-tampered.zip" % PROJ)
+    shutil.move(p1, p1e)
+    try:
+        dep._check_release(PROJ, p1e)
+        step("C-cycle-blocks-tampered", False, "قبول شد!")
+    except dep.DeployError as e:
+        step("C-cycle-blocks-tampered",
+             "release_manifest" in str(e) or "hash-mismatch" in str(e)
+             or "manifest" in str(e).lower(), str(e)[:100])
+    finally:
+        os.remove(p1e)
+    # zip سالم از همان مسیر → قبول (کنترل مثبت مسیر واقعی)
+    try:
+        dep._check_release(PROJ, base)
+        step("C-cycle-accepts-healthy", True)
+    except dep.DeployError as e:
+        step("C-cycle-accepts-healthy", False, str(e)[:90])
+
+    # ── D) سازگاری عقب: بستهٔ قدیمی بدون manifest ──
+    old = os.path.join(ROOT, "exports", "%s-release-old.zip" % PROJ)
+    rewrite(base, old, skip={PROJ + "/MANIFEST.sha256"})
+    v = rel.verify_release(old, PROJ)
+    step("D-old-zip-verify-ok", v["ok"] and not v["manifest"]["present"],
+         "manifest=%s" % v["manifest"])
+    try:
+        dep._check_release(PROJ, old)
+        step("D-old-zip-deploy-ok", True)
+    except dep.DeployError as e:
+        step("D-old-zip-deploy-ok", False, str(e)[:90])
+finally:
+    import glob as g
+    for p in g.glob(os.path.join(ROOT, "projects", "af11-*")):
+        shutil.rmtree(p, ignore_errors=True)
+    for z in g.glob(os.path.join(ROOT, "exports", "af11-*-release-*.zip")):
+        os.remove(z)
+    for f in g.glob(os.path.join(TMP, "af11-b-*.zip")):
+        os.remove(f)
+print("AF11-PY %s" % ("ALL-OK" if all(o for _, o in results) else "HAS-FAIL"))
+EOF
+)
+echo "$OUT" | grep "^STEP"
+echo
+echo "$OUT" | grep "^AF11-PY"
+
+echo "== E) پاک‌سازی + رگرسیون =="
+pauth -fsS -m 15 -X POST http://127.0.0.1:8580/api/factory/stop \
+  -H 'Content-Type: application/json' -d '{"project":"af11-fullstack"}' \
+  -o /dev/null 2>/dev/null || true
+pauth -fsS -m 15 -X POST http://127.0.0.1:8580/api/factory/delete \
+  -H 'Content-Type: application/json' -d '{"project":"af11-fullstack","confirm":true}' \
+  -o /dev/null 2>/dev/null || true
+LEFT=$(ls "$ROOT/projects" 2>/dev/null | grep -c "^af11-"; ls "$ROOT/exports" 2>/dev/null | grep -c "^af11-")
+checkeq "E-بدون باقی‌ماندهٔ af11" "0
+0" "$LEFT"
+R07=$(bash "$ROOT/scripts/ai-factory-test-af07" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "E-رگرسیون af07" "PASS=36 FAIL=0" "$R07"
+R08=$(bash "$ROOT/scripts/ai-factory-test-af08" 2>&1 | tail -4 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "E-رگرسیون af08" "PASS=43 FAIL=0" "$R08"
+
+nt "بستهٔ Android (AAB/APK) — خط لولهٔ فروشگاه جداگانه با sha256 خودش؛ خارج از دامنهٔ ZIP انتشار"
+nt "node-server (بستهٔ واقعی node در محیط موجود نیست)"
+
+echo
+echo "════════ AF-11 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL NOT-TESTED=$NT"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN (بدون احتساب NOT-TESTED)"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

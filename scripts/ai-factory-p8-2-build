@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# P8-2 real build driver — idempotent against harness resubmission.
+set -u
+ROOT=/data/data/com.termux/files/home/AI-Factory
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
+cd "$ROOT"
+
+login() {
+    # AF-05.1: credential از فایل امن محلی خوانده می‌شود — بدون پیش‌فرض ثابت
+    local PW=""
+    [ -n "${PANEL_PASS:-}" ] && PW="$PANEL_PASS"
+    if [ -z "$PW" ] && [ -r "$HOME/.af-panel/panel-pass.txt" ]; then
+        PW="$(tr -d '\n\r' < "$HOME/.af-panel/panel-pass.txt")"
+    fi
+    if [ -z "$PW" ]; then
+        echo "panel credential missing — set PANEL_PASS or create ~/.af-panel/panel-pass.txt (0600)" >&2
+        return 1
+    fi
+    rm -f "$T/p8.cookies"
+    curl -s -m8 -c "$T/p8.cookies" -X POST -d "{\"password\":\"$PW\"}" \
+        -H 'Content-Type: application/json' "$BASE/api/panel/login" >/dev/null
+    grep -oE 'panel_csrf[[:space:]]+[A-Za-z0-9_-]+' "$T/p8.cookies" \
+        | head -1 | awk '{print $2}'
+}
+CS=$(login)
+
+PROJ="p8-app-demo"
+# guard 1: project exists?
+EXIST=$(curl -s -m10 -b "$T/p8.cookies" "$BASE/api/factory/projects" \
+    | python3 -c "import json,sys;print('yes' if any(p['name']=='$PROJ' for p in json.load(sys.stdin).get('projects',[])) else 'no')")
+if [ "$EXIST" = "no" ]; then
+    curl -s -m20 -b "$T/p8.cookies" -H "X-Panel-CSRF: $CS" -X POST \
+        -d "{\"name\":\"$PROJ\",\"type\":\"pwa\",\"description\":\"P8-2 real PWA build\"}" \
+        -H 'Content-Type: application/json' "$BASE/api/factory/projects" >/dev/null
+    echo "project created"
+fi
+# guard 2: open task for this project already exists?
+OPEN=$(curl -s -m10 -b "$T/p8.cookies" "$BASE/api/tasks" \
+    | python3 -c "
+import json,sys
+ts = json.load(sys.stdin).get('tasks', [])
+print('yes' if any(t['project']=='$PROJ' and t['state'] in ('queued','running') for t in ts) else 'no')")
+if [ "$OPEN" = "no" ]; then
+    curl -s -m20 -b "$T/p8.cookies" -H "X-Panel-CSRF: $CS" -X POST \
+        -d "{\"project\":\"$PROJ\",\"goal\":\"اپلیکیشن «کارهای روز من» بساز: لیست کارهای روزانهٔ فارسی RTL؛ افزودن کار با فرم (input + دکمه)؛ ذخیره در localStorage؛ کلیک روی کار آن را انجام‌شده/برگشت می‌کند؛ دکمهٔ حذف برای هر کار؛ شمارندهٔ کارهای باقی‌مانده. پایهٔ PWA را دست‌نخورده نگه دار (manifest.json، sw.js، پوشهٔ icons) و فقط index.html، style.css و app.js را کامل و زیبا کن.\",\"agent\":\"builder\",\"max_attempts\":2}" \
+        -H 'Content-Type: application/json' "$BASE/api/tasks" \
+        | python3 -c "import json,sys;t=json.load(sys.stdin)['task'];print('task submitted:', t['id'])"
+else
+    echo "task already open — skip submission"
+fi
+# guard 3: orchestrator running?
+RUN=$(curl -s -m10 -b "$T/p8.cookies" "$BASE/api/orchestrator" \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)['orchestrator']['running'])")
+if [ "$RUN" != "True" ]; then
+    curl -s -m20 -o /dev/null -b "$T/p8.cookies" -H "X-Panel-CSRF: $CS" -X POST \
+        -d '{"workers":1}' -H 'Content-Type: application/json' \
+        "$BASE/api/orchestrator/start"
+    echo "orchestrator started (1 worker)"
+fi
+# wait for terminal state
+for i in $(seq 1 90); do
+    ST=$(curl -s -m10 -b "$T/p8.cookies" "$BASE/api/tasks" | python3 -c "
+import json,sys
+ts = [t for t in json.load(sys.stdin).get('tasks', []) if t['project']=='$PROJ']
+if not ts: print('none')
+elif all(t['state'] in ('done','failed','cancelled') for t in ts):
+    print('|'.join(t['state'] for t in ts))
+else: print('wait')")
+    [ "$ST" != "wait" ] && [ "$ST" != "none" ] && break
+    sleep 8
+done
+echo "final: $ST"
+curl -s -m20 -o /dev/null -b "$T/p8.cookies" -H "X-Panel-CSRF: $CS" -X POST \
+    -d '{}' -H 'Content-Type: application/json' "$BASE/api/orchestrator/stop"
+echo "orchestrator stopped"

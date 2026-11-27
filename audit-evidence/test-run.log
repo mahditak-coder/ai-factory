@@ -1,0 +1,156 @@
+./data/data/com.termux/files/usr/lib/python3.14/tempfile.py:538: ResourceWarning: Implicitly cleaning up <HTTPError 401: 'Unauthorized'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+2026-11-27 14:15:48,690 INFO opencode serve spawned (pid=30661 port=4556)
+2026-11-27 14:15:50,699 WARNING reasoning resolve failed: پورت 4556 توسط یک سرور OpenCode دیگر اشغال است. آن را متوقف کنید یا پیکربندی OC_PORT را تغییر دهید.
+.2026-11-27 14:15:51,299 INFO pipeline pl-141550-09b3 created for af22-route (android)
+........2026-11-27 14:15:51,570 INFO security gate passed af29-gate (release): 3 files, 0 warning(s)
+2026-11-27 14:15:51,638 INFO release built: af29-gate-release-20261127-141551.zip (8 files, ok=True)
+2026-11-27 14:15:51,643 INFO factory run started: af29-gate kind=static-web pid=30737 port=8610
+/data/data/com.termux/files/usr/tmp/opencode/ai-factory-audit-snapshot/core/typetests.py:748: ResourceWarning: unclosed file <_io.BufferedWriter name='/data/data/com.termux/files/usr/tmp/opencode/ai-factory-audit-testroot/logs/runs/af29-gate.log'>
+  runner.start(project)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2026-11-27 14:15:53,275 INFO factory run stopped: af29-gate (pid=30737)
+2026-11-27 14:15:53,285 WARNING git sync blocked by preconditions: git-sync-preconditions: BLOCKED (scope)
+.............................2026-11-27 14:15:57,575 INFO security gate passed af35-sr (release): 1 files, 0 warning(s)
+2026-11-27 14:15:57,586 INFO release built: af35-sr-release-20261127-141557.zip (6 files, ok=True)
+2026-11-27 14:15:57,589 WARNING git sync blocked by preconditions: git-sync-preconditions: NOT TESTED (tests)
+..............2026-11-27 14:15:57,624 INFO worker w1 executing task t-141557-325d (project=af37-loop agent=builder)
+2026-11-27 14:15:58,278 WARNING code impact failed for task t-141557-325d: 'str' object has no attribute 'get'
+2026-11-27 14:15:58,285 INFO task t-141557-325d parked on ASK (ASK, stage=loop)
+2026-11-27 14:15:58,289 INFO worker w2 executing task t-141557-325d (project=af37-loop agent=builder)
+2026-11-27 14:15:58,442 WARNING code impact failed for task t-141557-325d: 'str' object has no attribute 'get'
+2026-11-27 14:15:58,444 INFO task t-141557-325d resumed mid-loop at cycle 1
+..................................2026-11-27 14:16:11,751 WARNING security gate BLOCKED af46-gate-secret (export): 1 critical finding(s)
+.2026-11-27 14:16:11,754 INFO security gate passed af46-gate-placeholder (export): 2 files, 1 warning(s)
+................................................................2026-11-27 14:16:21,176 INFO factory run started: afp5-eval kind=static-web pid=31848 port=8610
+/data/data/com.termux/files/usr/tmp/opencode/ai-factory-audit-snapshot/core/typetests.py:748: ResourceWarning: unclosed file <_io.BufferedWriter name='/data/data/com.termux/files/usr/tmp/opencode/ai-factory-audit-testroot/logs/runs/afp5-eval.log'>
+  runner.start(project)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2026-11-27 14:16:22,806 INFO factory run stopped: afp5-eval (pid=31848)
+2026-11-27 14:16:22,813 INFO security gate passed afp5-eval (export): 2 files, 0 warning(s)
+2026-11-27 14:16:22,851 INFO factory run started: afp5-eval kind=static-web pid=31859 port=8610
+2026-11-27 14:16:24,485 INFO factory run stopped: afp5-eval (pid=31859)
+2026-11-27 14:16:24,506 INFO security gate passed afp5-eval (export): 4 files, 0 warning(s)
+.2026-11-27 14:16:24,646 ERROR HTTP DELETE /api/file?project=c1_trust_probe&path=index.html -> 401: ورود به پنل لازم است [trace=af-d4f4c0cb]
+2026-11-27 14:16:24,647 INFO 127.0.0.1 "DELETE /api/file?project=c1_trust_probe&path=index.html HTTP/1.1" 401 -
+.2026-11-27 14:16:24,650 INFO 127.0.0.1 "GET /api/health HTTP/1.1" 200 -
+.2026-11-27 14:16:24,655 INFO file written: c1_trust_probe/index.html
+2026-11-27 14:16:24,655 INFO 127.0.0.1 "PUT /api/file HTTP/1.1" 200 -
+.2026-11-27 14:16:24,659 ERROR HTTP PUT /api/file -> 403: نشانه CSRF نامعتبر است [trace=af-93f0b270]
+2026-11-27 14:16:24,659 INFO 127.0.0.1 "PUT /api/file HTTP/1.1" 403 -
+2026-11-27 14:16:24,660 INFO 127.0.0.1 code 400, message Bad request version ('"HACKED-BAD-CSRF"}')
+.2026-11-27 14:16:24,660 INFO 127.0.0.1 "{"project": "c1_trust_probe", "path": "index.html", "content": "HACKED-BAD-CSRF"}" 400 -
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 47298)
+2026-11-27 14:16:24,666 ERROR HTTP PUT /api/file -> 401: ورود به پنل لازم است [trace=af-73b7aa2c]
+2026-11-27 14:16:24,666 INFO 127.0.0.1 "PUT /api/file HTTP/1.1" 401 -
+.2026-11-27 14:16:24,668 INFO 127.0.0.1 code 400, message Bad request version ('"HACKED-NO-AUTH"}')
+2026-11-27 14:16:24,669 INFO 127.0.0.1 "{"project": "c1_trust_probe", "path": "index.html", "content": "HACKED-NO-AUTH"}" 400 -
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 47302)
+Traceback (most recent call last):
+  File "/data/data/com.termux/files/usr/lib/python3.14/http/server.py", line 346, in parse_request
+    raise ValueError
+Traceback (most recent call last):
+ValueError
+  File "/data/data/com.termux/files/usr/lib/python3.14/http/server.py", line 346, in parse_request
+    raise ValueError
+
+During handling of the above exception, another exception occurred:
+
+ValueError
+Traceback (most recent call last):
+
+During handling of the above exception, another exception occurred:
+
+  File "/data/data/com.termux/files/usr/lib/python3.14/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+Traceback (most recent call last):
+  File "/data/data/com.termux/files/usr/lib/python3.14/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/http/server.py", line 502, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/http/server.py", line 478, in handle_one_request
+    if not self.parse_request():
+           ~~~~~~~~~~~~~~~~~~^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/http/server.py", line 502, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/http/server.py", line 365, in parse_request
+    self.send_error(
+    ~~~~~~~~~~~~~~~^
+        HTTPStatus.BAD_REQUEST,
+        ^^^^^^^^^^^^^^^^^^^^^^^
+        "Bad request version (%r)" % version)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/http/server.py", line 555, in send_error
+    self.wfile.write(body)
+    ~~~~~~~~~~~~~~~~^^^^^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+  File "/data/data/com.termux/files/usr/lib/python3.14/http/server.py", line 478, in handle_one_request
+    if not self.parse_request():
+           ~~~~~~~~~~~~~~~~~~^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/http/server.py", line 365, in parse_request
+    self.send_error(
+    ~~~~~~~~~~~~~~~^
+        HTTPStatus.BAD_REQUEST,
+        ^^^^^^^^^^^^^^^^^^^^^^^
+        "Bad request version (%r)" % version)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/http/server.py", line 555, in send_error
+    self.wfile.write(body)
+    ~~~~~~~~~~~~~~~~^^^^^^
+  File "/data/data/com.termux/files/usr/lib/python3.14/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+2026-11-27 14:16:25,849 INFO pipeline pl-141625-0283 created for c3_gate_probe (webpage)
+.2026-11-27 14:16:26,038 INFO pipeline pl-141625-6ea7 created for c3_gate_probe (webpage)
+.2026-11-27 14:16:26,214 INFO pipeline pl-141626-a854 created for c3_gate_probe (webpage)
+.....F.................................2026-11-27 14:16:26,761 INFO worker w1 executing task t-141626-6f3f (project=af34-unit-loop agent=builder)
+2026-11-27 14:16:27,442 WARNING code impact failed for task t-141626-6f3f: 'str' object has no attribute 'get'
+2026-11-27 14:16:27,458 INFO task t-141626-6f3f cycle 1 red — decision=REPLAN strategy=alternate-tool progress=True
+2026-11-27 14:16:27,470 INFO task t-141626-6f3f cycle 2 red — decision=REPLAN strategy=inspect-first progress=True
+2026-11-27 14:16:27,482 INFO task t-141626-6f3f cycle 3 red — decision=REPLAN strategy=inspect-first progress=True
+2026-11-27 14:16:27,494 INFO task t-141626-6f3f cycle 4 red — decision=REPLAN strategy=inspect-first progress=True
+2026-11-27 14:16:27,496 INFO security gate passed af34-unit-loop (export): 2 files, 0 warning(s)
+2026-11-27 14:16:27,503 INFO task t-141626-6f3f DONE green (cycles=5)
+.......................
+======================================================================
+FAIL: test_root_isolated_when_env_set (test_core_units.IsolationTest.test_root_isolated_when_env_set)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/data/data/com.termux/files/usr/tmp/opencode/ai-factory-audit-snapshot/core/tests/test_core_units.py", line 142, in test_root_isolated_when_env_set
+    self.assertTrue(str(config.PROJECT_ROOT).startswith(
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "/data/data/com.termux/files/usr/tmp/opencode/af26-"),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "unexpected isolated root: %s" % config.PROJECT_ROOT)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : unexpected isolated root: /data/data/com.termux/files/usr/tmp/opencode/ai-factory-audit-testroot
+
+----------------------------------------------------------------------
+Ran 222 tests in 40.044s
+
+FAILED (failures=1)
+<sys>:0: ResourceWarning: unclosed file <_io.BufferedWriter name='/data/data/com.termux/files/usr/tmp/opencode/ai-factory-audit-testroot/logs/opencode-serve.log'>

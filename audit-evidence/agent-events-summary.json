@@ -1,0 +1,21 @@
+{
+ "total_records": 600,
+ "event_types": {
+  "session.tool.success": 397,
+  "af.permission.decision": 65,
+  "af.policy.rejection": 3,
+  "session.tool.failed": 19,
+  "session.execution.failed": 1,
+  "session.tool.input.started": 33,
+  "permission.asked": 31,
+  "permission.replied": 49,
+  "session.tool.input.ended": 1,
+  "session.tool.called": 1
+ },
+ "statuses": {
+  "PASS": 479,
+  "BLOCKED": 43,
+  "FAIL": 43,
+  "NOT TESTED": 35
+ }
+}

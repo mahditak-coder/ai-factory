@@ -1,0 +1,30 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# AI Factory — show the status of the management server and fixed services
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+URL="http://127.0.0.1:8580"
+
+echo "═══ وضعیت AI Factory ═══"
+
+if curl -fsS "$URL/api/health" >/dev/null 2>&1; then
+    echo "پنل:           ✅ فعال  ($URL)"
+    TMP_JSON="$ROOT/logs/_status.json"
+    curl -fsS "$URL/api/status" -o "$TMP_JSON" 2>/dev/null
+    python - "$TMP_JSON" <<'EOF'
+import json, sys
+try:
+    s = json.load(open(sys.argv[1], encoding="utf-8"))["status"]
+    print(f"نسخه:          {s['app']} {s['version']}")
+    print(f"OpenCode:      {s['opencode_version'] or '—'}")
+    M = s["memory"]
+    print(f"حافظه آزاد:    {M['available_mb']} MB از {M['total_mb']} MB")
+    for k, v in s["services"].items():
+        state = "✅" if v else "❌"
+        print(f"{k:14} {state}")
+except Exception as e:
+    print("خطای تحلیل وضعیت:", e)
+EOF
+    rm -f "$TMP_JSON"
+else
+    echo "پنل:           ❌ غیرفعال"
+    echo "برای شروع: bash scripts/ai-factory-start"
+fi

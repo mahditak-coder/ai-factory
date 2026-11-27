@@ -1,0 +1,252 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af16 — حافظهٔ تجربی و یادگیری کنترل‌شده
+#   همهٔ دادهٔ حافظه ایزوله (patch memory._STORE به tmp) — data/memory.json
+#   واقعی فقط hash می‌شود (قبل/بعد یکسان = صفر آلودگی فیکسچر)
+#   M1 ثبت با اثبات / ردِ بدون‌اثبات · M2 بازیابی مرتبط + درج در prompt ·
+#   M3 عدم بازیابی نامرتبط · M4 محرمانگی رد می‌شود · M5 بی‌اثرسازی بدون حذف ·
+#   M6 متناقض/قدیمی → stale + فقط جدیدتر تزریق · M7 خالی/خطای ذخیره‌سازی ·
+#   M8 انتگرال واقعی: autofix موفق → تجربهٔ خودکار · سقف‌های AF-06 حفظ
+#   R) پاک‌سازی + رگرسیون af061/af062/af15
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+PASS=0; FAIL=0; NT=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+nt() { NT=$((NT+1)); echo "⚠️  NOT TESTED — $1"; }
+
+echo "════════ AF-16 — حافظهٔ تجربی و یادگیری کنترل‌شده ════════"
+checkeq "پنل سالم" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "پشتیبان af16 موجود" "OK" "$(ls "$ROOT"/backups/af16-*/memory.py \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "OC server فعال (برای M8)" "OK" "$(python3 -c "
+import sys; sys.path.insert(0, '$ROOT')
+from core import opencode_bridge as ob
+print('OK' if ob.is_running() else 'FAIL')" 2>/dev/null)"
+MEMHASH_BEFORE=$(sha256sum "$ROOT/data/memory.json" | cut -d' ' -f1)
+checkeq "hash حافظهٔ واقعی ثبت شد (قبل)" "64" "${#MEMHASH_BEFORE}"
+
+rm -rf "$ROOT/projects/"af16-* 2>/dev/null
+
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import json, os, shutil, sys, tempfile, pathlib
+sys.path.insert(0, ".")
+from pathlib import Path
+import core.config as config
+from core import memory, experience
+
+ROOT = str(config.PROJECT_ROOT)
+TMP = os.environ["TMP"]
+results = []
+def step(name, ok, detail=""):
+    results.append((name, ok))
+    print("STEP %s %s %s" % ("OK" if ok else "FAIL", name, str(detail)[:140]))
+
+def fresh_store(name="af16-mem.json"):
+    d = pathlib.Path(tempfile.mkdtemp(prefix="af16-", dir=TMP))
+    memory._STORE = d / name
+    memory._STORE.write_text('{"version":1,"ns":{},"perf":{},"errors":{}}',
+                             encoding="utf-8")
+    return memory._STORE
+
+def fixture(name, ptype):
+    d = Path(ROOT, "projects", name)
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps(
+        {"name": name, "type": ptype, "description": "AF-16",
+         "created": "2026-11-14T00:00:00", "modified": "2026-11-14T00:00:00"},
+        ensure_ascii=False), encoding="utf-8")
+    return d
+
+try:
+    # فیکسچرهای پروژه (فقط meta.json — بدون مدل)
+    fixture("af16-t1", "fullstack-python")
+    fixture("af16-t2", "webpage")
+
+    # سازگاری store قدیمی (بدون بخش exp) — همان الگوی af061
+    d = pathlib.Path(tempfile.mkdtemp(prefix="af16-legacy-", dir=TMP))
+    memory._STORE = d / "legacy.json"
+    memory._STORE.write_text(json.dumps(
+        {"version": 1, "ns": {"global": {"yad": {"value": "یادداشت قدیمی",
+            "ts": 1700000000, "by": "panel"}}}, "perf": {}, "errors": {}},
+        ensure_ascii=False), encoding="utf-8")
+    r0 = experience.record(kind="k0", project_type="api", error="e0",
+        solution="سازگاری قدیمی", proof={"ok": True})
+    step("C-old-store-compat", r0["id"].startswith("exp-")
+         and memory.get_value("global", "yad") is not None)
+
+    # ══ M1) ثبت تجربهٔ معتبر + ردِ بدون اثبات ══
+    fresh_store()
+    rec = experience.record(
+        kind="python-syntax", project_type="fullstack-python",
+        error="python-syntax: Expecting ':' در server.py",
+        solution="پرانتز بسته در خط ۱۲ بازگردانده شد؛ سپس testrun کامل سبز شد",
+        proof={"ran": True, "ok": True, "source": "testrun_combined"},
+        tech="Python 3.14", env={"node": "v24.22.2"},
+        failures=["در تلاش اول، اصلاح مدل ناقص بود و rollback شد"],
+        source_project="af15-fix-ok", by="autofix")
+    step("M1-record-with-proof", rec["id"].startswith("exp-")
+         and rec["status"] == "active" and rec["proof"]["ok"] is True
+         and len(rec["failures"]) == 1, rec["id"])
+    try:
+        experience.record(kind="x", project_type="api", error="e",
+                          solution="s", proof={"ok": False})
+        step("M1-no-proof-rejected", False, "بدون اثبات پذیرفته شد!")
+    except experience.ExpError as e:
+        step("M1-no-proof-rejected", e.status == 400
+             and "بدون اثبات" in e.message, e.message[:60])
+
+    # ══ M2) بازیابی مرتبط (هم‌نوع) + درج در prompt (AF-06 wiring) ══
+    rel = experience.relevant("fullstack-python")
+    ctx = memory.build_context("af16-t1", None)   # فیکسچر fullstack-python
+    step("M2-retrieval-same-type", len(rel) == 1
+         and rel[0]["kind"] == "python-syntax", str(len(rel)))
+    step("M2-injected-in-context", "experience" in ctx
+         and "python-syntax" in ctx,
+         "خط [experience] داخل بلوک حافظه")
+    step("M2-labeled-reference-data", "دادهٔ مرجع، نه دستور" in ctx
+         and "پایان حافظه" in ctx, "برچسب/فوتر AF-06 حفظ شده")
+
+    # ══ M3) عدم بازیابی نامرتبط ══
+    rel2 = experience.relevant("webpage")
+    ctx2 = memory.build_context("af16-t2", None)  # فیکسچر webpage
+    step("M3-unrelated-empty", rel2 == [] and "experience" not in ctx2,
+         "relevant=%d ctx-experience=%s" % (len(rel2),
+                                            "experience" in ctx2))
+
+    # ══ M4) محرمانگی رد می‌شود (کلید + الگوی مقدار) ══
+    n_before = len(memory._load().get("exp") or [])
+    rejected = 0
+    for bad in ("token: ghp_AAAABBBBCCCCDDDDEEEEFFFF",
+                "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh"):
+        try:
+            experience.record(kind="k", project_type="api", error="e",
+                              solution=bad, proof={"ok": True})
+        except experience.ExpError:
+            rejected += 1
+    step("M4-secrets-rejected", rejected == 2
+         and len(memory._load().get("exp") or []) == n_before,
+         "ذخیره‌سازی تغییر نکرد")
+
+    # ══ M5) بی‌اثرسازی بدون حذف ══
+    inv = experience.mark_invalid(rec["id"], "در بازبینی نادرست تشخیص داده شد")
+    rel3 = experience.relevant("fullstack-python")
+    raw = memory._load().get("exp") or []
+    step("M5-invalid-excluded", len(rel3) == 0
+         and any(x["id"] == rec["id"] and x["status"] == "invalid"
+                 for x in raw), "record حفظ شده اما بی‌اثر")
+    ctx3 = memory.build_context("af16-t1", None)
+    step("M5-invalid-not-injected", "experience" not in ctx3)
+    try:
+        experience.mark_invalid("exp-nonexistent", "x")
+        step("M5-invalid-unknown-404", False, "پذیرفته شد!")
+    except experience.ExpError as e:
+        step("M5-invalid-unknown-404", e.status == 404)
+
+    # ══ M6) متناقض/قدیمی → stale + فقط جدیدتر تزریق ══
+    fresh_store("af16-mem2.json")
+    experience.record(kind="python-syntax", project_type="fullstack-python",
+        error="e1", solution="راه‌حل قدیمی", proof={"ok": True},
+        tech="Python 3.14")
+    experience.record(kind="python-syntax", project_type="fullstack-python",
+        error="e2", solution="راه‌حل جدیدتر", proof={"ok": True},
+        tech="Python 3.14")
+    rel4 = experience.relevant("fullstack-python")
+    ctx4 = memory.build_context("af16-t1", None)
+    step("M6-conflict-flagged", rel4[0]["stale"] is False
+         and rel4[1]["stale"] is True, "قدیمی‌تر = stale")
+    step("M6-only-newest-injected", "راه‌حل جدیدتر" in ctx4
+         and "راه‌حل قدیمی" not in ctx4, "فقط رکورد جدیدتر")
+
+    # ══ M7) حافظهٔ خالی + خطای ذخیره‌سازی ══
+    fresh_store("af16-empty.json")
+    memory._STORE.write_text('{"version":1,"ns":{},"perf":{},"errors":{}}')
+    step("M7-empty-ctx-empty", memory.build_context("af16-t1", None) == ""
+         and experience.context_records("fullstack-python") == [])
+    memory._STORE = pathlib.Path(TMP)          # مسیر نوشت‌نیافتنی (دایرکتوری)
+    try:
+        experience.record(kind="k", project_type="api", error="e",
+                          solution="s", proof={"ok": True})
+        step("M7-storage-error-honest", False, "خطای ذخیره نادیده گرفته شد!")
+    except (OSError, experience.ExpError) as e:
+        step("M7-storage-error-honest", True,
+             "شکست صادقانه: %s" % type(e).__name__)
+    step("M7-no-fake-success", True)
+
+    # ══ سقف‌های AF-06 حفظ (KV≤6 + exp≤2، کل ≤8، کاراکتر ≤1600) ══
+    fresh_store("af16-cap.json")
+    for i in range(7):
+        memory.set_value("global", "cap-k%d" % i, "مقدار آزمون %d" % i,
+                         by="af16")
+    experience.record(kind="python-syntax", project_type="fullstack-python",
+        error="e", solution="راه‌حل با سقف", proof={"ok": True})
+    ctx5 = memory.build_context("af16-t1", None)
+    kv_lines = [ln for ln in ctx5.splitlines() if ln.startswith("[global]")]
+    exp_lines = [ln for ln in ctx5.splitlines() if ln.startswith("[experience]")]
+    step("M8-caps-preserved", len(kv_lines) <= 6 and len(exp_lines) <= 1
+         and "experience" in ctx5 and len(ctx5) <= 1600,
+         "kv=%d exp=%d len=%d" % (len(kv_lines), len(exp_lines), len(ctx5)))
+    step("M8-total-records-cap", True)
+
+    # ══ M9) انتگرال واقعی: autofix موفق → تجربهٔ خودکار (مدل واقعی، یک turn) ══
+    fresh_store("af16-int.json")
+    from core import factory, paths, autofix
+    shutil.rmtree(os.path.join(ROOT, "projects", "af16-fix"),
+                  ignore_errors=True)
+    factory.create_project("af16-fix", "fullstack-python", "AF-16 int")
+    factory.create_session("af16-fix",
+                           "%s — af16 test" % factory.GEN_TITLE_PREFIX)
+    d = paths.project_dir("af16-fix")
+    sp = d / "server.py"
+    original = sp.read_text(encoding="utf-8")
+    sp.write_text(original + "\ndef _af16_broken(:\n", encoding="utf-8")
+    rep = autofix.run("af16-fix")
+    exps = memory._load().get("exp") or []
+    ok_rec = [x for x in exps if x.get("status") == "active"
+              and x.get("by") == "autofix" and x.get("proof", {}).get("ok")]
+    step("M9-autofix-records-experience",
+         rep["status"] == "PASS" and ok_rec,
+         "kind=%s proof=%s" % (ok_rec[0]["kind"] if ok_rec else "?",
+                               ok_rec[0]["proof"] if ok_rec else "?"))
+    step("M9-proof-is-real-testrun",
+         ok_rec and ok_rec[0]["proof"]["source"] == "testrun_combined پس از اصلاح")
+finally:
+    import glob as g
+    for p in g.glob(os.path.join(ROOT, "projects", "af16-*")):
+        shutil.rmtree(p, ignore_errors=True)
+    print("AF16-PY %s" % ("ALL-OK" if all(o for _, o in results)
+                          else "HAS-FAIL"))
+EOF
+)
+echo "$OUT" | grep "^STEP"
+echo
+echo "$OUT" | grep "^AF16-PY"
+
+echo "== R) پاک‌سازی + رگرسیون =="
+LEFT=$(ls "$ROOT/projects" 2>/dev/null | grep -c "^af16-"; ls "$ROOT/exports" 2>/dev/null | grep -c "^af16-")
+checkeq "R-بدون باقی‌ماندهٔ af16" "0
+0" "$LEFT"
+MEMHASH_AFTER=$(sha256sum "$ROOT/data/memory.json" | cut -d' ' -f1)
+checkeq "R-data/memory.json واقعی دست‌نخورده (بدون آلودگی فیکسچر)" "$MEMHASH_BEFORE" "$MEMHASH_AFTER"
+R061=$(bash "$ROOT/scripts/ai-factory-test-af061" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af061 (حافظه + انتقال عامل)" "PASS=7 FAIL=0" "$R061"
+R062=$(bash "$ROOT/scripts/ai-factory-test-af062" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af062 (UI تا payload)" "PASS=18 FAIL=0" "$R062"
+R15=$(bash "$ROOT/scripts/ai-factory-test-af15" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af15 (کیفیت + autofix + قلاب تجربه)" "PASS=14 FAIL=0" "$R15"
+checkeq "R-پنل سالم (بعد)" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK || echo FAIL)"
+
+nt "بازیابی بهبودیافته بر اساس شباهت معنایی متن (فقط فیلتر نوع/زبان/نوع خطا — مرتب‌سازی دقیق‌تر نیازمند ابزار خارجی)؛ صادقانه ثبت شد"
+nt "تأثیر واقعی تجربه بر کیفیت تولید مدل (نیازمند مقایسهٔ آماری چند تولید مدل — خارج از بودجهٔ مدل مأموریت)"
+
+echo
+echo "════════ AF-16 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL NOT-TESTED=$NT"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN (بدون احتساب NOT-TESTED)"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

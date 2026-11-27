@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# ai-factory-test-p7-2 — REAL acceptance tests for the persistent task queue.
+#   Part A: API — add/list/view/cancel/retry/stats + honest 40x paths
+#   Part C: atomic claim exclusivity (2 real concurrent claims, 1 store)
+#   Part B: REAL panel restart → orphan task recovered back to queued
+# NOTE: the suite must end with ZERO queued tasks (P7-3 workers would claim
+# them) — final check enforces that.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/p7"
+PASS=0; FAIL=0; FAILED=""
+PROJ="p6-page-094946"   # existing evidence project — tasks are bookkeeping-only
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+
+if ! curl -fsS "$BASE/api/health" >/dev/null 2>&1; then
+    bash "$ROOT/scripts/ai-factory-start" >/dev/null; sleep 2
+fi
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+TS=$(date +%H%M%S)
+
+# صف فقط حاوی رکوردهای کتاب‌بندی خودِ همین سوئیت است (قابلیت جدید است)؛
+# هر وظیفهٔ queued از اجرای قبلی سوئیت به وضعیت پایانی می‌رود تا claimهای
+# این اجرا قطعی باشند. هیچ رکوردی حذف نمی‌شود — فقط cancel.
+for QID in $(curl -s "$BASE/api/tasks?state=queued" | python3 -c 'import json,sys
+for t in json.load(sys.stdin)["tasks"]: print(t["id"])' 2>/dev/null); do
+    curl -s -o /dev/null -X POST -d "{\"id\":\"$QID\"}" -H 'Content-Type: application/json' "$BASE/api/tasks/cancel"
+done
+
+echo "════ P7-2/C — اتمیک بودن Claim (دو نخ واقعی، یک فایل)"
+C=$(python3 - "$PROJ" <<'PYEOF'
+import sys, threading
+sys.path.insert(0, ".")
+import core.tasks as T
+proj = sys.argv[1]
+t1 = T.add_task(proj, "هدف آزمون اتمیک A", "builder")
+t2 = T.add_task(proj, "هدف آزمون اتمیک B", "builder")
+got = []
+def claim(tag): got.append((tag, T.claim_next("w-" + tag)))
+th = [threading.Thread(target=claim, args=("a",)),
+      threading.Thread(target=claim, args=("b",))]
+[t.start() for t in th]; [t.join() for t in th]
+winners = [(tag, t) for tag, t in got if t]
+ok = (len(winners) == 2
+      and {w["id"] for _, w in winners} == {t1["id"], t2["id"]}
+      and all(w["state"] == "running" and w["attempts"] == 1 for _, w in winners)
+      and len({w["claimed_by"] for _, w in winners}) == 2
+      and T.claim_next("w-c") is None)
+# release → queued بدون سوزاندن تلاش؛ سپس cancel هر دو
+T.release_task(t1["id"], "پایان آزمون")
+ok = ok and T.get_task(t1["id"])["state"] == "queued" \
+        and T.get_task(t1["id"])["attempts"] == 1
+T.cancel_task(t1["id"]); T.cancel_task(t2["id"])
+print("PASS" if ok else "FAIL")
+PYEOF
+)
+check "P7-2-C1 claim هم‌زمان: هر وظیفه دقیقاً یک مالک، سومی None" "PASS" "$C"
+
+echo "════ P7-2/A — API صف"
+B=$(curl -s -X POST -d "{\"project\":\"$PROJ\",\"goal\":\"هدف آزمون API صف\",\"agent\":\"builder\",\"max_attempts\":2}" -H 'Content-Type: application/json' "$BASE/api/tasks" -o "$T/p7/task-add.json" -w '%{http_code}')
+check "P7-2-A1 افزودن وظیفه → 201" "201" "$B"
+TID=$(python3 -c "import json;print(json.load(open('$T/p7/task-add.json'))['task']['id'])")
+
+B=$(curl -s -o "$T/p7/task-view.json" -w '%{http_code}' "$BASE/api/tasks/view?id=$TID")
+check "P7-2-A2 مشاهده وظیفه → 200" "200" "$B"
+case "$(cat "$T/p7/task-view.json")" in *'"state": "queued"'*) check "P7-2-A3 وضعیت اولیه queued" "ok" "ok";;
+    *) check "P7-2-A3 وضعیت اولیه queued" "ok" "no";; esac
+
+check "P7-2-A4 وظیفهٔ ناشناخته → 404" "404" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/tasks/view?id=t-nope")"
+check "P7-2-A5 پروژهٔ ناموجود → 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d '{"project":"no-such-proj-zz","goal":"x"}' -H 'Content-Type: application/json' "$BASE/api/tasks")"
+check "P7-2-A6 عامل ناشناخته → 404" "404" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d "{\"project\":\"$PROJ\",\"goal\":\"x\",\"agent\":\"no-such\"}" -H 'Content-Type: application/json' "$BASE/api/tasks")"
+check "P7-2-A7 هدف خالی → 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d "{\"project\":\"$PROJ\",\"goal\":\"\"}" -H 'Content-Type: application/json' "$BASE/api/tasks")"
+
+check "P7-2-A8 لغو وظیفه → 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d "{\"id\":\"$TID\"}" -H 'Content-Type: application/json' "$BASE/api/tasks/cancel")"
+case "$(curl -s "$BASE/api/tasks/view?id=$TID")" in *'"state": "cancelled"'*) check "P7-2-A9 وضعیت cancelled ماندگار" "ok" "ok";;
+    *) check "P7-2-A9 وضعیت cancelled ماندگار" "ok" "no";; esac
+check "P7-2-A10 تلاش مجدد دستی → 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d "{\"id\":\"$TID\"}" -H 'Content-Type: application/json' "$BASE/api/tasks/retry")"
+# retry وظیفه را به queued برمی‌گرداند — برای تمیزی Part B دوباره لغو می‌شود
+check "P7-2-A10ب لغو پس از retry → 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d "{\"id\":\"$TID\"}" -H 'Content-Type: application/json' "$BASE/api/tasks/cancel")"
+check "P7-2-A11 بازیابی بدون یتیم → count 0" "0" "$(curl -s -X POST -d '{}' -H 'Content-Type: application/json' "$BASE/api/tasks/recover" | python3 -c 'import json,sys;print(json.load(sys.stdin)["count"])')"
+S=$(curl -s "$BASE/api/tasks/stats")
+case "$S" in *'"queued"'*) check "P7-2-A12 stats همهٔ وضعیت‌ها را می‌دهد" "ok" "ok";;
+    *) check "P7-2-A12 stats همهٔ وضعیت‌ها را می‌دهد" "ok" "no";; esac
+
+echo "════ P7-2/B — ری‌استارت واقعی پنل و بازیابی وظیفهٔ یتیم"
+# claim via real store (worker-side view), then REAL restart, then recover
+B=$(curl -s -X POST -d "{\"project\":\"$PROJ\",\"goal\":\"آزمون بازیابی پس از ری‌استارت\",\"agent\":\"builder\"}" -H 'Content-Type: application/json' "$BASE/api/tasks" -o "$T/p7/task-orphan.json" -w '%{http_code}')
+check "P7-2-B1 وظیفهٔ بازیابی ساخته شد → 201" "201" "$B"
+OID=$(python3 -c "import json;print(json.load(open('$T/p7/task-orphan.json'))['task']['id'])")
+C=$(python3 - "$OID" <<'PYEOF'
+import sys
+sys.path.insert(0, ".")
+import core.tasks as T
+t = T.claim_next("w-orphan")
+print("PASS" if t and t["id"] == sys.argv[1] and t["state"] == "running" else "FAIL")
+PYEOF
+)
+check "P7-2-B2 claim واقعی → running" "PASS" "$C"
+bash "$ROOT/scripts/ai-factory-stop" >/dev/null 2>&1; sleep 1
+bash "$ROOT/scripts/ai-factory-start" >/dev/null 2>&1; sleep 2
+# sessions died with the restart → re-login
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+R=$(curl -s -X POST -d '{}' -H 'Content-Type: application/json' "$BASE/api/tasks/recover")
+case "$R" in *"\"id\": \"$OID\""*) check "P7-2-B3 وظیفهٔ یتیم پس از ری‌استارت بازیابی شد" "ok" "ok";;
+    *) check "P7-2-B3 وظیفهٔ یتیم پس از ری‌استارت بازیابی شد" "ok" "no: $R";; esac
+V=$(curl -s "$BASE/api/tasks/view?id=$OID")
+case "$V" in *'"state": "queued"'*) check "P7-2-B4 وظیفهٔ بازیابی‌شده دوباره queued است" "ok" "ok";;
+    *) check "P7-2-B4 وظیفهٔ بازیابی‌شده دوباره queued است" "ok" "no: $V";; esac
+case "$V" in *'"attempts": 1'*) check "P7-2-B5 شمارش تلاش حفظ شد (1)" "ok" "ok";;
+    *) check "P7-2-B5 شمارش تلاش حفظ شد (1)" "ok" "no";; esac
+
+# پایان: هیچ وظیفهٔ queued باقی نماند (کارگرهای P7-3 وارث آن‌ها می‌شوند)
+curl -s -o /dev/null -X POST -d "{\"id\":\"$OID\"}" -H 'Content-Type: application/json' "$BASE/api/tasks/cancel"
+Q=$(curl -s "$BASE/api/tasks/stats" | python3 -c 'import json,sys;print(json.load(sys.stdin)["stats"]["queued"])')
+check "P7-2-B6 صف در پایان خالی است (هیچ وظیفهٔ یتیم برای آینده)" "0" "$Q"
+PERM=$(stat -c '%a' "$ROOT/data/tasks.json" 2>/dev/null)
+check "P7-2-B7 فایل صف 0600" "600" "$PERM"
+
+echo "──────────────────"
+echo "نتیجهٔ P7-2: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

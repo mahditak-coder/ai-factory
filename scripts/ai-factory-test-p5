@@ -1,0 +1,281 @@
+# ai-factory-test-p5 — MISSION: real Workspace IDE tests (files + run + live
+# preview + errors) after P1..P4. Creates ITS OWN brand-new test project(s)
+# through the REAL factory API, exercises every P5 capability via the live
+# panel, then DELETES those new projects. Existing projects are never touched.
+# Run: bash scripts/ai-factory-test-p5      (~2..3 minutes, factory must be up)
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; FAIL=0
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1"
+    else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi
+}
+cd "$ROOT"
+
+bash scripts/ai-factory-status >/dev/null 2>&1 || bash scripts/ai-factory-start >/dev/null 2>&1
+
+SAMPLE_NAME="p5-ide-$(date +%H%M%S)"
+SAMPLE_NAME_PY="p5-py-$(date +%H%M%S)"
+BASE="http://127.0.0.1:8580"
+# AF-05.1: رمز پنل هرگز ثابت نیست — از env یا فایل امن محلی (0600) خوانده می‌شود
+PANEL_PASS="${PANEL_PASS:-}"
+if [ -z "$PANEL_PASS" ] && [ -r "$HOME/.af-panel/panel-pass.txt" ]; then
+    PANEL_PASS="$(tr -d '\n\r' < "$HOME/.af-panel/panel-pass.txt")"
+fi
+export PANEL_PASS
+if [ -z "$PANEL_PASS" ]; then
+    echo "panel credential missing — set PANEL_PASS or create ~/.af-panel/panel-pass.txt (0600)" >&2
+    exit 1
+fi
+trap 'rm -f "$TMPDIR/p5-cookies"; curl -s -c "$TMPDIR/p5-cookies" -X POST -d "{\"password\":\"$PANEL_PASS\"}" -H "Content-Type: application/json" "$BASE/api/panel/login" >/dev/null; C5=$(grep -oE "panel_csrf[[:space:]]+[A-Za-z0-9_-]+" "$TMPDIR/p5-cookies" | head -1 | awk "{print \$2}"); \
+      curl -s -b "$TMPDIR/p5-cookies" -H "X-Panel-CSRF: $C5" -X POST "$BASE/api/factory/delete" -H "Content-Type: application/json" \
+        -d "{\"project\":\"$SAMPLE_NAME\",\"confirm\":true}" >/dev/null; \
+      curl -s -b "$TMPDIR/p5-cookies" -H "X-Panel-CSRF: $C5" -X POST "$BASE/api/factory/delete" -H "Content-Type: application/json" \
+        -d "{\"project\":\"$SAMPLE_NAME_PY\",\"confirm\":true}" >/dev/null' EXIT
+
+SAMPLE_NAME="$SAMPLE_NAME" SAMPLE_NAME_PY="$SAMPLE_NAME_PY" python3 - <<'PYEOF'
+import json, os, sys, time, urllib.request, urllib.error
+BASE = "http://127.0.0.1:8580"
+NAME = os.environ["SAMPLE_NAME"]; NAME_PY = os.environ["SAMPLE_NAME_PY"]
+fails = []
+PANEL_PASS = os.environ.get("PANEL_PASS") or ""
+if not PANEL_PASS:
+    fails.append("panel-credential-missing")
+    print("P5 FAIL - panel credential missing "
+          "(set PANEL_PASS or create ~/.af-panel/panel-pass.txt)")
+    sys.exit(1)
+
+def ck(name, cond, extra=""):
+    if cond: print("P5 ok  -", name)
+    else: fails.append(name); print("P5 FAIL -", name, extra)
+
+# P6-2: login first — every protected API now demands the panel session.
+def _panel_login():
+    global _SESS, _CSRF
+    _SESS = _CSRF = ""
+    st = urllib.request.urlopen(BASE + "/api/panel/state", timeout=20).read()
+    sv = json.loads(st.decode() or "{}")
+    def post(path, body):
+        r = urllib.request.Request(BASE + path, method="POST",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"})
+        return urllib.request.urlopen(r, timeout=30)
+    if not sv.get("initialized"):
+        post("/api/panel/init", {"password": PANEL_PASS})
+    r = post("/api/panel/login", {"password": PANEL_PASS})
+    for sc in (r.headers.get_all("Set-Cookie") or []):
+        for c in sc.split(", "):
+            p = c.split(";")[0]
+            if p.startswith("panel_session="): _SESS = p.split("=", 1)[1]
+            elif p.startswith("panel_csrf="): _CSRF = p.split("=", 1)[1]
+_panel_login()
+
+def req(method, path, body=None):
+    data = json.dumps(body).encode() if body is not None else None
+    r = urllib.request.Request(BASE + path, data=data, method=method)
+    if data: r.add_header("Content-Type", "application/json")
+    if _SESS: r.add_header("Cookie", "panel_session=" + _SESS)
+    if _CSRF:
+        # double-submit: BOTH the cookie and the header must match
+        r.add_header("Cookie",
+                     "panel_session=" + _SESS + "; panel_csrf=" + _CSRF)
+        r.add_header("X-Panel-CSRF", _CSRF)
+    try:
+        with urllib.request.urlopen(r, timeout=60) as resp:
+            return resp.status, json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        try: return e.code, json.loads(e.read().decode() or "{}")
+        except ValueError: return e.code, {}
+    except Exception as e:
+        return 0, {"ok": False, "error": str(e)}
+def api(m, p, b=None):
+    c, j = req(m, p, b)
+    if not j.get("ok"): raise RuntimeError("%s %s → %s %s" % (m, p, c, j))
+    return j
+def file_url(proj, rel):  # rel may contain ../ for traversal probes
+    return "/api/file?project=" + urllib.parse.quote(proj) + \
+           "&path=" + urllib.parse.quote(rel)
+
+# ── ساخت دو پروژهٔ آزمایشی کاملاً جدید از مسیر واقعی فابریک (پنل) ──
+api("POST", "/api/factory/projects",
+    {"name": NAME, "type": "webpage", "description": "P5 IDE test"})
+api("POST", "/api/factory/projects",
+    {"name": NAME_PY, "type": "ai-tool", "description": "P5 python test"})
+
+# ── ۱) فهرست فایل‌های پروژه (درخت واقعی) ──
+j = api("GET", "/api/files?project=" + urllib.parse.quote(NAME))
+paths = [f["path"] for f in j["files"]]
+ck("۱ فهرست فایل‌ها واقعی است (README از قالب)", len(paths) >= 1
+   and any(p.endswith(".md") for p in paths), str(paths))
+
+# ── ۲) باز کردن و خواندن فایل ──
+j = api("GET", file_url(NAME, "README.md"))
+ck("۲ خواندن واقعی فایل (محتوا با هدر پروژه)", "p5-ide-" in j.get("content", "").lower())
+
+# ── ۳) ویرایش و ذخیرهٔ واقعی ──
+TEXT = "این فایل P5 است ، " + "x" * 40
+api("PUT", "/api/file", {"project": NAME, "path": "web/p5-note.md", "content": TEXT})
+time.sleep(0.2)
+j = api("GET", file_url(NAME, "web/p5-note.md"))
+ck("۳ ویرایش/ذخیرهٔ واقعی و بازخوانی از دیسک", j.get("content") == TEXT)
+
+# ── ۴) ایجاد + حذف فایل آزمایشی ──
+api("PUT", "/api/file", {"project": NAME, "path": "web/tmp-probe.txt",
+                         "content": "probe"})
+c, j = req("GET", file_url(NAME, "web/tmp-probe.txt")); created = c == 200
+c, j = req("DELETE", "/api/file?project=%s&path=web/tmp-probe.txt"
+           % urllib.parse.quote(NAME))
+deleted = c == 200
+time.sleep(0.2)
+c, j = req("GET", file_url(NAME, "web/tmp-probe.txt"))
+ck("۴ ایجاد فایل جدید", created and deleted and c == 404,
+   "create=%s delete=%s get=%s" % (created, deleted, c))
+
+# ── ۴-ب) تغییر نام واقعی ──
+api("PUT", "/api/file", {"project": NAME, "path": "web/old-name.txt",
+                         "content": "rename me"})
+api("POST", "/api/file/rename", {"project": NAME, "path": "web/old-name.txt",
+                                 "new_path": "web/new-name.txt"})
+c, j = req("GET", file_url(NAME, "web/new-name.txt"))
+c_old, _ = req("GET", file_url(NAME, "web/old-name.txt"))
+ck("۴-ب تغییر نام واقعی (+ مسیر قدیمی حذف شد)",
+   c == 200 and j.get("content") == "rename me" and c_old == 404)
+
+# ── ۵) رد مسیرهای خطرناک (traversal + مطلق) ──
+c1, _ = req("GET", file_url(NAME, "../../server.py"))
+c2, _ = req("GET", file_url(NAME, "/etc/passwd"))
+ck("۵ Path Traversal و مسیر مطلق رد شد (403/400)",
+   c1 in (403, 400) and c2 in (403, 400), "%s,%s" % (c1, c2))
+
+# ── ۶+۸) اجرای وب‌سایت استاتیک + پیش‌نمایش زندهٔ واقعی ──
+api("PUT", "/api/file", {"project": NAME,
+    "path": "index.html",
+    "content": "<!DOCTYPE html><html lang=\"fa\" dir=\"rtl\"><head>"
+               "<meta charset=\"utf-8\"><title>آزمون P5</title></head>"
+               "<body><h1>پیش‌نمایش زندهٔ واقعی P5</h1></body></html>"})
+j = api("POST", "/api/factory/run", {"project": NAME})
+port_static = j.get("port"); kind = j.get("kind")
+ck("۶ اجرای وب‌سایت HTML (نوع static-web، پورت کنترل‌شده)",
+   j.get("running") and kind == "static-web" and 8610 <= (port_static or 0) <= 8658,
+   json.dumps(j, ensure_ascii=False)[:140])
+time.sleep(1.0)
+# fetch preview via raw http (not the helper that forces JSON)
+import urllib.request as uq
+with uq.urlopen("http://127.0.0.1:%d/" % port_static, timeout=5) as r:
+    live = r.read().decode()
+ck("۸ پیش‌نمایش زندهٔ واقعی از پورت اجرا (همان نمایش iframe)",
+   "پیش‌نمایش زندهٔ واقعی P5" in live)
+
+# ── ۷) اجرای پروژهٔ پایتون (سرویس) ──
+PY_SERVER = '''import os, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        b = "OK-PY-79".encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("PORT", 0))), H).serve_forever()
+'''
+api("PUT", "/api/file", {"project": NAME_PY, "path": "server.py",
+                         "content": PY_SERVER})
+j = api("POST", "/api/factory/run", {"project": NAME_PY})
+port_py = j.get("port")
+ck("۷ اجرای پروژهٔ پایتون (server.py از env PORT خوانده شد)",
+   j.get("running") and j.get("kind") == "python"
+   and 8610 <= (port_py or 0) <= 8658, json.dumps(j)[:140])
+with uq.urlopen("http://127.0.0.1:%d/" % port_py, timeout=5) as r:
+    ck("۷-ب پاسخ واقعی سرویس پایتون", r.read().decode() == "OK-PY-79")
+
+# ── ۹) توقف و راه‌اندازی مجدد ──
+api("POST", "/api/factory/stop", {"project": NAME_PY})
+j = api("GET", "/api/factory/runs")
+mine = [x for x in j["runs"] if x["name"] == NAME_PY]
+ck("۹-الف توقف واقعی (بدون رکورد running)",
+   (not mine) or not mine[0].get("running"), str(mine)[:120])
+j = api("POST", "/api/factory/run", {"project": NAME_PY}); port2 = j.get("port")
+ck("۹-ب راه‌اندازی مجدد موفق", j.get("running") and j.get("kind") == "python",
+   json.dumps(j)[:120])
+api("POST", "/api/factory/stop", {"project": NAME_PY})
+api("POST", "/api/factory/stop", {"project": NAME})
+
+# ── ۱۰) نمایش خطای واقعی برنامهٔ خراب ──
+api("PUT", "/api/file", {"project": NAME_PY, "path": "server.py",
+                         "content": "def broken(:\n  pass\n"})
+try:
+    j = api("POST", "/api/factory/run", {"project": NAME_PY})
+except RuntimeError as e:
+    j = {"running": False}
+c, j2 = req("GET", "/api/factory/runlog?project=" + urllib.parse.quote(NAME_PY))
+logtext = j2.get("logs", "")
+ck("۱۰ خطای واقعی برنامهٔ خراب در runlog (SyntaxError + نام فایل)",
+   (not j.get("running")) and ("SyntaxError" in logtext or "invalid syntax"
+       in logtext), "running=%s log=%r" % (j.get("running"), logtext[:120]))
+
+# ── ۱۱) زمینهٔ کپی خطا (منبع دکمهٔ کپی) + ۱۲) عدم نشت محرمانه ──
+ck("۱۱ منبع دکمهٔ کپی = متن کامل خطا از runlog",
+   len(logtext.strip()) > 0)
+# فایل کلید خصوصی: باید deny شود — ساخت واقعی روی دیسک (بیرون از پنل)
+from pathlib import Path
+sys.path.insert(0, os.getcwd())
+from core import paths as _paths
+d = _paths.project_dir(NAME_PY)
+(d / "data").mkdir(exist_ok=True)
+kf = d / "data" / "ai_key.txt"
+kf.write_text("FAKE-KEY-999")
+os.chmod(kf, 0o600)
+c, j3 = req("GET", file_url(NAME_PY, "data/ai_key.txt"))
+c2, j4 = req("GET", "/api/files?project=" + urllib.parse.quote(NAME_PY))
+leak2 = "ai_key" in json.dumps(j4)
+resp_blob = json.dumps(j2) + json.dumps(j3) + json.dumps(j4)
+ck("۱۲ فایل محرمانه (data/ai_key.txt) از پنل خوانده/فهرست نشد",
+   c == 403 and not leak2 and "FAKE-KEY-999" not in resp_blob,
+   "read=%s listed=%s" % (c, leak2))
+c, _ = req("PUT", "/api/file", {"project": NAME_PY, "path": "data/ai_key.txt",
+                                "content": "overwrite-attempt"})
+c2, _ = req("DELETE", file_url(NAME_PY, "data/ai_key.txt"))
+ck("۱۲-ب نوشتن/حذف فایل محرمانه از پنل ممنوع", c == 403 and c2 == 403,
+   "%s,%s" % (c, c2))
+
+# ── ۱۳) محیط موبایل (ساختاری — بدون مرورگر گرافیکی) ──
+with uq.urlopen(BASE + "/workspace.html", timeout=5) as r:
+    ws = r.read().decode()
+with uq.urlopen(BASE + "/workspace.css", timeout=5) as r:
+    wcss = r.read().decode()
+ck("۱۳ Workspace: پیش‌نمایش واقعی iframe + قابلیت موبایل/RTL ساختاری",
+   'dir="rtl"' in ws and 'lang="fa"' in ws and "prevFrame" in ws
+   and "iframe" in ws and "@media (max-width" in wcss
+   and ".ws-preview" in wcss)
+
+# ── پاک‌سازی: پروژه‌های آزمایشی P5 حذف می‌شوند (پروژه‌های قبلی دست نمی‌خورند) ──
+api("POST", "/api/factory/delete", {"project": NAME_PY, "confirm": True})
+api("POST", "/api/factory/delete", {"project": NAME, "confirm": True})
+
+if fails:
+    print("P5-FAILURES:", fails)
+    sys.exit(1)
+print("P5-OK")
+PYEOF
+RC=$?
+check "P5: تمام سناریوهای IDE واقعاً سبز" "$RC" "0"
+
+echo
+echo "═══════ رگرسیون P1–P4 ═══════"
+for s in p1 fullstack ai aiadmin oc zipfix workspace p4 e2e; do
+    if [ -f "scripts/ai-factory-test-$s" ]; then
+        bash "scripts/ai-factory-test-$s" > "$TMPDIR/p5-$s.log" 2>&1
+        if tail -4 "$TMPDIR/p5-$s.log" | grep -qE "ALL GREEN|موفق، 0 ناموفق|PASS=[0-9]+ FAIL=0| موفق، 0"; then
+            PASS=$((PASS+1)); echo "✅ رگرسیون $s"
+        else
+            FAIL=$((FAIL+1)); echo "❌ رگرسیون $s — $(tail -2 "$TMPDIR/p5-$s.log" | head -1)"
+        fi
+    fi
+done
+
+echo
+echo "═══════ جمع‌بندی P5 ═══════"
+echo "RESULT: PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" || echo "SOME RED"
+exit $([ "$FAIL" -eq 0 ] && echo 0 || echo 1)

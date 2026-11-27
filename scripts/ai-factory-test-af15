@@ -1,0 +1,262 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af15 — ارزیابی و اصلاح خودکار کد محصولات
+#   Q) زیرساخت موجود: quality/autofix/backups + سلامت
+#   S) S1 تشخیص (خطای قطعی/هشدار/آزمون واقعی) · S2 اصلاح موفق با مدل واقعی
+#      (re-test + diff + scope) · S3 اصلاح ناموفق عمدی → rollback + گزارش
+#      صادقانه · S4 مکانیزم scope/rollback (قطعی، درون‌فرایندی)
+#   A) API پنل: quality (401/200) · autofix بدون CSRF → 403
+#   U) یکپارچگی پروژهٔ کاربر («معلم من») — manifest قبل/بعد یکسان
+#   R) پاک‌سازی + رگرسیون af061/af062/af07/af11
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+PASS=0; FAIL=0; NT=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+nt() { NT=$((NT+1)); echo "⚠️  NOT TESTED — $1"; }
+
+echo "════════ AF-15 — ارزیابی و اصلاح خودکار ════════"
+checkeq "پنل سالم" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "پشتیبان af15 موجود" "OK" "$(ls "$ROOT"/backups/af15-*/factory.py \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "ماژول quality موجود" "OK" "$(ls "$ROOT/core/quality.py" "$ROOT/core/autofix.py" \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+# پاک‌سازی باقی‌ماندهٔ احتمالی اجرای قبلی — پیش از ثبت manifest مرجع
+rm -rf "$ROOT/projects/"af15-* 2>/dev/null
+UMAN_BEFORE=$(cd "$ROOT" && python3 -c "
+import sys, hashlib, json; sys.path.insert(0, '.')
+import core.config as config
+m = {}
+skip = config.EXPORT_EXCLUDE_NAMES
+for proj in sorted(config.PROJECTS_DIR.iterdir()):
+    if not proj.is_dir():
+        continue
+    for f in proj.rglob('*'):
+        if f.is_file() and not (set(f.parts) & skip) and f.suffix.lower() != '.pyc':
+            m[f.relative_to(config.PROJECTS_DIR).as_posix()] = \\
+                hashlib.sha256(f.read_bytes()).hexdigest()
+print(hashlib.sha256(json.dumps(m, sort_keys=True).encode()).hexdigest())")
+
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import hashlib, json, os, shutil, subprocess, sys, time
+sys.path.insert(0, ".")
+from pathlib import Path
+import core.config as config
+from core import paths, factory, autofix, quality
+
+ROOT = str(config.PROJECT_ROOT)
+TMP = os.environ["TMP"]
+results = []
+def step(name, ok, detail=""):
+    results.append((name, ok))
+    print("STEP %s %s %s" % ("OK" if ok else "FAIL", name, str(detail)[:150]))
+
+def scaffold_fix(name, ptype="fullstack-python"):
+    shutil.rmtree(os.path.join(ROOT, "projects", name), ignore_errors=True)
+    factory.create_project(name, ptype, "AF-15 fixture")
+    return paths.project_dir(name)
+
+try:
+    # ══ S4) مکانیزم scope/rollback (قطعی، بدون مدل) ══
+    d = scaffold_fix("af15-mech", "api")
+    (d / "a.py").write_text('print("a")\n', encoding="utf-8")
+    (d / "b.py").write_text('print("b")\n', encoding="utf-8")
+    snap = d / ".factory" / "af15-snap"
+    (snap / "files").mkdir(parents=True)
+    for f in d.rglob("*"):                    # ALL files — like autofix.run
+        if f.is_file() and ".factory" not in f.parts:
+            shutil.copy2(f, snap / "files" / f.relative_to(d))
+    before = autofix._manifest(d)
+    (d / "b.py").write_text('print("OUT-OF-SCOPE")\n', encoding="utf-8")
+    (d / "rogue.txt").write_text("rogue\n", encoding="utf-8")
+    sc = autofix._scope_report(before, autofix._manifest(d), {"a.py"})
+    step("S4-scope-detect", not sc["in_scope"]
+         and "b.py" in sc["out_of_scope"] and "rogue.txt" in sc["out_of_scope"],
+         str(sc["out_of_scope"]))
+    rb = autofix._rollback(d, before, snap)
+    step("S4-rollback-verify", rb["ok"] and autofix._manifest(d) == before
+         and rb["restored"] and rb["removed"] == ["rogue.txt"],
+         "restored=%s removed=%s" % (rb["restored"], rb["removed"]))
+    shutil.rmtree(d, ignore_errors=True)
+
+    # ══ S1) تشخیص کیفیت — قطعی/هشدار/آزمون واقعی ══
+    d = scaffold_fix("af15-detect", "api")
+    (d / "server.py").write_text(
+        'import os\ndef route(:\n    eval("x + y")\ntry:\n    pass\nexcept: pass\n',
+        encoding="utf-8")
+    (d / "utils.py").write_text('from .missing import helper\n', encoding="utf-8")
+    (d / "app.js").write_text('const c = require("./gone.js");\n', encoding="utf-8")
+    (d / "config.json").write_text('{broken', encoding="utf-8")
+    (d / "net.py").write_text(
+        'import subprocess\nsubprocess.run("x", shell=True)\nimport ssl\n'
+        'ssl._create_unverified_context = ssl._create_unverified_context\n'
+        'import pickle\npickle.loads(b"")\n# TODO: remove debug\n',
+        encoding="utf-8")
+    q = quality.evaluate("af15-detect", boot=True)
+    kinds = {e["kind"] for e in q["errors"]}
+    wkinds = {w["kind"] for w in q["warnings"]}
+    step("S1-status-FAIL", q["status"] == "FAIL", "status=%s" % q["status"])
+    step("S1-definite-errors", {"python-syntax", "import-missing",
+         "require-missing", "json-syntax"} <= kinds, str(sorted(kinds)))
+    step("S1-error-has-file-line", all(
+        any(e["kind"] == k and e.get("line") for e in q["errors"])
+        for k in ("python-syntax", "import-missing", "require-missing")),
+        "file+line on definite errors")
+    step("S1-warnings-separated", {
+        "warn-eval-exec", "warn-bare-except-pass", "warn-shell-true",
+        "warn-pickle-loads", "warn-todo-left"} <= wkinds, str(sorted(wkinds)))
+    step("S1-tests-ran-honest", q["tests"]["ran"] is True
+         and q["tests"]["all_ok"] is False,
+         "ran=%s all_ok=%s" % (q["tests"]["ran"], q["tests"]["all_ok"]))
+    step("S1-no-fake-score", "score" not in json.dumps(q)
+         and "percent" not in json.dumps(q))
+    shutil.rmtree(d, ignore_errors=True)
+
+    # ══ S2) اصلاح موفق با مدل واقعی — re-test + diff + scope ══
+    d = scaffold_fix("af15-fix-ok")
+    factory.create_session("af15-fix-ok",
+                           "%s — af15 test" % factory.GEN_TITLE_PREFIX)
+    base = quality.evaluate("af15-fix-ok", boot=True)
+    step("S2-baseline-green", base["status"] == "PASS",
+         "پیش از خرابی عمدی، قالب پاس است")
+    sp = d / "server.py"
+    original = sp.read_text(encoding="utf-8")
+    sp.write_text(original + "\ndef _af15_broken(:\n", encoding="utf-8")
+    broken_q = quality.evaluate("af15-fix-ok", boot=True)
+    step("S2-break-detected", broken_q["status"] == "FAIL"
+         and any(e["kind"] == "python-syntax" and e["file"] == "server.py"
+                 for e in broken_q["errors"]),
+         "server.py python-syntax شناسایی شد")
+    rep = autofix.run("af15-fix-ok")
+    fix = rep.get("fix") or {}
+    scope = fix.get("scope") or {}
+    after = rep.get("after") or {}
+    step("S2-model-fix-done", fix.get("model_ok") is True,
+         (fix.get("note") or "model turn completed")[:80])
+    step("S2-scope-clean", scope.get("in_scope") is True
+         and not scope.get("out_of_scope")
+         and "server.py" in (scope.get("changed") or []),
+         "changed=%s" % (scope.get("changed"),))
+    step("S2-retest-green", rep["status"] == "PASS"
+         and after.get("status") == "PASS" and not rep.get("rolled_back"),
+         "پس از اصلاح، آزمون‌ها دوباره اجرا و پاس شدند")
+    step("S2-diff-traceable", (d / ".factory" / "quality.json").is_file()
+         and json.loads((d / ".factory" / "quality.json").read_text())
+         ["fix"]["scope"]["changed"],
+         "گزارش ماندگار با فهرست فایل‌های تغییرکرده")
+    hist = [h for h in factory.history_of("af15-fix-ok")
+            if h.get("action") == "auto-fix"]
+    step("S2-history-recorded", bool(hist), str(hist[-1:])[:80])
+    shutil.rmtree(d, ignore_errors=True)
+
+    # ══ S3) اصلاح ناموفق عمدی → rollback + گزارش صادقانه ══
+    d = scaffold_fix("af15-fix-fail")
+    sp = d / "server.py"
+    original = sp.read_text(encoding="utf-8")
+    sp.write_text(original + "\ndef _af15_broken(:\n", encoding="utf-8")
+    pre_manifest = autofix._manifest(d)
+    # عمدی: نشست اصلاح را از دسترس خارج می‌کنیم (خطای واقعی و قطعی از پل)
+    factory._record_gen("af15-fix-fail", "ses-af15-missing-session")
+    rep = autofix.run("af15-fix-fail")
+    fix = rep.get("fix") or {}
+    rb = rep.get("rollback") or {}
+    after_m = autofix._manifest(d)
+    step("S3-fix-failed-honest", fix.get("model_ok") is False
+         and "نشست تولید" in (fix.get("note") or ""),
+         (fix.get("note") or "")[:80])
+    step("S3-rollback-ran", rep.get("rolled_back") is True
+         and rb.get("ok") is True, "rollback=%s" % rb.get("ok"))
+    step("S3-files-byte-identical", after_m == pre_manifest,
+         "بدنهٔ پروژه دقیقاً به pre-snapshot برگشت")
+    step("S3-no-fake-pass", rep["status"] in ("FAIL", "NEEDS_REVIEW")
+         and "بازبینی" in rep.get("note", ""),
+         "status=%s note=%s" % (rep["status"], rep.get("note", "")[:60]))
+    step("S3-report-persisted",
+         (d / ".factory" / "quality.json").is_file())
+    shutil.rmtree(d, ignore_errors=True)
+
+    # ══ U) یکپارچگی «معلم من» و همهٔ پروژه‌های کاربر ══
+    # (مقایسهٔ سراسری قبل/بعد در سطح bash انجام می‌شود — UMAN_BEFORE/UMAN_AFTER)
+    if (config.PROJECTS_DIR / "معلم من").is_dir():
+        print("USER-PROJECT-PRESENT معلم من")
+    else:
+        print("USER-PROJECT-ABSENT «معلم من» در projects/ وجود ندارد — "
+              "کنترل یکپارچگی سراسری همهٔ پروژه‌ها در سطح bash اجرا می‌شود")
+finally:
+    import glob as g
+    for p in g.glob(os.path.join(ROOT, "projects", "af15-*")):
+        shutil.rmtree(p, ignore_errors=True)
+    print("AF15-PY %s" % ("ALL-OK" if all(o for _, o in results)
+                          else "HAS-FAIL"))
+EOF
+)
+echo "$OUT" | grep "^STEP"
+UMSHA=$(echo "$OUT" | grep "^USER-MANIFEST-SHA" | awk '{print $2}')
+echo
+echo "$OUT" | grep "^AF15-PY"
+
+echo "== A) API پنل (کیفیت/اصلاح) =="
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+checkeq "A-quality بدون نشست → 401" "401" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' -m 5 'http://127.0.0.1:8580/api/factory/quality?project=x')"
+rm -rf "$ROOT/projects/af15-api"
+mkdir -p "$ROOT/projects/af15-api"
+echo '{"name":"af15-api","type":"api","description":"AF-15 api fixture","created":"2026-11-14T00:00:00","modified":"2026-11-14T00:00:00"}' > "$ROOT/projects/af15-api/meta.json"
+echo 'print("ok")' > "$ROOT/projects/af15-api/server.py"
+QR=$(pauth -sS -m 30 "http://127.0.0.1:8580/api/factory/quality?project=af15-api&boot=0" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); r=d.get('result',{}); print('OK' if d.get('ok') and r.get('status') in ('PASS','NEEDS_REVIEW') else 'FAIL')" 2>/dev/null)
+checkeq "A-quality با نشست (boot=0) → وضعیت صادقانه" "OK" "$QR"
+CSRFNO=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H 'Content-Type: application/json' \
+  -H "Cookie: panel_session=$(awk '$6 == "panel_session" {print $7}' "$PANEL_COOKIES" | tail -1)" \
+  -d '{"project":"af15-api"}' http://127.0.0.1:8580/api/factory/autofix)
+checkeq "A-autofix بدون CSRF → 403" "403" "$CSRFNO"
+AF=$(pauth -sS -m 60 -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af15-api","boot":0}' http://127.0.0.1:8580/api/factory/autofix \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); r=d.get('result',{}); print('OK' if d.get('ok') and r.get('status') in ('PASS','NEEDS_REVIEW') and 'rolled_back' in r else 'FAIL')" 2>/dev/null)
+checkeq "A-autofix با CSRF (پروژهٔ سالم → بدون فراخوانی مدل)" "OK" "$AF"
+
+echo "== R) پاک‌سازی + رگرسیون =="
+pauth -fsS -m 15 -X POST http://127.0.0.1:8580/api/factory/delete \
+  -H 'Content-Type: application/json' -d '{"project":"af15-api","confirm":true}' \
+  -o /dev/null 2>/dev/null || true
+rm -rf "$ROOT/projects/af15-api"
+LEFT=$(ls "$ROOT/projects" 2>/dev/null | grep -c "^af15-"; ls "$ROOT/exports" 2>/dev/null | grep -c "^af15-")
+checkeq "R-بدون باقی‌ماندهٔ af15" "0
+0" "$LEFT"
+UMAN_AFTER=$(cd "$ROOT" && python3 -c "
+import sys, hashlib, json; sys.path.insert(0, '.')
+import core.config as config
+m = {}
+skip = config.EXPORT_EXCLUDE_NAMES
+for proj in sorted(config.PROJECTS_DIR.iterdir()):
+    if not proj.is_dir():
+        continue
+    for f in proj.rglob('*'):
+        if f.is_file() and not (set(f.parts) & skip) and f.suffix.lower() != '.pyc':
+            m[f.relative_to(config.PROJECTS_DIR).as_posix()] = \\
+                hashlib.sha256(f.read_bytes()).hexdigest()
+print(hashlib.sha256(json.dumps(m, sort_keys=True).encode()).hexdigest())")
+checkeq "U-همهٔ پروژه‌های کاربر دست‌نخورده (hash سراسری قبل=بعد)" "$UMAN_BEFORE" "$UMAN_AFTER"
+R061=$(bash "$ROOT/scripts/ai-factory-test-af061" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af061 (حلقهٔ اصلاح)" "PASS=7 FAIL=0" "$R061"
+R062=$(bash "$ROOT/scripts/ai-factory-test-af062" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af062 (fix از UI تا payload)" "PASS=18 FAIL=0" "$R062"
+R07=$(bash "$ROOT/scripts/ai-factory-test-af07" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af07 (امنیت + endpointهای جدید)" "PASS=36 FAIL=0" "$R07"
+R11=$(bash "$ROOT/scripts/ai-factory-test-af11" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af11" "PASS=7 FAIL=0" "$R11"
+checkeq "R-پنل سالم (بعد)" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK || echo FAIL)"
+
+nt "شکست مدل حین تلاش واقعی اصلاح (مدل تلاش کرد ولی خطا را رفع نکرد) — غیرقطعی و وابسته به مدل؛ به‌جای آن مسیر شکست قطعی (نشست در دسترس نیست) + rollback اثبات شد"
+nt "پوشش کامل unused-code در حد «قطعی» — pyflakes/AST dead-code تحلیل عمقی ندارد؛ فقط موارد مطمئن (TODO/FIXME) به‌عنوان هشدار"
+
+echo
+echo "════════ AF-15 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL NOT-TESTED=$NT"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN (بدون احتساب NOT-TESTED)"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

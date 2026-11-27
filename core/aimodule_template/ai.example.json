@@ -1,0 +1,12 @@
+{
+  "note": "نمونه تنظیمات غیرمحرمانه؛ این فایل را به config.json پروژه خود کپی کنید. کلید/توکن هرگز در این فایل نمی‌آید — فقط متغیر محیطی AI_API_KEY یا فایل AI_API_KEY_FILE.",
+  "ai": {
+    "provider": "openai",
+    "openai": {
+      "base_url": "https://YOUR-PROVIDER-EXAMPLE/v1",
+      "model": "MODEL-NAME-HERE",
+      "key_env": "AI_API_KEY",
+      "timeout": 60
+    }
+  }
+}

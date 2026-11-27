@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# ai-factory-test-r2-1 — R2: real contracts for api/dashboard/webapp/webtool.
+#   Part A: SSOT wiring (contracts + engine functions)
+#   Part B: NEGATIVE enforcement on throwaway projects (exact red kinds) —
+#           proves webapp no longer falls back to webpage-level green
+#   Part C: FOUR REAL model builds (persistent products) + combined testrun
+#           green on the real output (own tests + new contracts)
+#   Part D: independence — each product served/run WITHOUT any factory code
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/r2"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+cd "$ROOT"
+if ! curl -fsS "$BASE/api/health" >/dev/null 2>&1; then
+    bash "$ROOT/scripts/ai-factory-start" >/dev/null; sleep 2
+fi
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+TS=$(date +%H%M%S)
+
+# probe: REAL combined testrun → "ok|kinds" or "red|kinds"
+probe() {
+    curl -s -m 90 -X POST -d "{\"project\":\"$1\"}" \
+        -H 'Content-Type: application/json' "$BASE/api/factory/testrun" \
+        | python3 -c "
+import json,sys
+r = json.load(sys.stdin)
+c = r.get('contract') or {}
+kinds = ','.join(sorted({e.get('kind','') for e in (c.get('errors') or [])})[:4])
+print(('ok' if r.get('ok') else 'red') + '|' + kinds)"
+}
+mkproj() { # name type
+    curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST \
+        -d "{\"name\":\"$1\",\"type\":\"$2\",\"description\":\"r2-1\"}" \
+        -H 'Content-Type: application/json' "$BASE/api/factory/projects"
+}
+delproj() {
+    curl -s -m 30 -o /dev/null -X POST -d "{\"project\":\"$1\",\"confirm\":true}" \
+        -H 'Content-Type: application/json' "$BASE/api/factory/delete"
+}
+
+echo "════ R2-1/A — سیم‌کشی منبع واحد"
+A=$(PYTHONDONTWRITEBYTECODE=1 python3 - <<'PYEOF'
+import json, sys
+sys.path.insert(0, ".")
+from core import typetests
+import core.config as C
+out = {
+  "webapp_contract": bool(C.PROJECT_TYPE_SPECS["webapp"]["contract"]),
+  "api_items": "/api/items" in C.PROJECT_TYPE_SPECS["api"]["contract"],
+  "dashboard_chart": "نمودار" in C.PROJECT_TYPE_SPECS["dashboard"]["contract"],
+  "check_api": callable(typetests.check_api),
+  "dispatch_webapp": "webapp" in open("core/typetests.py", encoding="utf-8").read()
+      and 'check_api(base, errors)' in open("core/typetests.py", encoding="utf-8").read(),
+}
+print(json.dumps(out))
+PYEOF
+)
+for k in webapp_contract api_items dashboard_chart check_api dispatch_webapp; do
+    V=$(echo "$A" | python3 -c "import json,sys;print(json.load(sys.stdin)['$k'])")
+    check "R2-1-A:$k" "True" "$V"
+done
+
+echo "════ R2-1/B — اجرای واقعی قراردادها (منفی، دقیق)"
+# B1 webtool: no interactive at all → red contract-interactive
+PN="r2x-tool-$TS"; mkproj "$PN" webtool >/dev/null
+cat > "projects/$PN/index.html" <<'EOF'
+<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>ابزار آزمون</title></head><body><h1>ابزار آزمون</h1></body></html>
+EOF
+R=$(probe "$PN"); K1="${R#*|}"
+case "$K1" in *contract-interactive*) V1=ok;; *) V1="$K1";; esac
+check "R2-1-B1 webtool بدون تعامل → قرمز contract-interactive" "ok" "$V1"
+# B1b: form+output ولی بدون منطق JS → قرمز contract-tool-logic
+cat > "projects/$PN/index.html" <<'EOF'
+<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>ابزار آزمون</title><link rel="stylesheet" href="style.css"></head><body><h1>ابزار آزمون</h1><form id="f"><input id="v" type="text"><button type="submit">برو</button></form><div id="output" class="result"></div><script src="app.js"></script></body></html>
+EOF
+printf '*{direction:rtl}' > "projects/$PN/style.css"
+printf 'document.getElementById("v").value = "";\n' > "projects/$PN/app.js"
+R=$(probe "$PN")
+case "${R%%|*}:${R#*|}" in red:*contract-tool-logic*) V2=ok;; *) V2="$R";; esac
+check "R2-1-B2 webtool بدون منطق JS → قرمز contract-tool-logic" "ok" "$V2"
+printf 'document.getElementById("f").addEventListener("submit", function(e){e.preventDefault();document.getElementById("output").textContent=document.getElementById("v").value;});\n' > "projects/$PN/app.js"
+R=$(probe "$PN"); check "R2-1-B3 webtool با منطق کامل → سبز" "ok|" "$R"
+delproj "$PN" >/dev/null
+
+# B2 webapp: صفحهٔ سطح-webpage که قدیم سبز می‌شد — حالا باید قرمز باشد
+PN="r2x-app-$TS"; mkproj "$PN" webapp >/dev/null
+cat > "projects/$PN/index.html" <<'EOF'
+<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>وب‌اپ آزمون</title></head><body><h1>وب‌اپ آزمون</h1><button id="b">کلیک</button></body></html>
+EOF
+R=$(probe "$PN")
+case "${R%%|*}:${R#*|}" in red:*contract-webapp-*) V=ok;; *) V="$R";; esac
+check "R2-1-B4 webapp دیگر به webpage سقوط نمی‌کند (صفحهٔ صرف قرمز)" "ok" "$V"
+printf 'document.getElementById("b").addEventListener("click", function(){ localStorage.setItem("k","1"); });\n' > "projects/$PN/app.js"
+cat > "projects/$PN/index.html" <<'EOF'
+<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>وب‌اپ آزمون</title></head><body><h1>وب‌اپ آزمون</h1><button id="b">کلیک</button><script src="app.js"></script></body></html>
+EOF
+R=$(probe "$PN"); check "R2-1-B5 webapp با منطق+storage → سبز" "ok|" "$R"
+delproj "$PN" >/dev/null
+
+# B3 dashboard: بدون داده/نمودار → قرمز؛ با جدول+svg+js → سبز
+PN="r2x-dash-$TS"; mkproj "$PN" dashboard >/dev/null
+cat > "projects/$PN/index.html" <<'EOF'
+<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>داشبورد آزمون</title></head><body><h1>داشبورد آزمون</h1><button id="b">بروزرسانی</button></body></html>
+EOF
+R=$(probe "$PN")
+case "${R#*|}" in *contract-dashboard-data*) V=ok;; *) V="${R#*|}";; esac
+check "R2-1-B6 dashboard بدون داده → قرمز contract-dashboard-data" "ok" "$V"
+cat > "projects/$PN/index.html" <<'EOF'
+<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>داشبورد آزمون</title><link rel="stylesheet" href="style.css"></head><body><h1>داشبورد آزمون</h1><button id="b">بروزرسانی</button><table id="tb"><tr><th>ماه</th><th>فروش</th></tr><tr><td>فروردین</td><td>۱۲</td></tr></table><svg id="ch" width="100" height="40"></svg><script src="app.js"></script></body></html>
+EOF
+printf '*{direction:rtl}' > "projects/$PN/style.css"
+printf 'document.querySelector("#tb");\n' > "projects/$PN/app.js"
+R=$(probe "$PN"); check "R2-1-B7 dashboard با جدول+نمودار+js → سبز" "ok|" "$R"
+delproj "$PN" >/dev/null
+
+# B4 api: فقط health، بدون CRUD → قرمز api-crud-create
+PN="r2x-api-$TS"; mkproj "$PN" api >/dev/null
+cat > "projects/$PN/server.py" <<'EOF'
+import json, os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def _j(self, code, obj):
+        b = json.dumps(obj).encode(); self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b))); self.end_headers()
+        self.wfile.write(b)
+    def do_GET(self):
+        if self.path == "/api/health": self._j(200, {"ok": True})
+        else: self._j(404, {"error": "not found"})
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", int(os.environ.get("PORT", "8077"))), H).serve_forever()
+EOF
+R=$(probe "$PN")
+case "${R#*|}" in *api-crud-create*) V=ok;; *) V="${R#*|}";; esac
+check "R2-1-B8 api بدون CRUD → قرمز api-crud-create" "ok" "$V"
+delproj "$PN" >/dev/null
+LEFT=$(ls projects/ | grep -c "r2x-")
+check "R2-1-B9 پاک‌سازی پروژه‌های منفی" "0" "$LEFT"
+
+echo "════ R2-1/C — چهار ساخت واقعی با مدل (محصول ماندگار)"
+curl -s -m 30 -o /dev/null -X POST -d '{"workers":1}' \
+    -H 'Content-Type: application/json' "$BASE/api/orchestrator/start"
+build() { # name type goal
+    local N="$1" TY="$2" GOAL="$3" ST="" TID
+    if [ -d "projects/$N" ]; then
+        # R3: محصول ماندگار از قبل موجود است — بازسازی/بازنویسی ممنوع؛
+        # همان الزام پذیرش (وجود + testrun سبز) روی محصول موجود راستی‌آزمایی می‌شود.
+        check "R2-1-C:$N محصول ماندگار موجود (بدون بازسازی)" "ok" "ok"
+        R=$(probe "$N")
+        check "R2-1-C:$N testrun ترکیبی روی خروجی واقعی مدل: سبز" "ok|" "$R"
+        return
+    fi
+    mkproj "$N" "$TY" >/dev/null
+    TID=$(curl -s -m 20 -X POST \
+        -d "{\"project\":\"$N\",\"goal\":\"$GOAL\",\"agent\":\"builder\",\"max_attempts\":2}" \
+        -H 'Content-Type: application/json' "$BASE/api/tasks" \
+        | python3 -c "import json,sys;print(json.load(sys.stdin).get('task',{}).get('id',''))")
+    if [ -z "$TID" ]; then
+        check "R2-1-C:$N ثبت وظیفهٔ builder ناموفق (fail-fast)" "done" "task-submit-failed"
+        R=$(probe "$N"); check "R2-1-C:$N testrun روی خروجی" "ok|" "$R"
+        return
+    fi
+    for i in $(seq 1 110); do
+        ST=$(python3 -c "
+import json
+t = next((t for t in json.load(open('data/tasks.json')) if t['id']=='$TID'), {})
+print(t.get('state','missing'))")
+        { [ "$ST" = "done" ] || [ "$ST" = "failed" ] || [ "$ST" = "cancelled" ]; } && break
+        sleep 8
+    done
+    check "R2-1-C:$N وظیفهٔ builder واقعی done" "done" "$ST"
+    R=$(probe "$N")
+    check "R2-1-C:$N testrun ترکیبی روی خروجی واقعی مدل: سبز" "ok|" "$R"
+}
+build "r2-api-notes" api "API یادداشت‌ها طبق الزامات نوع api: مسیر GET /api/health با پاسخ JSON حاوی ok:true؛ منبع CRUD دقیقاً روی مسیر /api/items: GET آرایهٔ JSON؛ POST با بدنهٔ JSON حاوی فیلد name با پاسخ 200 یا 201 و فیلد id در پاسخ؛ PUT یا PATCH بر اساس شناسه با پاسخ 200 یا 204؛ DELETE با پاسخ 200 یا 204 و سپس GET همان شناسه باید 404 بدهد؛ POST با بدنهٔ خالی یا نامعتبر باید 400 بدهد؛ GET شناسهٔ ناموجود باید 404 بدهد؛ server.py فقط با کتابخانهٔ استاندارد پایتون، خواندن پورت از env PORT و bind روی 127.0.0.1، ذخیرهٔ داده در حافظهٔ فرایند؛ فایل tests/test_api.py با unittest برای همین مسیرها."
+build "r2-dash-sales" dashboard "داشبورد فروش هفتگی فارسی RTL طبق الزامات نوع dashboard: جدول table با دادهٔ فروش نمونهٔ واقع‌نما و چند ردیف؛ یک نمودار ستونی با SVG دستی بدون هیچ کتابخانهٔ خارجی؛ یک فرم فیلتر تعاملی با select؛ فایل app.js که با addEventListener فیلتر را اعمال و جدول و نمودار را به‌روز می‌کند؛ فایل style.css؛ هیچ placeholder نمانَد."
+build "r2-webapp-calc" webapp "ماشین‌حساب چهار عمل فارسی RTL طبق الزامات نوع webapp: صفحه‌کلید دکمه‌ها شامل ارقام و چهار عمل و مساوی و پاک‌کردن؛ منطق کامل در app.js با addEventListener برای همهٔ دکمه‌ها؛ ذخیرهٔ تاریخچهٔ محاسبات در localStorage و نمایش آن؛ نمایش نتیجه در عنصر خروجی؛ بدون هیچ کتابخانهٔ خارجی و هیچ placeholder."
+build "r2-tool-passgen" webtool "تولیدکنندهٔ رمز عبور فارسی RTL طبق الزامات نوع webtool: کنترل طول رمز با input و گزینه‌های کاراکتر با checkbox شامل حروف و اعداد و نمادها؛ دکمهٔ تولید با منطق واقعی در app.js با addEventListener و تولید تصادفی با Math.random؛ نمایش خروجی در عنصر با id=output و دکمهٔ کپی؛ بدون هیچ کتابخانهٔ خارجی و هیچ placeholder."
+curl -s -m 30 -o /dev/null -X POST -d '{}' \
+    -H 'Content-Type: application/json' "$BASE/api/orchestrator/stop"
+
+PERSIST=$(ls projects/ | grep -cE "^r2-(api-notes|dash-sales|webapp-calc|tool-passgen)$")
+check "R2-1-C5 هر ۴ محصول ماندگار روی دیسک" "4" "$PERSIST"
+
+echo "════ R2-1/D — استقلال: اجرا بدون هیچ کد Factory"
+# static ×3: سرور استاتیک خام روی پورت موقت
+for P in r2-dash-sales r2-webapp-calc r2-tool-passgen; do
+    python3 -m http.server 8798 --bind 127.0.0.1 --directory "$ROOT/projects/$P" \
+        >"$T/r2/ind-$P.log" 2>&1 & SPID=$!
+    sleep 1.2
+    C1=$(curl -s -m5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:8798/")
+    C2=$(curl -s -m5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:8798/app.js")
+    kill $SPID 2>/dev/null
+    check "R2-1-D:$P بدون Factory → 200 (index+app.js)" "200/200" "$C1/$C2"
+done
+# api product: اجرای مستقیم server.py با env، بدون factory
+(cd "$ROOT/projects/r2-api-notes" && PORT=8797 python3 server.py >"$T/r2/api-ind.log" 2>&1 & echo $! > "$T/r2/api.pid")
+sleep 1.5
+H=$(curl -s -m5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8797/api/health)
+CR=$(curl -s -m5 -X POST -d '{"name":"ind-probe"}' -H 'Content-Type: application/json' \
+    http://127.0.0.1:8797/api/items -o "$T/r2/ind-create.json" -w '%{http_code}')
+L=$(curl -s -m5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8797/api/items)
+kill "$(cat "$T/r2/api.pid")" 2>/dev/null
+check "R2-1-D:api محصول بدون Factory → health/CRUD" "200" "$H"
+case "$CR" in 200|201) V=ok;; *) V="$CR";; esac
+check "R2-1-D:api POST /api/items بدون Factory" "ok" "$V"
+check "R2-1-D:api GET /api/items بدون Factory" "200" "$L"
+
+echo "──────────────────"
+echo "نتیجهٔ R2-1: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

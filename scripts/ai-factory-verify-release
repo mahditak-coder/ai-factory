@@ -1,0 +1,163 @@
+#!/data/data/com.termux/files/usr/bin/env python3
+"""ai-factory-verify-release — اعتبارسنج مستقل بستهٔ انتشار AI Factory.
+
+فقط کتابخانهٔ استاندارد پایتون؛ هیچ ایمپورتی از کد کارخانه ندارد تا
+«بسته‌ساز» و «بررسی‌کننده» یک اعتماد مشترک نداشته باشند.
+
+بررسی‌ها:
+  1) سلامت zip (testzip) — بستهٔ خراب/بریده رد می‌شود
+  2) release.json: وجود، خوانایی، کلیدهای ضروری (name/type/version/build)
+  3) MANIFEST.sha256 (بسته‌های P11 به بعد):
+       - هر ورودی: فایل باید داخل بسته باشد و sha256 آن مطابق manifest
+       - فایل حذف‌شده، تغییر یافته یا اضافه → خطا
+  4) بستهٔ بدون manifest (قدیمی): ساختاری بررسی و با هشدار قبول می‌شود
+  5) حالت پوشه (AF-12): پوشهٔ تحویل Android (بجای zip) — همان چک manifest
+       روی فایل‌های پوشه؛ release.json غایب = هشدار (سازگاری با پوشه‌های قدیمی)
+
+خروجی: EXIT 0 = سالم / EXIT 1 = رد شده (با فهرست دقیق فایل‌های مشکل‌دار)
+
+Usage:
+    ai-factory-verify-release <zip|dir> [zip|dir…]
+"""
+import hashlib
+import json
+import sys
+import zipfile
+from pathlib import Path
+
+REQUIRED_META_KEYS = ("name", "type", "version", "build")
+
+
+def verify_dir(dir_path: str) -> tuple[bool, list[str], list[str]]:
+    """بررسی پوشهٔ تحویل با MANIFEST.sha256 (فرمت همان zip — sha256sum)."""
+    warns: list[str] = []
+    errs: list[str] = []
+    d = Path(dir_path)
+    if not d.is_dir():
+        return False, warns, ["پوشه یافت نشد: %s" % dir_path]
+    mf = d / "MANIFEST.sha256"
+    if not mf.is_file():
+        return False, warns, ["MANIFEST.sha256 در پوشه نیست"]
+    manifest: dict[str, str] = {}
+    for line in mf.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        h, _, fn = line.partition("  ")
+        if len(h) != 64 or not fn or not all(
+                c in "0123456789abcdef" for c in h.lower()):
+            errs.append("خط نامعتبر در manifest: %r" % line[:70])
+            continue
+        manifest[fn] = h.lower()
+    dset = {p.name for p in d.iterdir() if p.is_file()}
+    for fn, want in sorted(manifest.items()):
+        if fn not in dset:
+            errs.append("فایل ضروری حذف شده: %s" % fn)
+            continue
+        got = hashlib.sha256((d / fn).read_bytes()).hexdigest()
+        if got != want:
+            errs.append("فایل تغییر یافته (hash mismatch): %s "
+                        "(want=%s… got=%s…)" % (fn, want[:12], got[:12]))
+    for extra in sorted(dset - set(manifest) - {"MANIFEST.sha256"}):
+        errs.append("فایل اضافه/ناشناخته: %s" % extra)
+    if "release.json" not in dset:
+        warns.append("release.json در پوشه نیست (پوشهٔ تحویل قدیمی — "
+                     "پیش از استاندارد AF-12)")
+    elif (d / "release.json").is_file():
+        try:
+            meta = json.loads((d / "release.json").read_text(encoding="utf-8"))
+            for k in REQUIRED_META_KEYS:
+                if k not in meta:
+                    errs.append("release.json فاقد کلید ضروری: %s" % k)
+        except ValueError as exc:
+            errs.append("release.json قابل خواندن نیست: %s" % exc)
+    return not errs, warns, errs
+
+
+def verify(zip_path: str) -> tuple[bool, list[str], list[str]]:
+    """خروجی: (ok، هشدارها، خطاها) — zip یا پوشهٔ تحویل"""
+    warns: list[str] = []
+    errs: list[str] = []
+    p = Path(zip_path)
+    if p.is_dir():
+        return verify_dir(zip_path)
+    if not p.is_file():
+        return False, warns, ["بسته یافت نشد: %s" % zip_path]
+    try:
+        zf = zipfile.ZipFile(p)
+    except zipfile.BadZipFile:
+        return False, warns, ["فایل zip ناخوانا (خراب یا بریده‌شده)"]
+    with zf:
+        if zf.testzip() is not None:
+            errs.append("صحت zip خراب است (CRC نامعتبر)")
+        names = zf.namelist()
+        top = names[0].split("/", 1)[0] + "/" if names else ""
+        rel_names = {n[len(top):] for n in names
+                     if n.startswith(top) and not n.endswith("/")}
+        # ---- release.json ----
+        if "release.json" not in rel_names:
+            errs.append("release.json داخل بسته نیست")
+            return False, warns, errs
+        try:
+            meta = json.loads(zf.read(top + "release.json").decode("utf-8"))
+            for k in REQUIRED_META_KEYS:
+                if k not in meta:
+                    errs.append("release.json فاقد کلید ضروری: %s" % k)
+        except ValueError as exc:
+            errs.append("release.json قابل خواندن نیست: %s" % exc)
+            return False, warns, errs
+        # ---- MANIFEST.sha256 ----
+        if "MANIFEST.sha256" not in rel_names:
+            warns.append("بستهٔ قدیمی بدون MANIFEST.sha256 (P11) — "
+                         "بررسی اصالت فایل‌ها در دسترس نیست")
+            return not errs, warns, errs
+        manifest: dict[str, str] = {}
+        for line in zf.read(top + "MANIFEST.sha256").decode(
+                "utf-8", "replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            h, _, fn = line.partition("  ")
+            if len(h) != 64 or not fn or not all(
+                    c in "0123456789abcdef" for c in h.lower()):
+                errs.append("خط نامعتبر در manifest: %r" % line[:70])
+                continue
+            manifest[fn] = h.lower()
+        for fn, want in sorted(manifest.items()):
+            if fn not in rel_names:
+                errs.append("فایل ضروری حذف شده: %s" % fn)
+                continue
+            got = hashlib.sha256(zf.read(top + fn)).hexdigest()
+            if got != want:
+                errs.append("فایل تغییر یافته (hash mismatch): %s "
+                            "(want=%s… got=%s…)" % (fn, want[:12], got[:12]))
+        for extra in sorted(rel_names - set(manifest) - {"MANIFEST.sha256"}):
+            errs.append("فایل اضافه/ناشناخته: %s" % extra)
+    return not errs, warns, errs
+
+
+def main(argv: list) -> int:
+    if not argv:
+        print("Usage: ai-factory-verify-release <zip> [zip…]")
+        return 2
+    all_ok = True
+    for z in argv:
+        ok, warns, errs = verify(z)
+        all_ok = all_ok and ok
+        status = "✅ سالم" if ok else "❌ رد شد"
+        print("%s  %s" % (status, z))
+        for w in warns:
+            print("   ⚠️  %s" % w)
+        for e in errs:
+            print("   ❌ %s" % e)
+        if ok and not warns and Path(z).is_file():
+            with zipfile.ZipFile(z) as f:
+                n = sum(1 for x in f.namelist() if not x.endswith("/"))
+                has_m = any(x.endswith("MANIFEST.sha256") for x in f.namelist())
+            print("   ✅ %d فایل، manifest کامل" % n if has_m
+                  else "   ✅ %d فایل" % n)
+    return 0 if all_ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# ai-factory-test-p8-3 — REAL device installability audit for the built PWA.
+#   Automatable Chrome install criteria are verified against the REAL
+#   running product. The final "Add to Home Screen" tap and the airplane-
+#   mode offline check are DEVICE-UI actions — reported as manual steps.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/p8"
+PASS=0; FAIL=0; FAILED=""
+PROJ="p8-app-demo"
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+# start the real runner and KEEP IT RUNNING for the on-device install
+RUN=$(curl -s -m 25 -X POST -d "{\"project\":\"$PROJ\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/run")
+PORT=$(echo "$RUN" | python3 -c "import json,sys;print(json.load(sys.stdin).get('port') or '')")
+check "P8-3-A1 runner واقعی پروژه بوت شد" "yes" "$([ -n "$PORT" ] && echo yes || echo no)"
+sleep 1
+URL="http://127.0.0.1:$PORT/"
+
+echo "════ ممیزی نصب‌پذیری کروم (برنامه‌نویسی‌شده، روی محصول واقعی)"
+AUD=$(python3 - "$URL" <<PYEOF
+import json, struct, sys, urllib.request
+base = sys.argv[1]
+def get(p):
+    with urllib.request.urlopen(base + p, timeout=8) as r:
+        return r.status, r.read()
+fails = []
+code, html = get("/")
+html_s = html.decode("utf-8", "replace")
+code, mtxt = get("/manifest.json")
+m = json.loads(mtxt.decode("utf-8"))
+# Chrome install criteria (automatable subset):
+for f in ("name", "short_name", "start_url", "display"):
+    if not str(m.get(f) or "").strip(): fails.append("manifest." + f)
+if m.get("display") not in ("standalone", "fullscreen", "minimal-ui"):
+    fails.append("manifest.display")
+need = {192: False, 512: False}
+for i in m.get("icons", []):
+    s = str(i.get("sizes") or "")
+    if "192x192" in s: need[192] = True
+    if "512x512" in s: need[512] = True
+    st, b = get("/" + str(i.get("src")).lstrip("./"))
+    if st != 200 or b[:8] != b"\x89PNG\r\n\x1a\n":
+        fails.append("icon.served:" + str(i.get("src")))
+    else:
+        w, h = struct.unpack(">II", b[16:24])
+        if (w, h) != (192, 192) and (w, h) != (512, 512):
+            fails.append("icon.dims:" + str(i.get("src")))
+if not all(need.values()): fails.append("icon.192+512")
+st, sw = get("/sw.js")
+sw_s = sw.decode("utf-8", "replace")
+if st != 200 or "addEventListener" not in sw_s or '"fetch"' not in sw_s:
+    fails.append("sw.fetch-handler")
+if "serviceworker" not in html_s.lower():
+    ok_reg = False
+    for p in ("app.js",):
+        try:
+            st2, js = get("/" + p)
+            if "serviceworker" in js.decode("utf-8","replace").lower(): ok_reg = True
+        except Exception: pass
+    if not ok_reg: fails.append("sw.registration")
+# precache completeness: every SHELL url must really be served (offline base)
+for p in ("", "index.html", "style.css", "app.js", "manifest.json",
+          "icons/icon-192.png", "icons/icon-512.png"):
+    try:
+        st3, _ = get("/" + p)
+        if st3 != 200: fails.append("precache:" + p)
+    except Exception:
+        fails.append("precache:" + p)
+# secure context: localhost is treated as secure by Chrome on-device
+print("ok" if not fails else "fails:" + ",".join(fails[:6]))
+PYEOF
+)
+check "P8-3-A2 همهٔ معیارهای نصب‌پذیری کروم (قابل‌اتوماسیون)" "ok" "$AUD"
+
+# real open on the device browser (Chrome)
+if command -v termux-open >/dev/null 2>&1; then
+    termux-open "$URL" >/dev/null 2>&1 && OP=opened || OP=failed
+    check "P8-3-A3 بازکردن واقعی URL روی مرورگر گوشی (termux-open)" "opened" "$OP"
+else
+    check "P8-3-A3 termux-open موجود نیست" "manual" "manual"
+fi
+
+echo "════ مراحل دستی روی دستگاه (صادقانه: اتومات‌شدنی نیست)"
+cat <<MANUAL
+  📱 روی گوشی:
+     1) کروم آدرس $URL را باز کرد (برنامهٔ «کارهای روز من»).
+     2) منوی ⋮ → «افزودن به صفحهٔ اصلی» (Add to Home Screen) → نصب.
+     3) اپ را از آیکون صفحهٔ اصلی باز کنید.
+     4) تست آفلاین: داده/وای‌فای را خاموش کنید و اپ را دوباره باز کنید —
+        باید از کشِ Service Worker بالا بیاید (برچسب «آفلاین» در خود اپ).
+MANUAL
+echo "  (این دو گام UI دستگاه‌اند؛ در گزارش نهایی «تست‌نشده با اتوماسیون — دستور دستی داده شد» ثبت می‌شود)"
+
+echo "──────────────────"
+echo "نتیجهٔ P8-3: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN (بخش اتومات‌پذیر)" && exit 0
+exit 1

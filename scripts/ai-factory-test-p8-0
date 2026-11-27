@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# ai-factory-test-p8-0 — REAL acceptance for the PWA project type.
+#   Part A: real API create → scaffold files → real runner boot → real HTTP
+#           serving of manifest/sw/icons → checker → real ZIP export
+#   Part B: template hygiene (no placeholders, PNG magic, JS valid) + UI
+#   Part C: cleanup (delete with backup, queue hygiene)
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/p8"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+
+if ! curl -fsS "$BASE/api/health" >/dev/null 2>&1; then
+    bash "$ROOT/scripts/ai-factory-start" >/dev/null; sleep 2
+fi
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+TS=$(date +%H%M%S); PROJ="p8x-pwa-$TS"
+
+echo "════ P8-0/A — ساخت و اجرای واقعی پروژهٔ PWA"
+C=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST \
+    -d "{\"name\":\"$PROJ\",\"type\":\"pwa\",\"description\":\"p8-0 acceptance\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/projects")
+check "P8-0-A1 ساخت پروژهٔ نوع pwa از طریق API واقعی" "201" "$C"
+
+D="$ROOT/projects/$PROJ"
+MISS=$(for f in manifest.json sw.js index.html style.css app.js \
+        icons/icon-192.png icons/icon-512.png; do
+        [ -f "$D/$f" ] || echo "$f"; done)
+check "P8-0-A2 همهٔ فایل‌های قالب روی دیسک" "" "$MISS"
+
+PNG=$(python3 - "$D" <<'PYEOF'
+import struct, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+ok = True
+for size in (192, 512):
+    p = d / ("icons/icon-%d.png" % size)
+    b = p.read_bytes()
+    w, h = struct.unpack(">II", b[16:24])
+    ok = ok and b[:8] == b"\x89PNG\r\n\x1a\n" and (w, h) == (size, size)
+print("ok" if ok else "bad")
+PYEOF
+)
+check "P8-0-A3 آیکون‌ها PNG واقعی با ابعاد درست" "ok" "$PNG"
+
+RUN=$(curl -s -m 25 -X POST -d "{\"project\":\"$PROJ\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/run")
+PORT=$(echo "$RUN" | python3 -c "import json,sys;print(json.load(sys.stdin).get('port') or '')")
+check "P8-0-A4 runner واقعی پروژهٔ PWA بوت شد" "yes" \
+    "$([ -n "$PORT" ] && echo yes || echo no)"
+
+sleep 1
+IDX=$(command curl -s -m 10 "http://127.0.0.1:$PORT/")
+case "$IDX" in *'rel="manifest"'*|*"rel='manifest'"*) R1=ok;; *) R1=no;; esac
+check "P8-0-A5 index.html سرو‌شده manifest را لینک می‌کند" "ok" "$R1"
+
+check "P8-0-A6 manifest.json روی HTTP سرو می‌شود" "200" \
+    "$(command curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/manifest.json")"
+check "P8-0-A7 sw.js روی HTTP سرو می‌شود" "200" \
+    "$(command curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/sw.js")"
+MAGIC=$(command curl -s -m 10 "http://127.0.0.1:$PORT/icons/icon-512.png" | head -c 8 | od -An -tx1 | tr -d ' \n')
+check "P8-0-A8 آیکون روی HTTP با magic PNG واقعی" "89504e470d0a1a0a" "$MAGIC"
+
+MVAL=$(command curl -s -m 10 "http://127.0.0.1:$PORT/manifest.json" | python3 -c "
+import json,sys
+m = json.load(sys.stdin)
+need = ('name','short_name','start_url','display','icons')
+print('ok' if all(m.get(k) for k in need)
+      and any('192x192' in i.get('sizes','') for i in m['icons'])
+      and any('512x512' in i.get('sizes','') for i in m['icons'])
+      and '{{' not in json.dumps(m, ensure_ascii=False) else 'bad')")
+check "P8-0-A9 manifest سرو‌شده معتبر + placeholder پر شده" "ok" "$MVAL"
+
+SWREG=$(command curl -s -m 10 "http://127.0.0.1:$PORT/app.js" | grep -c "serviceWorker.register")
+check "P8-0-A10 ثبت واقعی Service Worker در شل" "1" "$SWREG"
+
+CHK=$(curl -s -m 30 "$BASE/api/factory/check?project=$PROJ" | python3 -c "
+import json,sys
+r = json.load(sys.stdin)
+print('ok' if not r.get('errors') else 'errors:' + json.dumps(r['errors'][:2], ensure_ascii=False)[:160])")
+check "P8-0-A11 checker واقعی: صفر خطا" "ok" "$CHK"
+
+EXP=$(curl -s -m 30 -X POST -d "{\"project\":\"$PROJ\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/export" | python3 -c "
+import json,sys
+r = json.load(sys.stdin)
+print('ok' if r.get('integrity_bad_file') is None and r.get('files',0) >= 7 else 'bad:%s' % json.dumps(r)[:140])")
+check "P8-0-A12 خروجی ZIP سالم (testzip + ≥7 فایل)" "ok" "$EXP"
+
+curl -s -m 25 -o /dev/null -X POST -d "{\"project\":\"$PROJ\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/stop"
+
+echo "════ P8-0/B — بهداشت قالب و UI"
+PH=$(grep -l "{{" "$D"/*.html "$D"/*.css "$D"/*.js "$D"/manifest.json 2>/dev/null | wc -l)
+check "P8-0-B1 بدون placeholder جامانده در قالب scaffold‌شده" "0" "$PH"
+JS=$(node --check "$D/sw.js" >/dev/null 2>&1 && node --check "$D/app.js" >/dev/null 2>&1 && echo ok || echo bad)
+check "P8-0-B2 sw.js و app.js scaffold‌شده از node --check می‌گذرند" "ok" "$JS"
+check "P8-0-B3 گزینهٔ pwa در UI از منبع واحد (endpoint) سرو می‌شود" "1" \
+    "$(curl -s -m 10 "$BASE/api/factory/types" | grep -c '"pwa"')"
+
+echo "════ P8-0/C — پاک‌سازی"
+DL=$(curl -s -m 30 -o /dev/null -w '%{http_code}' -X POST \
+    -d "{\"project\":\"$PROJ\",\"confirm\":true}" -H 'Content-Type: application/json' \
+    "$BASE/api/factory/delete")
+check "P8-0-C1 حذف پروژهٔ آزمایشی (با بکاپ خودکار)" "200" "$DL"
+LEFT=$(ls "$ROOT/projects/" 2>/dev/null | grep -c "p8x-pwa")
+check "P8-0-C2 بدون بقایای پروژهٔ آزمایشی" "0" "$LEFT"
+
+echo "──────────────────"
+echo "نتیجهٔ P8-0: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

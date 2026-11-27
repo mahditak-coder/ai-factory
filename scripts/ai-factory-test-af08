@@ -1,0 +1,342 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af08 — آزمون عملی محصولات واقعی کارخانه (نمونه = خروجی موجود)
+#   A) کپی ایزولهٔ هر نوع (۱۰ نوع) از خروجی‌های موجود مأموریت‌های قبلی
+#   B) اجرای واقعی + قرارداد رفتاری (typetests.run) + منابع ضروری
+#   C) ZIP مستقل: release واقعی → unzip → اجرا با env تمیز طبق release.json
+#   D) Android: badging/salamat/apksigner + تلاش نصب با adb
+#   E) پاک‌سازی کامل داده‌های همین مأموریت
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+PASS=0; FAIL=0; NT=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+nt() { NT=$((NT+1)); echo "⚠️  NOT TESTED — $1"; }
+
+SAMP="webpage:af01-timecheck webapp:r2-webapp-calc webtool:r2-tool-passgen dashboard:r2-dash-sales shop:p6-shop-173521 api:r2-api-notes ai-tool:p6-ai-211542 pwa:p8-app-demo"
+
+echo "== 0) پیش‌شرط‌ها =="
+checkeq "پنل سالم" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK || echo FAIL)"
+MISS=0
+for S in $SAMP; do
+  SRC="${S#*:}"
+  [ -d "$ROOT/projects/$SRC" ] || { echo "❌ منبع نمونه غایب: $SRC"; MISS=1; }
+done
+checkeq "همهٔ نمونه‌های منبع موجود" "0" "$MISS"
+
+echo "== A) کپی ایزوله (اصل دست‌نخورده می‌ماند) =="
+for S in $SAMP; do
+  T="${S%%:*}"; SRC="${S#*:}"
+  rm -rf "$ROOT/projects/af08-$T"
+  (cd "$ROOT/projects/$SRC" && tar --exclude='__pycache__' --exclude='data/*.db' \
+     --exclude='data/*.db-*' -cf - .) | (mkdir -p "$ROOT/projects/af08-$T" \
+     && tar -xf - -C "$ROOT/projects/af08-$T")
+done
+checkeq "کپی ۸ نمونه" "0" \
+  "$(for S in $SAMP; do [ -d "$ROOT/projects/af08-${S%%:*}" ] || echo broken; done | wc -l | xargs)"
+
+echo "== B) اجرای واقعی + قرارداد رفتاری + منابع =="
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+# B-full: scaffold تازهٔ fullstack (خروجی قالب واقعی کارخانه — بدون هزینهٔ مدل)
+pauth -fsS -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"af08-fullstack","type":"fullstack-python","description":"AF-08 sample"}' \
+  http://127.0.0.1:8580/api/factory/projects -o /dev/null 2>&1
+pauth -fsS -X POST -H 'Content-Type: application/json' -d '{"project":"af08-fullstack"}' \
+  http://127.0.0.1:8580/api/factory/scaffold -o "$TMP/af08-scaf.json" -w '%{http_code}' >/dev/null
+checkeq "scaffold تازهٔ fullstack" "200" "$(python3 -c "import json;print(200 if json.load(open('$TMP/af08-scaf.json')).get('files') else 500)" 2>/dev/null)"
+
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import json, re, sys, urllib.request, urllib.error
+sys.path.insert(0, ".")
+from core import typetests
+
+SAMPLES = ["af08-webpage", "af08-webapp", "af08-webtool", "af08-dashboard",
+           "af08-shop", "af08-api", "af08-ai-tool", "af08-pwa",
+           "af08-fullstack"]
+
+def fetch(url):
+    try:
+        with urllib.request.urlopen(url, timeout=8) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, ""
+    except Exception:
+        return 0, ""
+
+for name in SAMPLES:
+    res = typetests.run(name)
+    print("RES %s ran=%s ok=%s errs=%d note=%s" % (
+        name.replace("af08-", ""), int(bool(res.get("ran"))),
+        int(bool(res.get("ok"))), len(res.get("errors") or []),
+        (res.get("note") or "")[:80]))
+    if res.get("errors"):
+        for e in res["errors"][:3]:
+            print("   ERR %s: %s" % (e.get("kind"), e.get("message", "")[:90]))
+    # منابع ضروری: هر ارجاع محلی index.html باید ۲۰۰ بدهد
+    from pathlib import Path
+    d = Path("projects") / name
+    try:
+        idx = (d / "index.html").read_text(encoding="utf-8")
+    except OSError:
+        idx = ""
+    refs = re.findall(r'(?:src|href)="([^"#]+)"', idx)
+    local = [r for r in refs if not r.startswith(("http", "data:", "//", "mailto"))]
+    bad = []
+    from core import runner
+    started = False
+    try:
+        st = runner.status(name)
+        if not st.get("running"):
+            runner.start(name); started = True
+        base = "http://127.0.0.1:%d" % runner.status(name).get("port", 0)
+        for ref in local:
+            c, _ = fetch(base + "/" + ref.lstrip("/"))
+            if c != 200:
+                bad.append(f"{ref}:{c}")
+        # عملکرد اصلی برای انواع تعاملی: دارایی JS واقعاً سرو می‌شود؟
+        for jf in ("app.js", "script.js"):
+            if (d / jf).exists():
+                c, txt = fetch(base + "/" + jf)
+                if c != 200 or len(txt) < 50:
+                    bad.append(f"{jf}:{c}")
+        print("ASSETS %s checked=%d bad=%s" % (
+            name.replace("af08-", ""), len(local), bad if bad else "none"))
+    finally:
+        if started:
+            runner.stop(name)
+EOF
+)
+for T in webpage webapp webtool dashboard shop api ai-tool pwa fullstack; do
+  R=$(echo "$OUT" | grep "^RES $T " | head -1)
+  RAN=$(echo "$R" | grep -o "ran=[01]" | cut -d= -f2)
+  OKV=$(echo "$R" | grep -o "ok=[01]" | cut -d= -f2)
+  if [ "$RAN" = "1" ] && [ "$OKV" = "1" ]; then PASS=$((PASS+1)); echo "✅ قرارداد رفتاری $T (اجرای واقعی)"
+  elif [ "$RAN" = "1" ]; then FAIL=$((FAIL+1)); echo "❌ قرارداد رفتاری $T — $R";
+  else nt "قرارداد اجرایی برای $T (ran=0): $R"; fi
+done
+for T in webpage webapp webtool dashboard shop pwa fullstack; do
+  A=$(echo "$OUT" | grep "^ASSETS $T " | head -1)
+  BAD=$(echo "$A" | grep -o "bad=.*")
+  checkeq "منابع ضروری $T همه 200" "bad=none" "$BAD"
+done
+
+echo "== C) ZIP مستقل: release واقعی → unzip → اجرا با env تمیز =="
+pkill -f "af08-standalone" 2>/dev/null || true
+rm -rf "$ROOT/exports/af08-standalone"; mkdir -p "$ROOT/exports/af08-standalone"
+for T in webpage webapp webtool dashboard shop api ai-tool pwa fullstack; do
+  CODE=$(pauth -sS -X POST -H 'Content-Type: application/json' \
+    -d "{\"project\":\"af08-$T\"}" http://127.0.0.1:8580/api/factory/release \
+    -o "$TMP/af08-rel-$T.json" -w '%{http_code}' 2>/dev/null)
+  if [ "$CODE" = "409" ]; then
+    KINDS=$(python3 -c "import json;d=json.load(open('$TMP/af08-rel-$T.json'));print(sorted({e.get('kind') for e in d.get('errors',[])})[:3])" 2>/dev/null)
+    nt "release ZIP برای $T — دروازهٔ امنیت بلاک کرد ($KINDS) — یافتهٔ واقعی"
+    continue
+  fi
+  if [ "$CODE" != "201" ]; then
+    checkeq "release ZIP $T" "201" "$CODE"; continue
+  fi
+  ZP=$(python3 -c "import json;print(json.load(open('$TMP/af08-rel-$T.json'))['path'])")
+  DST="$ROOT/exports/af08-standalone/$T"
+  python3 - "$ZP" "$DST" "af08-$T" <<'EOF'
+import shutil, sys, zipfile
+zp, dst, top = sys.argv[1], sys.argv[2], sys.argv[3]
+with zipfile.ZipFile(zp) as z:
+    assert z.testzip() is None, "zip broken"
+    z.extractall(dst)
+shutil.move(dst + "/" + top, dst + "/_m")
+for item in shutil.os.listdir(dst + "/_m"):
+    shutil.move(dst + "/_m/" + item, dst)
+shutil.rmtree(dst + "/_m")
+EOF
+  [ -f "$DST/run.sh" ] || { echo "❌ C-$T unzip ناقص"; FAIL=$((FAIL+1)); continue; }
+  # استقلال از مسیرهای داخلی کارخانه
+  DEP=$(grep -rln "/data/data/com.termux/files/home/AI-Factory\|AI-Factory/" \
+        "$DST" --include='*.py' --include='*.js' --include='*.json' --include='*.html' 2>/dev/null | wc -l)
+  checkeq "C-$T بدون وابستگی به مسیر کارخانه" "0" "$DEP"
+done
+# اجرای مستقل: env -i + sh run.sh طبق release.json خودِ محصول
+IND=$(cd "$ROOT" && python3 - <<'EOF'
+import json, os, signal, socket, subprocess, sys, time, urllib.request, urllib.error
+from pathlib import Path
+BASE = Path("exports/af08-standalone")
+
+def free_port():
+    s = socket.socket(); s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]; s.close(); return p
+
+def fetch(url, data=None, method="GET"):
+    req = urllib.request.Request(
+        url, method=method,
+        data=json.dumps(data).encode() if data is not None else None,
+        headers={"Content-Type": "application/json"} if data else {})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, (e.read() or b"").decode("utf-8", "replace")
+    except Exception:
+        return 0, ""
+
+results = {}
+for t in sorted(os.listdir(BASE)):
+    d = BASE / t
+    port = free_port()
+    env = {"PATH": os.environ["PATH"], "HOME": "/data/data/com.termux/files/usr/tmp/opencode/af08-home",
+           "PORT": str(port), "AI_FACTORY_PORT": str(port)}
+    os.makedirs(env["HOME"], exist_ok=True)
+    proc = subprocess.Popen(["sh", "run.sh"], cwd=str(d), env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    base = f"http://127.0.0.1:{port}"
+    alive = False
+    for _ in range(20):
+        code, _ = fetch(base + "/")
+        if code != 0:
+            alive = True; break
+        time.sleep(0.5)
+    checks = []
+    try:
+        if not alive:
+            checks.append("boot-FAILED")
+        elif t in ("webpage", "webapp", "webtool", "dashboard", "shop", "pwa"):
+            c, html = fetch(base + "/")
+            checks.append("index-200" if c == 200 else f"index-{c}")
+            c, _ = fetch(base + "/index.html")
+            checks.append("page-200" if c == 200 else f"page-{c}")
+            c, _ = fetch(base + "/definitely-missing-af08")
+            checks.append("404-ok" if c == 404 else f"missing-{c}")
+            # اولین asset واقعی
+            import re
+            refs = re.findall(r'(?:src|href)="([^"#]+)"', html)
+            loc = [r for r in refs if not r.startswith(("http", "data:", "//"))]
+            if loc:
+                c, _ = fetch(base + "/" + loc[0].lstrip("/"))
+                checks.append("asset-200" if c == 200 else f"asset-{c}")
+        else:
+            if t == "fullstack":
+                c, html = fetch(base + "/")
+                checks.append("index-200" if c == 200 else f"index-{c}")
+                # جریان واقعی CSRF: کوکی af_csrf + هدر X-CSRF-Token
+                import http.cookiejar
+                cj = http.cookiejar.CookieJar()
+                op = urllib.request.build_opener(
+                    urllib.request.HTTPCookieProcessor(cj))
+                with op.open(base + "/api/csrf", timeout=8) as r:
+                    tok = json.loads(r.read()).get("csrf_token")
+                req = urllib.request.Request(
+                    base + "/api/auth/login", method="POST",
+                    data=json.dumps({"username": "x",
+                                     "password": "WRONG-af08"}).encode(),
+                    headers={"Content-Type": "application/json",
+                             "X-CSRF-Token": tok})
+                try:
+                    op.open(req, timeout=8); c = 200
+                except urllib.error.HTTPError as e:
+                    c = e.code
+                checks.append("wrongpw-401" if c == 401 else f"wrongpw-{c}")
+            else:
+                c, txt = fetch(base + "/api/health")
+                checks.append("health-200" if c == 200 and '"ok"' in txt
+                              and "true" in txt else f"health-{c}")
+            if t == "api":
+                c, it = fetch(base + "/api/items", {"name": "af08-ind"}, "POST")
+                iid = (json.loads(it) or {}).get("id") if c in (200, 201) else None
+                checks.append("create-201" if iid else f"create-{c}")
+                if iid:
+                    c, _ = fetch(base + f"/api/items/{iid}", None, "DELETE")
+                    checks.append("delete-ok" if c in (200, 204) else f"delete-{c}")
+            if t == "ai-tool":
+                c, _ = fetch(base + "/ai.html")
+                checks.append("ai-html-200" if c == 200 else f"ai-html-{c}")
+            c, _ = fetch(base + "/api/definitely-missing-af08")
+            checks.append("api-404" if c == 404 else f"api404-{c}")
+    finally:
+        os.killpg(proc.pid, signal.SIGTERM)
+        time.sleep(0.8)
+        try: os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+    results[t] = checks
+    print("IND %s %s" % (t, " ".join(checks)))
+def _good(x):
+    return x.endswith(("-ok", "-200", "-201", "-401", "-404"))
+ok = all("FAILED" not in v and all(_good(x) for x in v)
+         for v in results.values())
+print("IND-ALL-OK" if ok else "IND-HAS-FAIL")
+EOF
+)
+for T in api ai-tool fullstack webpage webapp webtool dashboard shop pwa; do
+  L=$(echo "$IND" | grep "^IND $T " | head -1)
+  if [ -n "$L" ] && ! echo "$L" | grep -q "FAILED"; then
+    PASS=$((PASS+1)); echo "✅ C-$T اجرای مستقل از ZIP: $(echo "$L" | cut -d' ' -f3-)"
+  elif [ -z "$L" ]; then
+    echo "   ↳ C-$T بدون ZIP مستقل (بخش C از قبل بلاک/غایب)"
+  else
+    FAIL=$((FAIL+1)); echo "❌ C-$T اجرای مستقل: $L"
+  fi
+done
+check "C جمع‌بندی استقلال ZIP" "$(echo "$IND" | grep -q "IND-ALL-OK" && echo OK || echo "PARTIAL: $(echo "$IND" | tail -1)")" "OK"
+
+echo "== D) Android (بدون ساخت) =="
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import json, subprocess, sys, zipfile
+sys.path.insert(0, ".")
+from pathlib import Path
+from core.engines.android import SDK_JAR, BUNDLETOOL_JAR
+fx = Path("projects/af02-android-test")
+rels = json.loads((fx / ".factory" / "releases.json").read_text())
+apk_p = Path([r for r in rels if r.get("kind") == "apk"][-1]["artifacts"]["apk"]["path"])
+assert zipfile.ZipFile(apk_p).testzip() is None
+rc = subprocess.run(["apksigner", "verify", str(apk_p)], capture_output=True, timeout=120)
+print("APK-VERIFY", rc.returncode)
+b = subprocess.run(["aapt2", "dump", "badging", str(apk_p)], capture_output=True, text=True, timeout=60).stdout
+import re
+m = re.search(r"package: name='([^']+)' versionCode='(\d+)' versionName='([^']+)'", b)
+print("BADGING", m.group(1), m.group(2), m.group(3))
+EOF
+)
+checkeq "D-APK سلامت + apksigner verify" "0" "$(echo "$OUT" | grep -o 'APK-VERIFY [0-9-]*' | awk '{print $2}')"
+checkeq "D-APK badging معتبر (package واقعی)" "com.aifactory.test" "$(echo "$OUT" | awk '/^BADGING/ {print $2}')"
+ADBD=$(adb devices 2>/dev/null | tail -n +2 | grep -c "device$" || true)
+if [ "${ADBD:-0}" -ge 1 ]; then
+  AP=$(python3 - <<'EOF'
+import json
+from pathlib import Path
+rels = json.loads(Path("projects/af02-android-test/.factory/releases.json").read_text())
+print([r for r in rels if r.get("kind") == "apk"][-1]["artifacts"]["apk"]["path"])
+EOF
+)
+  CODE=$(adb install -r "$AP" 2>&1 | tail -1)
+  check "D نصب واقعی APK روی گوشی" "$(echo "$CODE" | grep -q "Success" && echo OK || echo "$CODE")" "OK"
+else
+  nt "نصب واقعی APK روی گوشی — adb بدون دستگاه متصل (تنها کانال نصب از Termux؛ Android 12 بدون wireless-debugging جفت نمی‌شود)"
+fi
+
+echo "== E) پاک‌سازی داده‌های همین مأموریت =="
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+for T in webpage webapp webtool dashboard shop api ai-tool pwa fullstack; do
+  pauth -fsS -X POST http://127.0.0.1:8580/api/factory/stop \
+    -H 'Content-Type: application/json' -d "{\"project\":\"af08-$T\"}" -o /dev/null 2>/dev/null
+  pauth -fsS -X POST http://127.0.0.1:8580/api/factory/delete \
+    -H 'Content-Type: application/json' -d "{\"project\":\"af08-$T\",\"confirm\":true}" -o /dev/null 2>/dev/null
+done
+sleep 1
+rm -rf "$ROOT/exports/af08-standalone" "$ROOT"/exports/af08-*-release-*.zip 2>/dev/null
+LEFT=$([ -d "$ROOT/projects/af08-fullstack" ] && echo 1 || echo 0)
+for S in $SAMP; do [ -d "$ROOT/projects/af08-${S%%:*}" ] && LEFT=$((LEFT+1)); done
+checkeq "E حذف کپی‌ها و نمونه‌ها" "0" "$LEFT"
+ORIG=OK
+for S in $SAMP; do
+  SRC="${S#*:}"
+  [ -d "$ROOT/projects/$SRC" ] || ORIG=BROKEN
+done
+checkeq "E نمونه‌های اصلی دست‌نخورده" "OK" "$ORIG"
+
+echo
+echo "════════ AF-08 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL NOT-TESTED=$NT"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN (بدون احتساب NOT-TESTED)"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

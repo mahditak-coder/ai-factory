@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# ai-factory-test-p7-1 — REAL acceptance tests for the Agent Registry API.
+# Every check below is a live HTTP call against the running panel.
+# Run: bash scripts/ai-factory-test-p7-1
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/p7"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+contains() { case "$2" in *"$1"*) echo ok;; *) echo no;; esac; }
+
+if ! curl -fsS "$BASE/api/health" >/dev/null 2>&1; then
+    bash "$ROOT/scripts/ai-factory-start" >/dev/null; sleep 2
+fi
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+gjson() { curl -sS "$@"; }
+
+TS=$(date +%H%M%S); ANAME="tester-$TS"
+
+echo "════ P7-1 — رجیستر عامل‌ها (API واقعی)"
+
+# 1) list + auto-seed
+L=$(gjson "$BASE/api/agents")
+check "P7-1-1 فهرست عامل‌ها 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/agents")"
+case "$L" in *'"builder"'*) check "P7-1-2 عامل پیش‌فرض builder به‌طور صریح seed شد" "ok" "ok";;
+    *) check "P7-1-2 عامل پیش‌فرض builder به‌طور صریح seed شد" "ok" "no";; esac
+
+# 2) create with Persian fields
+C=$(curl -s -X POST -d "{\"name\":\"$ANAME\",\"role\":\"آزمون‌گر\",\"description\":\"عامل آزمون پذیرش\",\"instructions\":\"تو آزمون‌گر هستی؛ فقط فایل‌های آزمون واقعی می‌نویسی و خلاصهٔ نتایج را فارسی گزارش می‌کنی.\",\"model\":\"opencode/glm-5.3-flash-free\",\"max_turns\":4,\"enabled\":true}" -H 'Content-Type: application/json' "$BASE/api/agents" -o "$T/p7/create.json" -w '%{http_code}')
+check "P7-1-3 ایجاد عامل با فیلدهای فارسی → 201" "201" "$C"
+
+# 3) read back — Persian round-trip
+V=$(gjson "$BASE/api/agents/view?name=$ANAME")
+case "$V" in *"آزمون‌گر"*) check "P7-1-4 خواندن مجدد: نقش فارسی سالم" "ok" "ok";;
+    *) check "P7-1-4 خواندن مجدد: نقش فارسی سالم" "ok" "no";; esac
+case "$V" in *"glm-5.3-flash-free"*) check "P7-1-5 مدل ذخیره و بازخوانی شد" "ok" "ok";;
+    *) check "P7-1-5 مدل ذخیره و بازخوانی شد" "ok" "no";; esac
+
+# 4) duplicate
+C=$(curl -s -o /dev/null -w '%{http_code}' -X POST -d "{\"name\":\"$ANAME\",\"role\":\"x\",\"instructions\":\"دستورالعمل آزمایشی کافی\"}" -H 'Content-Type: application/json' "$BASE/api/agents")
+check "P7-1-6 ایجاد تکراری → 409" "409" "$C"
+
+# 5) invalid name
+C=$(curl -s -o "$T/p7/badname.json" -w '%{http_code}' -X POST -d '{"name":"BAD NAME!","role":"x","instructions":"دستورالعمل آزمایشی کافی"}' -H 'Content-Type: application/json' "$BASE/api/agents")
+check "P7-1-7 نام نامعتبر → 400" "400" "$C"
+
+# 6) secret rejection
+B=$(curl -s -X POST -d "{\"name\":\"sec-$TS\",\"role\":\"x\",\"instructions\":\"دستورالعمل آزمایشی کافی\",\"api_key\":\"SHOULD-NEVER-STORE\"}" -H 'Content-Type: application/json' "$BASE/api/agents")
+case "$(contains 'ممنوع' "$B")" in ok) check "P7-1-8 فیلد api_key رد شد (پیام ممنوع بودن اسرار)" "ok" "ok";;
+    *) check "P7-1-8 فیلد api_key رد شد (پیام ممنوع بودن اسرار)" "ok" "no: $B";; esac
+
+# 7) bad model format
+B=$(curl -s -X POST -d "{\"name\":\"bm-$TS\",\"role\":\"x\",\"instructions\":\"دستورالعمل آزمایشی کافی\",\"model\":\"بدون-اسلش\"}" -H 'Content-Type: application/json' "$BASE/api/agents")
+case "$(contains 'providerID/modelID' "$B")" in ok) check "P7-1-9 قالب مدل نامعتبر → خطا" "ok" "ok";;
+    *) check "P7-1-9 قالب مدل نامعتبر → خطا" "ok" "no";; esac
+
+# 8) max_turns out of range + unknown type
+B=$(curl -s -X POST -d "{\"name\":\"mt-$TS\",\"role\":\"x\",\"instructions\":\"دستورالعمل آزمایشی کافی\",\"max_turns\":99,\"allowed_types\":[\"هیچ\"]}" -H 'Content-Type: application/json' "$BASE/api/agents")
+case "$B" in *max_turns*) case "$B" in *ناشناخته*) check "P7-1-10 max_turns و نوع ناشناخته رد شدند" "ok" "ok";;
+    *) check "P7-1-10 max_turns و نوع ناشناخته رد شدند" "ok" "no-type";; esac;;
+    *) check "P7-1-10 max_turns و نوع ناشناخته رد شدند" "ok" "no-turns";; esac
+
+# 9) update — disable + persist
+C=$(curl -s -o "$T/p7/upd.json" -w '%{http_code}' -X POST -d "{\"name\":\"$ANAME\",\"enabled\":false,\"max_turns\":9}" -H 'Content-Type: application/json' "$BASE/api/agents/update")
+check "P7-1-11 به‌روزرسانی → 200" "200" "$C"
+V=$(gjson "$BASE/api/agents/view?name=$ANAME")
+case "$V" in *'"enabled": false'*) check "P7-1-12 غیرفعال‌سازی ماندگار شد" "ok" "ok";;
+    *) check "P7-1-12 غیرفعال‌سازی ماندگار شد" "ok" "no: $V";; esac
+case "$V" in *'"max_turns": 9'*) check "P7-1-13 بودجهٔ نوبت ماندگار شد" "ok" "ok";;
+    *) check "P7-1-13 بودجهٔ نوبت ماندگار شد" "ok" "no";; esac
+
+# 10) unknown field in update is rejected
+C=$(curl -s -o /dev/null -w '%{http_code}' -X POST -d "{\"name\":\"$ANAME\",\"role\":\"نقش جدید\",\"__renameto\":\"zzz\"}" -H 'Content-Type: application/json' "$BASE/api/agents/update")
+check "P7-1-14 فیلد ناشناخته در به‌روزرسانی → 400" "400" "$C"
+
+# 11) validate endpoint
+B=$(curl -s -X POST -d "{\"name\":\"v-$TS\",\"role\":\"x\",\"instructions\":\"دستورالعمل آزمایشی کافی\"}" -H 'Content-Type: application/json' "$BASE/api/agents/validate")
+case "$B" in *'"valid": true'*) check "P7-1-15 اندپوینت اعتبارسنجی: بدنهٔ سالم" "ok" "ok";;
+    *) check "P7-1-15 اندپوینت اعتبارسنجی: بدنهٔ سالم" "ok" "no: $B";; esac
+
+# 12) 404 + delete
+check "P7-1-16 عامل ناشناخته → 404" "404" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/agents/view?name=no-such-agent-$TS")"
+check "P7-1-17 حذف عامل → 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d "{\"name\":\"$ANAME\"}" -H 'Content-Type: application/json' "$BASE/api/agents/delete")"
+check "P7-1-18 پس از حذف → 404" "404" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/agents/view?name=$ANAME")"
+
+# 13) on-disk hygiene: 0600, no .tmp residue, builder intact
+PERM=$(stat -c '%a' "$ROOT/agents/builder.json" 2>/dev/null)
+check "P7-1-19 فایل عامل روی دیسک 0600" "600" "$PERM"
+TMPRES=$(ls "$ROOT/agents/"*.tmp 2>/dev/null | wc -l)
+check "P7-1-20 بدون فایل .tmp باقی‌مانده" "0" "$TMPRES"
+N=$(curl -s "$BASE/api/agents" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['agents']))")
+[ "$N" -ge 1 ] && check "P7-1-21 رجیستر پس از حذف سالم است ($N عامل)" "ok" "ok" \
+    || check "P7-1-21 رجیستر پس از حذف سالم است" "ok" "empty"
+
+echo "──────────────────"
+echo "نتیجهٔ P7-1: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

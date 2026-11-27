@@ -1,0 +1,129 @@
+{
+  "schema": "af-image-provider-config-2.0",
+  "active": "",
+  "note": "Separate from text ModelGateway. Credentials are NEVER stored here — only env names. Paid providers stay disabled; no automatic fallback; every call requires an explicit approved request with a configured cost estimate.",
+  "spending": {
+    "per_request_usd": 1.0,
+    "daily_usd": 5.0,
+    "hard_guarantee": false,
+    "note": "Local limits only. Provider billing is authoritative; no hard guarantee is claimed."
+  },
+  "providers": [
+    {
+      "id": "harness-opencode-image",
+      "model": "opencode/grok-imagine-image-2.0",
+      "enabled": false,
+      "paid": "unknown",
+      "requires_user_cost_approval": true,
+      "credential": "not configured"
+    },
+    {
+      "id": "opencode-image",
+      "model": "not-exposed",
+      "enabled": false,
+      "paid": false,
+      "credential": "not configured"
+    },
+    {
+      "id": "local-pillow",
+      "enabled": true,
+      "paid": false,
+      "credential": "not required",
+      "capabilities": ["inspect", "resize", "white_to_alpha", "sprite_sheet"]
+    },
+    {
+      "id": "openai-image",
+      "title": "OpenAI GPT Image 2.6",
+      "endpoint": "https://api.openai.com/v1/images/generations|edits",
+      "credential_env": "OPENAI_API_KEY",
+      "enabled": false,
+      "paid": true,
+      "requires_user_cost_approval": true,
+      "credential": "not configured",
+      "models": {
+        "gpt-image-2.6-sunburst": {
+          "estimated_cost_usd": null,
+          "cost_source": "set from current platform.openai.com pricing before use",
+          "capabilities": ["generate", "edit", "reference-images", "transparent-png"],
+          "max_references": 16
+        },
+        "gpt-image-2.6-flare": {
+          "estimated_cost_usd": null,
+          "cost_source": "set from current platform.openai.com pricing before use",
+          "capabilities": ["generate", "edit", "reference-images", "transparent-png"],
+          "max_references": 16
+        }
+      }
+    },
+    {
+      "id": "gemini-image",
+      "title": "Google Gemini Nano Banana",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/interactions",
+      "credential_env": "GEMINI_API_KEY",
+      "enabled": false,
+      "paid": true,
+      "requires_user_cost_approval": true,
+      "credential": "not configured",
+      "models": {
+        "gemini-nano-banana-2.1": {
+          "estimated_cost_usd": null,
+          "cost_source": "set from current ai.google.dev pricing before use",
+          "capabilities": ["generate", "edit", "reference-images", "multi-turn"],
+          "max_references": 14
+        },
+        "gemini-3-pro-image": {
+          "estimated_cost_usd": null,
+          "cost_source": "set from current ai.google.dev pricing before use",
+          "capabilities": ["generate", "edit", "reference-images", "multi-turn"],
+          "max_references": 5
+        }
+      }
+    },
+    {
+      "id": "openrouter-image",
+      "title": "OpenRouter free image (Recraft V4.1 Flash V2)",
+      "endpoint": "https://openrouter.ai/api/v1/images",
+      "credential_env": "OPENROUTER_API_KEY",
+      "enabled": true,
+      "paid": false,
+      "free_cost_model": true,
+      "requires_user_cost_approval": true,
+      "credential": "not configured",
+      "models": {
+        "recraft/recraft-v4.1-flash-v2:free": {
+          "estimated_cost_usd": 0.0,
+          "cost_source": "OpenRouter free variant — exact model ID required; verify usage.cost == 0",
+          "capabilities": ["generate"],
+          "supports_reference_images": false,
+          "supports_editing": false,
+          "aspect_ratios": ["1:1", "2:1", "1:2", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "auto"],
+          "max_n": 6
+        }
+      }
+    },
+    {
+      "id": "bfl-image",
+      "title": "Black Forest Labs FLUX.2",
+      "endpoint": "https://api.bfl.ai/v1/flux-2-max|flux-2-pro",
+      "credential_env": "BFL_API_KEY",
+      "enabled": false,
+      "paid": true,
+      "requires_user_cost_approval": true,
+      "credential": "not configured",
+      "models": {
+        "flux-2-max": {
+          "estimated_cost_usd": null,
+          "cost_source": "set from current docs.bfl.ai pricing before use",
+          "capabilities": ["generate", "edit", "reference-urls"],
+          "max_references": 8
+        },
+        "flux-2-pro": {
+          "estimated_cost_usd": null,
+          "cost_source": "set from current docs.bfl.ai pricing before use",
+          "capabilities": ["generate", "edit", "reference-urls"],
+          "max_references": 8
+        }
+      }
+    }
+  ]
+}
