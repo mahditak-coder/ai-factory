@@ -215,36 +215,47 @@ def mark_in_progress(call_id: str) -> dict:
         return rec
 
 
+def _finalize_unlocked(receipts: dict, call_id: str, event: dict) -> dict:
+    """Write a terminal receipt into an already-loaded, lock-held dict.
+
+    Caller MUST hold ``_receipt_lock()``. First terminal result wins; later
+    terminal writes return the existing record instead of overwriting it.
+    """
+    if not call_id:
+        return {}
+    old = receipts.get(call_id)
+    terminal_status = event_envelope.status(event.get("status"))
+    if old and old.get("lifecycle") == "TERMINAL":
+        return old
+    rec = dict(old or {"call_id": call_id})
+    rec.update({"call_id": call_id,
+                "request_id": str(event.get("request_id") or rec.get("request_id") or ""),
+                "tool": str(event.get("tool") or rec.get("tool") or ""),
+                "project": str(event.get("project") or rec.get("project") or ""),
+                "status": terminal_status,
+                "lifecycle": "TERMINAL",
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "error": str(event.get("error") or "")[:300],
+                "finished": event.get("finished"),
+                "seq": event.get("seq"),
+                "reconciled_by": str(event.get("reconciled_by") or
+                                     rec.get("reconciled_by") or ""),
+                "reconcile_reason": str(event.get("reconcile_reason") or
+                                        rec.get("reconcile_reason") or ""),
+                "reconciled_at": event.get("reconciled_at") or
+                                 rec.get("reconciled_at")})
+    receipts[call_id] = rec
+    _save_receipts(receipts)
+    return rec
+
+
 def finalize(call_id: str, event: dict) -> dict:
     """Persist the terminal outcome under the cross-process lock; first wins."""
     if not call_id:
         return {}
     with _receipt_lock():
         receipts = _load_receipts()
-        old = receipts.get(call_id)
-        terminal_status = event_envelope.status(event.get("status"))
-        if old and old.get("lifecycle") == "TERMINAL":
-            return old
-        rec = dict(old or {"call_id": call_id})
-        rec.update({"call_id": call_id,
-                    "request_id": str(event.get("request_id") or rec.get("request_id") or ""),
-                    "tool": str(event.get("tool") or rec.get("tool") or ""),
-                    "project": str(event.get("project") or rec.get("project") or ""),
-                    "status": terminal_status,
-                    "lifecycle": "TERMINAL",
-                    "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "error": str(event.get("error") or "")[:300],
-                    "finished": event.get("finished"),
-                    "seq": event.get("seq"),
-                    "reconciled_by": str(event.get("reconciled_by") or
-                                         rec.get("reconciled_by") or ""),
-                    "reconcile_reason": str(event.get("reconcile_reason") or
-                                            rec.get("reconcile_reason") or ""),
-                    "reconciled_at": event.get("reconciled_at") or
-                                     rec.get("reconciled_at")})
-        receipts[call_id] = rec
-        _save_receipts(receipts)
-        return rec
+        return _finalize_unlocked(receipts, call_id, event)
 
 
 def unresolved_receipts() -> list[dict]:
@@ -255,30 +266,34 @@ def unresolved_receipts() -> list[dict]:
 
 
 def reconcile(call_id: str, status: str, actor: str, reason: str = "") -> dict:
-    """Explicit human/operator recovery; never an automatic rerun.
+    """Atomically reconcile one unresolved receipt with a full audit trail.
 
-    Anonymous reconciliation is rejected. ``actor``, ``reason`` and a timestamp
-    are persisted into the terminal receipt as a durable audit trail.
+    The entire validate -> load -> reject -> persist sequence runs inside ONE
+    ``_receipt_lock()`` critical section shared by threads and processes.
+    Anonymous actors, non-terminal statuses, missing receipts and already
+    terminal receipts are rejected. First terminal result wins: a competing
+    reconciler gets an explicit ``already-reconciled`` error, never a silent
+    overwrite. No adapter is rerun by this path.
     """
-    actor = str(actor or "").strip()
-    if not actor:
-        raise ReceiptStoreError("explicit-actor-required")
-    if not event_envelope.is_terminal(status):
-        raise ReceiptStoreError("terminal-status-required")
     with _receipt_lock():
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ReceiptStoreError("explicit-actor-required")
+        if not event_envelope.is_terminal(status):
+            raise ReceiptStoreError("terminal-status-required")
         receipts = _load_receipts()
         old = receipts.get(call_id)
         if old is None:
             raise ReceiptStoreError("reconcile-target-not-found:" + call_id)
         if old.get("lifecycle") == "TERMINAL":
-            raise ReceiptStoreError("reconcile-target-already-terminal")
-    # finalize() re-acquires the same cross-process lock; first terminal wins.
-    return finalize(call_id, {"status": status, "request_id": "",
-                              "error": str(reason)[:300],
-                              "finished": time.time(),
-                              "reconciled_by": actor,
-                              "reconcile_reason": str(reason)[:300],
-                              "reconciled_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+            raise ReceiptStoreError("already-reconciled:" + call_id)
+        return _finalize_unlocked(receipts, call_id, {
+            "status": status, "request_id": "",
+            "error": str(reason)[:300],
+            "finished": time.time(),
+            "reconciled_by": actor,
+            "reconcile_reason": str(reason)[:300],
+            "reconciled_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
 
 
 def record(event: dict) -> dict:

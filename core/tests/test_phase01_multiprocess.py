@@ -94,6 +94,26 @@ def _batch_worker(store, receipts, side_dir, result_path, barrier, tool_id,
     Path(result_path).write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _reconcile_worker(store, receipts, result_path, barrier, call_id,
+                      status, actor, reason):
+    """One reconciler in one child process; result is written as JSON."""
+    try:
+        tool_events._STORE = Path(store)
+        tool_events._RECEIPT_STORE = Path(receipts)
+        barrier.wait(timeout=30)
+        rec = tool_events.reconcile(call_id, status, actor, reason)
+        payload = {"ok": True, "status": rec.get("status"),
+                   "lifecycle": rec.get("lifecycle"),
+                   "reconciled_by": rec.get("reconciled_by"),
+                   "reconcile_reason": rec.get("reconcile_reason"),
+                   "reconciled_at": rec.get("reconciled_at")}
+    except tool_events.ReceiptStoreError as exc:
+        payload = {"ok": False, "error": str(exc)}
+    except BaseException as exc:  # pragma: no cover - diagnostic payload
+        payload = {"ok": False, "error": repr(exc)}
+    Path(result_path).write_text(json.dumps(payload), encoding="utf-8")
+
+
 class MultiProcessIdempotencyTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -233,6 +253,45 @@ class MultiProcessIdempotencyTest(unittest.TestCase):
         self.assertEqual(results[0]["status"], opstatus.BLOCKED)
         self.assertIn("receipt-lock", results[0]["error"])
         self.assertEqual(self._effects(), [])
+
+    def test_two_processes_reconcile_same_call_id_exactly_one_wins(self):
+        call_id = "mp-reconcile-race"
+        # One unresolved receipt shared by both competing reconcilers.
+        tool_events.reserve(call_id, "sig-mp-reconcile", "mp-shared",
+                            self.project)
+        tool_events.mark_in_progress(call_id)
+        barrier = _CTX.Barrier(2)
+        contenders = [("operator-A", opstatus.PASS, "approved"),
+                      ("operator-B", opstatus.FAIL, "rejected")]
+        procs, paths = [], []
+        for idx, (actor, status, reason) in enumerate(contenders):
+            rp = self.base / ("reconcile-%d.json" % idx)
+            paths.append(rp)
+            p = _CTX.Process(target=_reconcile_worker, args=(
+                str(self.store), str(self.receipts), str(rp), barrier,
+                call_id, status, actor, reason))
+            p.start()
+            procs.append(p)
+        for p in procs:
+            p.join(timeout=40)
+            self.assertFalse(p.is_alive(), "reconciler did not exit")
+        results = [json.loads(rp.read_text(encoding="utf-8")) for rp in paths]
+        winners = [r for r in results if r.get("ok")]
+        losers = [r for r in results if not r.get("ok")]
+        self.assertEqual(len(winners), 1, "exactly one reconciliation wins")
+        self.assertEqual(len(losers), 1)
+        self.assertIn("already-reconciled", losers[0]["error"])
+        winner = winners[0]
+        rec = tool_events.find(call_id)
+        # Persisted audit record is internally consistent with the winner.
+        self.assertEqual(rec["call_id"], call_id)
+        self.assertEqual(rec["lifecycle"], "TERMINAL")
+        self.assertEqual(rec["status"], winner["status"])
+        self.assertEqual(rec["reconciled_by"], winner["reconciled_by"])
+        self.assertEqual(rec["reconcile_reason"], winner["reconcile_reason"])
+        self.assertEqual(rec["reconciled_at"], winner["reconciled_at"])
+        self.assertTrue(rec["reconciled_at"])
+        self.assertIn(rec["reconciled_by"], ("operator-A", "operator-B"))
 
     def test_reconcile_audit_trail_persists_actor_and_reason(self):
         tool_events.reserve("mp-rec", "sig-mp-rec", "mp-shared", self.project)
