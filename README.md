@@ -93,3 +93,15 @@ PBKDF2، نقش admin/user، CSRF، پنل مدیر، CRUD نمونه (مشتر�
 
 هیچ ابزار جدیدی لازم نیست؛ Python استاندارد، `curl` و `bash` (پیش‌فرض Termux).
 اتصال AI Workspace به OpenCode v2.2.6 از طریق `opencode serve` (جزو خود OpenCode).
+
+
+## AF NEXT Rebuild Blueprint ( Persian)
+
+This repository also hosts the permanent, audited rebuild blueprint for AI Factory. The rebuild is **NOT STARTED**; Phase 01 is waiting for explicit user authorization.
+
+- [Current state](docs/rebuild/CURRENT-STATE.md)
+- [Master architecture](docs/rebuild/MASTER-ARCHITECTURE.md)
+- [Ten-phase roadmap](docs/rebuild/REBUILD-ROADMAP.md)
+- [Continue here](docs/rebuild/CONTINUE-HERE.md)
+
+خلاصه: بازسازی بر اساس ممیزی مستقل مستند شده است، هیچ فاز اجرا نشده و فقط اسناد در شاخه `rebuild/blueprint-v1` منتشر میشوند.
