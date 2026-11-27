@@ -1,0 +1,68 @@
+# ai-factory-test — end-to-end real tests for the local API
+# Run: bash scripts/ai-factory-test
+set -u
+URL="http://127.0.0.1:8580"
+PASS=0; FAIL=0
+
+check() { # name, expected, actual
+    if [ "$2" = "$3" ]; then
+        PASS=$((PASS+1)); echo "✅ $1"
+    else
+        FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"
+    fi
+}
+
+api_status() {
+    pauth -o /dev/null -w '%{http_code}' "$@"
+}
+
+# Make sure the server is running
+if ! curl -fsS "$URL/api/health" >/dev/null 2>&1; then
+    bash "$(dirname "$0")/ai-factory-start" >/dev/null
+    sleep 1
+fi
+
+# P6-2: everything but health/status/model now requires panel login
+. "$(dirname "$0")/ai-factory-panel-login" "$URL"
+
+T="test_proj_$$"
+F="_test_file.txt"
+
+# 1) health
+check "health endpoint" "200" "$(api_status $URL/api/health)"
+# 2) status
+check "system status" "200" "$(api_status $URL/api/status)"
+# 3) model
+check "model endpoint" "200" "$(api_status $URL/api/model)"
+# 4) create project
+check "create project" "201" "$(api_status -X POST -d '{"name":"'"$T"'"}' -H 'Content-Type: application/json' $URL/api/projects)"
+# 5) duplicate refused
+check "duplicate project refused" "409" "$(api_status -X POST -d '{"name":"'"$T"'"}' -H 'Content-Type: application/json' $URL/api/projects)"
+# 6) bad name refused
+check "bad project name" "400" "$(api_status -X POST -d '{"name":"../etc"}' -H 'Content-Type: application/json' $URL/api/projects)"
+# 7) no body refused
+check "invalid body" "400" "$(api_status -X POST -d 'not-json' -H 'Content-Type: application/json' $URL/api/projects)"
+# 8) write file
+check "write file" "200" "$(api_status -X PUT -d '{"project":"'"$T"'","path":"'"$F"'","content":"hello"}' -H 'Content-Type: application/json' $URL/api/file)"
+# 9) read file
+GOT=$(pauth -f "$URL/api/file?project=$T&path=$F" | python -c 'import json,sys; print(json.load(sys.stdin)["content"])')
+check "read file content" "hello" "$GOT"
+# 10) path traversal blocked
+check "traversal blocked" "403" "$(api_status "$URL/api/file?project=$T&path=../../logs/server.log")"
+# 11) traversal encoded blocked
+check "encoded traversal blocked" "403" "$(api_status "$URL/api/file?project=$T&path=%2e%2e%2f%2e%2e%2fserver.pid")"
+# 12) nonexistent project blocked
+check "unknown project" "404" "$(api_status "$URL/api/file?project=does_not_exist_abc&path=x.txt")"
+# 13) delete file
+check "delete file" "200" "$(api_status -X DELETE "$URL/api/file?project=$T&path=$F")"
+# 14) unknown endpoint
+check "unknown endpoint" "404" "$(api_status $URL/api/nothing)"
+# 15) logs endpoint
+check "logs endpoint" "200" "$(api_status "$URL/api/logs?lines=5")"
+
+# cleanup test project
+rm -rf "$HOME/AI-Factory/projects/$T"
+
+echo "──────────────────"
+echo "نتیجه: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" = "0" ]

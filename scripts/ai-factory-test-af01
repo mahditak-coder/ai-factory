@@ -1,0 +1,147 @@
+# ai-factory-test-af01 — آزمون واقعی قابلیت «زمان پیام‌ها» (AF-01)
+# پوشش: بارگذاری msgtime.js در Node (کد واقعی ارسالی به مرورگر)،
+#       /api/oc/history (فیلد created برای همهٔ پیام‌ها)،
+#       سناریوی کامل E2E: پروژهٔ آزمون → نشست → پیام کاربر → پاسخ واقعی مدل
+#       → بررسی زمان واقعی ذخیره‌شده → سرو /static/msgtime.js
+# Run: bash scripts/ai-factory-test-af01
+set -u
+URL="http://127.0.0.1:8580"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DASH="$ROOT/dashboard"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+mkdir -p "$TMP"
+PASS=0; FAIL=0
+
+check() { # name, expected, actual
+    if [ "$2" = "$3" ]; then
+        PASS=$((PASS+1)); echo "✅ $1"
+    else
+        FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"
+    fi
+}
+
+echo "== 1) syntax check of the shipped JS =="
+if node --check "$DASH/work.js" >/dev/null 2>&1; then check "node --check work.js" "ok" "ok"; else
+  FAIL=$((FAIL+1)); echo "❌ work.js syntax"; node --check "$DASH/work.js"; fi
+if node --check "$DASH/msgtime.js" >/dev/null 2>&1; then check "node --check msgtime.js" "ok" "ok"; else
+  FAIL=$((FAIL+1)); echo "❌ msgtime.js syntax"; node --check "$DASH/msgtime.js"; fi
+
+echo "== 2) AFTime behaviour — the real browser file, executed in Node =="
+NODE_OUT=$(DASH="$DASH" node -e '
+const T = require(process.env.DASH + "/msgtime.js");
+const day = 86400000;
+const now = Date.now();
+const assert = (c, m) => { if (!c) { console.error("ASSERT FAIL: " + m); process.exit(1); } };
+const t1 = T.fmt(now - 60000);
+assert(t1.startsWith("⏱ "), "today gets clock mark");
+assert(!t1.includes("/"), "today shows time only");
+const t2 = T.fmt(now - 3 * day);
+assert(t2.includes("/") || /\d{4}/.test(t2), "older shows a date");
+for (const bad of [undefined, null, 0, -5, "abc", NaN, {}]) {
+  const s = T.fmt(bad);
+  assert(s === T.UNKNOWN, "invalid ts => UNKNOWN, got: " + s);
+}
+assert(T.stampNow().startsWith("⏱ "), "stampNow marks");
+console.log("AFTime behaviour OK");
+') && check "AFTime: today/older/unknown/stampNow" "AFTime behaviour OK" "$NODE_OUT" || true
+
+echo "== 3) static loader + page wiring =="
+check "GET /static/msgtime.js -> 200" "200" "$(curl -sS -o /dev/null -w '%{http_code}' $URL/static/msgtime.js)"
+if grep -q 'static/msgtime.js' "$DASH/workspace.html"; then
+  PASS=$((PASS+1)); echo "✅ workspace.html loads msgtime.js before work.js"
+else
+  FAIL=$((FAIL+1)); echo "❌ workspace.html does not load msgtime.js"
+fi
+
+echo "== 4) work.js honesty rules (source checks) =="
+for pat in 'syncMsgTimeFromHistory' 'زمان نامشخص (ارسال ناموفق)' 'msgTime(m.created)' 'AFTime.stampNow()'; do
+  if grep -q "$pat" "$DASH/work.js"; then PASS=$((PASS+1)); echo "✅ work.js: $pat";
+  else FAIL=$((FAIL+1)); echo "❌ work.js missing: $pat"; fi
+done
+if grep -q 'شما · ${faTime(Date.now())}' "$DASH/work.js"; then
+  FAIL=$((FAIL+1)); echo "❌ work.js still fakes user-message time with Date.now()"
+else
+  PASS=$((PASS+1)); echo "✅ no faked Date.now() user-message time in work.js"
+fi
+
+echo "== 5) panel-auth protected API checks =="
+. "$(dirname "$0")/ai-factory-panel-login" "$URL"
+papi() { command curl -sS -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+# پروژهٔ آزمون — بدون دست‌زدن به پروژه‌های دیگر
+P="af01-timecheck"
+papi -X POST -H 'Content-Type: application/json' \
+  -d "{\"name\":\"$P\",\"type\":\"webpage\",\"description\":\"AF-01 timestamp test\"}" \
+  "$URL/api/factory/projects" >/dev/null 2>&1
+papi -X POST -H 'Content-Type: application/json' -d "{\"project\":\"$P\",\"title\":\"AF-01\"}" \
+  "$URL/api/oc/sessions" > "$TMP/af01-sess.json" 2>/dev/null
+SID=$(papi "$URL/api/oc/sessions?project=$P" | python3 -c 'import json,sys;d=json.load(sys.stdin);print((d["sessions"] or [{}])[0].get("id",""))' 2>/dev/null || echo "")
+check "test session available" "ok" "$([ -n "$SID" ] && echo ok || echo no)"
+
+if [ -n "$SID" ]; then
+  echo "== 6) E2E: user message persisted with REAL time =="
+  papi -X POST -H 'Content-Type: application/json' \
+    -d "{\"project\":\"$P\",\"session_id\":\"$SID\",\"text\":\"آزمون زمان پیام\"}" \
+    "$URL/api/oc/message" > "$TMP/af01-send.json" 2>/dev/null
+  MID=$(TMP="$TMP" python3 -c 'import json,os;print(json.load(open(os.environ["TMP"]+"/af01-send.json")).get("message_id",""))' 2>/dev/null || echo "")
+  if [ -n "$MID" ]; then
+    PASS=$((PASS+1)); echo "✅ user message accepted (id=$MID)"
+  else
+    FAIL=$((FAIL+1)); echo "❌ user message not accepted"; cat "$TMP/af01-send.json" 2>/dev/null
+  fi
+  papi "$URL/api/oc/history?session=$SID" > "$TMP/af01-hist.json" 2>/dev/null
+  H=$(TMP="$TMP" MID="$MID" python3 - <<'EOF'
+import json, os
+d = json.load(open(os.environ["TMP"] + "/af01-hist.json"))
+hit = [m for m in d.get("messages", []) if m.get("id") == os.environ["MID"]]
+if hit:
+    c = hit[0].get("created")
+    print("OK" if isinstance(c, (int, float)) and c > 0 else "BAD:" + repr(c))
+else:
+    print("NOTFOUND")
+EOF
+)
+  case "$H" in
+    OK) PASS=$((PASS+1)); echo "✅ user message has real persisted created-timestamp" ;;
+    *)  FAIL=$((FAIL+1)); echo "❌ user message created field: $H" ;;
+  esac
+
+  echo "== 7) assistant turn completes with real times (real model, short prompt) =="
+  DEADLINE=$(( $(date +%s) + 150 ))
+  AC="WAIT"
+  while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+    papi "$URL/api/oc/history?session=$SID" > "$TMP/af01-hist3.json" 2>/dev/null
+    AC=$(TMP="$TMP" python3 - <<'EOF'
+import json, os
+d = json.load(open(os.environ["TMP"] + "/af01-hist3.json"))
+a = [m for m in d.get("messages", []) if m.get("type") == "assistant" and m.get("finish")]
+print("DONE" if a else "WAIT")
+EOF
+)
+    [ "$AC" = "DONE" ] && break
+    sleep 5
+  done
+  if [ "$AC" = "DONE" ]; then
+    PASS=$((PASS+1)); echo "✅ assistant reply persisted with finish + timestamps"
+    papi "$URL/api/oc/history?session=$SID" > "$TMP/af01-hist4.json" 2>/dev/null
+    T=$(TMP="$TMP" python3 - <<'EOF'
+import json, os
+d = json.load(open(os.environ["TMP"] + "/af01-hist4.json"))
+a = [m for m in d.get("messages", []) if m.get("type") == "assistant" and m.get("finish")]
+c = a[-1].get("created") if a else None
+p = a[-1].get("completed") if a else None
+print("OK" if c and p and p >= c else f"BAD created={c} completed={p}")
+EOF
+)
+    case "$T" in
+      OK) PASS=$((PASS+1)); echo "✅ assistant created<=completed (real stored times)" ;;
+      *)  FAIL=$((FAIL+1)); echo "❌ assistant times: $T" ;;
+    esac
+  else
+    FAIL=$((FAIL+1)); echo "❌ assistant reply did not finish in 150s (recorded honestly)"
+  fi
+fi
+
+echo
+echo "RESULT: PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" = "0" ] && echo "AF-01: ALL PASSED" || echo "AF-01: FAILURES PRESENT (honest report)"

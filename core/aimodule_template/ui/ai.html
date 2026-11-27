@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>تنظیمات هوش مصنوعی</title>
+<link rel="stylesheet" href="/ai.css">
+</head>
+<body>
+<main class="page">
+
+  <header class="head">
+    <h1>⚙️ تنظیمات هوش مصنوعی</h1>
+    <p class="sub">اتصال سرویس هوش مصنوعی به همین نرم‌افزار — بدون ویرایش فایل</p>
+  </header>
+
+  <div id="error" class="box err" hidden></div>
+  <div id="msg" class="box ok" hidden></div>
+
+  <!-- وضعیت لحظه‌ای -->
+  <section class="card">
+    <h2>وضعیت فعلی</h2>
+    <div id="statusStrip" class="strip">در حال دریافت…</div>
+    <dl id="lastTest" class="kv" hidden></dl>
+  </section>
+
+  <!-- نگه‌داری مدیر (بار اول یا هر تغییر) -->
+  <section class="card" id="adminCard">
+    <h2>مدیریت</h2>
+    <div id="initBox" hidden>
+      <p class="hint">بار اول است؟ یک «رمز مدیر» تنظیم کنید تا تغییر تنظیمات
+        فقط با این رمز ممکن شود. این رمز هرگز به مرورگر ذخیره/برگشت داده نمی‌شود
+        (فقط hash سمت سرور).</p>
+      <label for="initPass">رمز مدیر (حداقل ۶ نویسه)</label>
+      <input id="initPass" type="password" autocomplete="new-password">
+      <label for="initPass2">تکرار رمز مدیر</label>
+      <input id="initPass2" type="password" autocomplete="new-password">
+      <button id="initBtn" class="btn primary">تنظیم رمز مدیر</button>
+    </div>
+    <div id="passBox" hidden>
+      <label for="pass">رمز مدیر (برای تغییرات این نشست — فقط در همین صفحه)</label>
+      <input id="pass" type="password" autocomplete="off" placeholder="••••••••">
+      <span id="passState" class="badge"></span>
+    </div>
+  </section>
+
+  <!-- تنظیمات اتصال -->
+  <section class="card">
+    <h2>اتصال به سرویس</h2>
+
+    <label class="row togg">
+      <input type="checkbox" id="enabled">
+      <span>قابلیت هوش مصنوعی <b>فعال</b> باشد</span>
+    </label>
+
+    <label for="provider">ارائه‌دهنده (سازگار با OpenAI)</label>
+    <select id="provider"></select>
+    <input id="providerCustom" type="text" hidden maxlength="32"
+           placeholder="نام ارائه‌دهندهٔ ثبت‌شده در ماژول">
+
+    <label for="baseUrl">API Base URL</label>
+    <input id="baseUrl" type="url" inputmode="url" dir="ltr"
+           placeholder="https://YOUR-SERVICE/v1" maxlength="300">
+
+    <label for="model">مدل</label>
+    <input id="model" type="text" dir="ltr" list="modelHints"
+           placeholder="مثلاً gpt-4o-mini یا نام مدل سرویس شما" maxlength="120">
+    <datalist id="modelHints"></datalist>
+
+    <label for="apiKey">API Key
+      <span id="keyState" class="badge"></span></label>
+    <div class="row keyrow">
+      <input id="apiKey" type="password" dir="ltr" autocomplete="off"
+             placeholder="برای ذخیره کلید جدید وارد کنید">
+      <button id="eye" class="btn ghost" type="button" aria-label="نمایش/مخفی">👁</button>
+    </div>
+    <p class="hint" id="keyHint"></p>
+
+    <div class="row btnrow">
+      <button id="saveBtn" class="btn primary">💾 ذخیره</button>
+      <button id="testBtn" class="btn">🔌 تست اتصال</button>
+      <button id="delKeyBtn" class="btn danger">🗑 حذف کلید ذخیره‌شده</button>
+    </div>
+    <p class="hint">همهٔ تغییرهای ذخیره نمی‌شوند مگر دکمهٔ ذخیره — فقط فیلدهای
+      عوض‌شده ارسال می‌شوند تا بقیه‌ی تنظیمات پاک نشود. «تست» اول فیلدهای
+      عوض‌نشدهٔ فعلی را می‌سنجد؛ اگر تغییری هست همان هم لحاظ می‌شود.</p>
+  </section>
+
+  <footer class="foot">کلید API فقط سمت سرور (فایل خصوصی ۰۶۰۰) ذخیره می‌شود و
+    از این صفحه هرگز خواندنی/برگشتی نیست.</footer>
+</main>
+<script src="/ai.js"></script>
+</body>
+</html>

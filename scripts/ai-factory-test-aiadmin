@@ -1,0 +1,451 @@
+# ai-factory-test-aiadmin — P3 tests: AI settings/admin UI that ships inside
+# AI-Factory-generated software (ai_admin.py + ui/ai.*). A sample project is
+# built and RUN in $TMPDIR (never in projects/), fully standalone (no OpenCode):
+# in-process OpenAI-compatible mock service + 3-line server.py glue.
+# Mandatory list: save/retrieve, key save/replace/delete, test ok/fail,
+# non-admin rejected, bad CSRF rejected, no key in API/HTML/JS/log/ZIP,
+# independent run, project without AI config still works, module only for ai-tool.
+# Run: bash scripts/ai-factory-test-aiadmin
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
+SAMPLE="$T/ai-p3-admin-$$"
+PASS=0; FAIL=0
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1"
+    else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi
+}
+cd "$ROOT"
+
+echo "== 1) canonical module self-test still green (12 scenarios) =="
+if python3 core/aimodule_template/tests/test_aiclient.py > "$T/ai-p3-unit.log" 2>&1; then
+    PASS=$((PASS+1)); echo "✅ aiclient unittest suite green"
+else
+    FAIL=$((FAIL+1)); echo "❌ aiclient unittest suite:"; tail -8 "$T/ai-p3-unit.log"
+fi
+
+echo "== 2) sample admin project: build + real run with every mandatory test =="
+mkdir -p "$SAMPLE/app" "$SAMPLE/ui" "$SAMPLE/data"
+cp core/aimodule_template/app/aiclient.py "$SAMPLE/app/"
+cp core/aimodule_template/app/ai_admin.py  "$SAMPLE/app/"
+cp core/aimodule_template/ui/ai.html "$SAMPLE/ui/"
+cp core/aimodule_template/ui/ai.js   "$SAMPLE/ui/"
+cp core/aimodule_template/ui/ai.css  "$SAMPLE/ui/"
+printf '{"app": "نرم‌افزار نمونه", "brand": "custom-kept"}' > "$SAMPLE/config.json"
+
+SAMPLE="$SAMPLE" ROOT="$ROOT" ERRFILE="$SAMPLE.err" python3 - <<'PYEOF'
+import json, os, sys, time, urllib.request, urllib.error
+from pathlib import Path
+
+SAMPLE = Path(os.environ["SAMPLE"]); ROOT = Path(os.environ["ROOT"])
+app = SAMPLE / "app"
+(server := SAMPLE / "server.py").write_text(r'''
+"""نرم‌افزار تولیدیِ نمونه — ۳ خط glue برای ai_admin (بدون OpenCode)."""
+import json, logging, os, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+# --- OpenAI-compatible mock service (in-process; stand-in for any real service)
+MOCK = {"key": None}                     # مقداری از بیرون ست می‌شود (بدون رشتهٔ کلید در سورس)
+class MockH(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _emit(self, code, payload):
+        b = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def do_GET(self):
+        if self.path.endswith("/v1/models"):
+            if (self.headers.get("Authorization") or "") != "Bearer " + MOCK["key"]:
+                return self._emit(401, {"error": "bad key"})
+            return self._emit(200, {"data": [{"id": "mock"}]})
+        self._emit(404, {"error": "nf"})
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0); self.rfile.read(n)
+        if self.path.endswith("/v1/chat/completions"):
+            if (self.headers.get("Authorization") or "") != "Bearer " + MOCK["key"]:
+                return self._emit(401, {"error": "bad key"})
+            return self._emit(200, {"choices": [{"message": {"content": "پاسخ موفق از سرویس محلی"}}]})
+        self._emit(404, {"error": "nf"})
+mh = ThreadingHTTPServer(("127.0.0.1", 0), MockH)
+MOCK_PORT = mh.server_address[1]
+import threading
+threading.Thread(target=mh.serve_forever, daemon=True).start()
+
+logging.basicConfig(level=logging.INFO, filename=str(ROOT / "server.log"),
+                    format="%(asctime)s %(message)s")
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass                                     # لاگ خام فریم‌ورک خاموش؛ خود لاگ می‌کنیم
+    def _log(self):
+        # فقط «متد + مسیر» — هیچ سرصفحه/بدنه‌ای (کلید ممکن است در هدر باشد)
+        logging.info("%s %s", self.command, self.path.split("?")[0])
+    def do_GET(self):
+        self._log()
+        if self.path == "/api/health":
+            b = json.dumps({"ok": True, "app": "sample"}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b))); self.end_headers()
+            return self.wfile.write(b)
+        if self.path.startswith("/api/ai/") or self.path in ("/ai.html", "/ai.js", "/ai.css"):
+            from app import ai_admin             # ← glue (۳ خط، همان‌طور که در README هست)
+            return ai_admin.handle(self)
+        self.send_response(404); self.end_headers()
+    def do_POST(self):
+        self._log()
+        if self.path == "/__mock/setkey":        # کنترل آزمایشیِ mock (فقط محلی)
+            n = int(self.headers.get("Content-Length") or 0)
+            MOCK["key"] = json.loads(self.rfile.read(n).decode() or "{}").get("key", MOCK["key"])
+            self.send_response(204); self.end_headers()
+            return
+        if self.path == "/app/ai/send":          # کاربرد سطح برنامه از aiclient
+            from app.aiclient import send, AiError
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                data = json.loads(self.rfile.read(n).decode() or "{}")
+            except ValueError:
+                data = {}
+            try:
+                reply = send(data.get("messages") or [])
+                b = json.dumps({"ok": True, "reply": reply}, ensure_ascii=False).encode()
+                self.send_response(200)
+            except AiError as e:
+                b = json.dumps({"ok": False, "error": e.message},
+                               ensure_ascii=False).encode()
+                self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b))); self.end_headers()
+            return self.wfile.write(b)
+        if self.path.startswith("/api/ai/") or self.path in ("/ai.html", "/ai.js", "/ai.css"):
+            from app import ai_admin
+            return ai_admin.handle(self)
+        self.send_response(404); self.end_headers()
+
+srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+print("PORT=%d" % srv.server_address[1], flush=True)
+print("MOCKPORT=%d" % MOCK_PORT, flush=True)
+srv.serve_forever()
+''')
+
+import subprocess
+ERRFILE = Path(os.environ["ERRFILE"])
+errf = open(ERRFILE, "w")
+proc = subprocess.Popen([sys.executable, str(server)], cwd=str(SAMPLE),
+                        stdout=subprocess.PIPE, stderr=errf, text=True)
+port = None; MOCKPORT = None
+deadline = time.time() + 15
+while time.time() < deadline and (port is None or MOCKPORT is None):
+    line = proc.stdout.readline() if proc.stdout else ""
+    if line.startswith("PORT="):
+        port = int(line.split("=", 1)[1].strip())
+    elif line.startswith("MOCKPORT="):
+        MOCKPORT = int(line.split("=", 1)[1].strip())
+assert port and MOCKPORT, "server did not boot; stderr=%s" % (proc.stderr.read()[:400] if proc.stderr else "")
+BASE = "http://127.0.0.1:%d" % port
+PASSCODE = "admin-passcode-9"
+KEYS_SEEN = ["good-key", "good-key2"]
+ALL_TEXT = []            # هر پاسخ HTTP جمع می‌شود برای sweep نهایی
+
+def req(method, path, body=None, admin=None, csrf=None, raw_cookie=None):
+    """یک درخواست واقعی HTTP؛ خروجی (code, payload_dict, set_cookies[])"""
+    data = json.dumps(body).encode() if body is not None else None
+    r = urllib.request.Request(BASE + path, data=data, method=method)
+    if data:
+        r.add_header("Content-Type", "application/json")
+    if admin is not None:
+        r.add_header("X-AI-Admin", admin)
+    if csrf is not None:
+        r.add_header("X-AI-CSRF", csrf)
+    if raw_cookie:
+        r.add_header("Cookie", raw_cookie)
+    try:
+        with urllib.request.urlopen(r, timeout=15) as resp:
+            txt = resp.read().decode()
+            ALL_TEXT.append(txt)
+            ct = resp.headers.get("Content-Type") or ""
+            payload = (json.loads(txt) if "json" in ct
+                       else {"_raw": txt})
+            return resp.status, payload, resp.headers.get_all("Set-Cookie") or []
+    except urllib.error.HTTPError as e:
+        txt = e.read().decode() or "{}"
+        ALL_TEXT.append(txt)
+        try:
+            payload = json.loads(txt) if txt.strip() else {}
+        except ValueError:
+            payload = {"_raw": txt}
+        return e.code, payload, e.headers.get_all("Set-Cookie") or []
+    except Exception as e:                       # سرور مرده یا اتصال قطع شد
+        return 0, {"ok": False, "error": "CONNECTION-LOST: %s: %s"
+                   % (type(e).__name__, e)}, []
+
+fails = []
+def ck(name, cond, extra=""):
+    if cond:
+        print("P3CHECK ok  -", name)
+    else:
+        fails.append(name)
+        print("P3CHECK FAIL -", name, extra)
+
+def cookie_of(setc):
+    for c in setc:
+        if c.startswith("ai_csrf="):
+            return c.split(";")[0]
+    return ""
+
+# ---------- A) اجرای مستقل و بدون OpenCode؛ پروژه بدون تنظیم AI هم کار می‌کند
+c, j, _ = req("GET", "/api/health")
+ck("A1 health بدون هیچ تنظیم AI", c == 200 and j.get("ok") is True, str(j))
+c, j, _ = req("GET", "/api/ai/status")
+ck("A2 status صادقانه بدون config AI (ready=False, key=unset, disabled)",
+   c == 200 and j["ready"] is False and j["key"] == "unset"
+   and j.get("enabled") is False, str(j))
+c, j, setc = req("GET", "/api/ai/admin/settings")
+ck("A3 settings GET عمومی: uninitialized + بدون کلید",
+   c == 200 and j["initialized"] is False and j["key"] == "unset" and j["ok"], str(j))
+ck("A3.2 providers قابل‌نمایش است", j.get("providers") == ["openai"], str(j.get("providers")))
+c, j, ck_set = req("GET", "/api/ai/admin/csrf")
+TOKEN = j.get("csrf", "")
+COOKIE = cookie_of(ck_set)
+ck("A4 csrf issue: توکن + کوکی خواندنی یکسان", c == 200 and bool(TOKEN)
+   and COOKIE == "ai_csrf=" + TOKEN, str(setc))
+c, j, _ = req("GET", "/ai.html"); html = ALL_TEXT[-1]; jh = j
+c2, j2, _ = req("GET", "/ai.js");  jsf = ALL_TEXT[-1]; jj = j2
+c3, j3, _ = req("GET", "/ai.css")
+ck("A5 صفحه تنظیمات سرو می‌شود (html/js/css)", (c, c2, c3) == (200, 200, 200)
+   and "تنظیمات هوش مصنوعی" in jh.get("_raw", ""), "")
+ALL_TEXT = ALL_TEXT[:-3] + [jh.get("_raw", ""), jj.get("_raw", "")]
+
+# ---------- B) دروازه امنیتی قبل از bootstrap
+c, j, _ = req("POST", "/api/ai/admin/save", {"base_url": "http://x/v1"})
+ck("B1 بدون admin header → رد ۴۰۳", c == 403, str(j))
+c, j, _ = req("POST", "/api/ai/admin/save", {"base_url": "http://x/v1"},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("B2 admin هنوز bootstrap نشده → پسورد درست هم رد است (fail closed)",
+   c == 403, str(j))
+
+# ---------- C) bootstrap مدیر + اعتبارسنجی CSRF
+c, j, _ = req("POST", "/api/ai/admin/init", {"passcode": "123"},
+              csrf=TOKEN, raw_cookie=COOKIE)
+ck("C1 رمز کوتاه رد می‌شود (با CSRF درست)", c == 400, str(j))
+c, j, _ = req("POST", "/api/ai/admin/init", {"passcode": PASSCODE},
+              csrf=TOKEN, raw_cookie=COOKIE)
+ck("C2 init با CSRF درست → ۲۰۰", c == 200 and j.get("initialized") is True, str(j))
+c, j, _ = req("POST", "/api/ai/admin/init", {"passcode": "other-pass-2"},
+              csrf=TOKEN, raw_cookie=COOKIE)
+ck("C3 init دوباره → ۴۰۹ (first-admin فقط یک‌بار)", c == 409, str(j))
+c, j, _ = req("POST", "/api/ai/admin/save", {"enabled": True})
+ck("C4 mutation بدون CSRF header → رد ۴۰۳", c == 403, str(j))
+c, j, _ = req("POST", "/api/ai/admin/save", {"enabled": True},
+              admin=PASSCODE, csrf="WRONG-TOKEN", raw_cookie=COOKIE)
+ck("C5 CSRF نامعتبر (هدر ≠ کوکی) → رد ۴۰۳", c == 403, str(j))
+c, j, _ = req("POST", "/api/ai/admin/save", {"enabled": True},
+              admin="WRONG-PASS", csrf=TOKEN, raw_cookie=COOKIE)
+ck("C6 رمز مدیر غلط → رد ۴۰۳ (غیرمدیر)", c == 403, str(j))
+
+# ---------- D) ذخیره و بازیابی تنظیمات (ادغامی؛ حفظ بقیه فیلدها)
+CFG = json.loads((SAMPLE / "config.json").read_text(encoding="utf-8"))
+ck("D0 config.json هنوز دست‌نخورده", CFG == {"app": "نرم‌افزار نمونه",
+                                             "brand": "custom-kept"}, str(CFG))
+c, j, _ = req("POST", "/api/ai/admin/save",
+              {"enabled": True, "provider": "openai",
+               "base_url": "http://127.0.0.1:%d/v1" % MOCKPORT,
+               "model": "mock"},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("D1 save کامل → ۲۰۰ و فیلدها برگشت", c == 200 and j["ok"]
+   and j["model"] == "mock" and j["enabled"] is True, str(j)[:220])
+CFG = json.loads((SAMPLE / "config.json").read_text(encoding="utf-8"))
+ck("D2 config.json: بقیه فیلدها حفظ شدند + ai ساخته شد",
+   CFG.get("brand") == "custom-kept" and CFG["ai"]["enabled"] is True
+   and CFG["ai"]["openai"]["model"] == "mock", str(CFG))
+c, j, _ = req("POST", "/api/ai/admin/save", {"enabled": False},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("D3 تغییر «فقط enabled»: base_url قبلی حفظ شد (بدون پاک‌شدن)",
+   j.get("base_url", "MISS") != "" and j.get("model") == "mock", str(j)[:220])
+c, j, _ = req("POST", "/api/ai/admin/save", {"api_key": "bad", "unknown": 1},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("D4 فیلد نامعتبر/نهانه با نام رد می‌شود (بدون ارزش)",
+   c == 400 and "unknown" in j.get("error", ""), str(j))
+c, j, _ = req("POST", "/api/ai/admin/save", {"enabled": True},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("D5 برگشت enabled=true برای ادامه تست‌ها", c == 200 and j["enabled"] is True)
+
+# ---------- E) کلید: ذخیره، جایگزینی، حذف (با تست واقعی provider)
+c, j, _ = req("POST", "/api/ai/admin/key", {"api_key": "good-key"},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("E1 ذخیره کلید → ۲۰۰ key=set (بدون برگشت مقدار)",
+   c == 200 and j["key"] == "set" and "good-key" not in json.dumps(j), str(j))
+# کلیدِ «مقدار» از طریق سیستم‌فایل نگه‌داری شده — حالا سرویس موک هم همان را می‌پذیرد
+req("POST", "/__mock/setkey", {"key": "good-key"})
+kf = SAMPLE / "data" / "ai_key.txt"
+import stat
+ck("E2 فایل کلید با مجوز 0600", kf.is_file()
+   and (kf.stat().st_mode & 0o777) == 0o600, oct(kf.stat().st_mode & 0o777) if kf.is_file() else "no file")
+adminf = SAMPLE / "data" / "ai_admin.json"
+ck("E2.2 فایل مدیر با مجوز 0600", adminf.is_file()
+   and (adminf.stat().st_mode & 0o777) == 0o600)
+CFG = json.loads((SAMPLE / "config.json").read_text(encoding="utf-8"))
+ck("E3 مسیر کلید (نه مقدار) در config ثبت شد",
+   CFG["ai"]["openai"].get("api_key_file") == "data/ai_key.txt", str(CFG["ai"]))
+c, j, _ = req("GET", "/api/ai/status")
+ck("E4 status واقعی: متصل و آماده با کلید واقعی از فایل",
+   j.get("ready") is True and j.get("key") == "set", str(j)[:220])
+c, j, _ = req("POST", "/app/ai/send", {"messages": [{"role": "user", "content": "سلام"}]})
+ck("E5: send سطح برنامه (aiclient.send) کار می‌کند", c == 200
+   and j.get("ok") and "پاسخ موفق" in j.get("reply", ""), str(j)[:160])
+
+req("POST", "/__mock/setkey", {"key": "good-key2"})
+c, j, _ = req("GET", "/api/ai/status")
+ck("E6 بعد از تغییر سرویس: کلید قدیمی دیگر قبول نیست (auth)",
+   j.get("ready") is False, str(j)[:180])
+c, j, _ = req("POST", "/api/ai/admin/key", {"api_key": "good-key2"},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("E7 جایگزینی کلید → ۲۰۰", c == 200 and j["key"] == "set", str(j))
+c, j, _ = req("GET", "/api/ai/status")
+ck("E8 با کلید جایگزین‌شده دوباره آماده (جایگزینی واقعی اعمال شد)",
+   j.get("ready") is True, str(j)[:180])
+
+c, j, _ = req("POST", "/api/ai/admin/key/delete", {},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("E9 حذف کلید → ۲۰۰ key=unset", c == 200 and j["key"] == "unset", str(j))
+ck("E10 فایل کلید واقعاً پاک شد", not kf.exists())
+CFG = json.loads((SAMPLE / "config.json").read_text(encoding="utf-8"))
+ck("E11 مسیر کلید هم از config برداشته شد", "api_key_file"
+   not in CFG.get("ai", {}).get("openai", {}), str(CFG["ai"]))
+
+# ---------- F) تست اتصال: موفق / ناموفق / غیرفعال
+req("POST", "/api/ai/admin/key", {"api_key": "good-key2"},
+    admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)      # کلید را برمی‌گردانیم
+c, j, _ = req("POST", "/api/ai/admin/test", {},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("F1 تست اتصال موفق (provider واقعی همان aiclient)",
+   c == 200 and j.get("ready") is True, str(j)[:200])
+
+import socket as _s
+_s.setdefaulttimeout(2)
+sk = _s.socket(); sk.bind(("127.0.0.1", 0)); DEAD = sk.getsockname()[1]; sk.close()
+c, j, _ = req("POST", "/api/ai/admin/test", {"base_url": "http://127.0.0.1:%d/v1" % DEAD},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("F2 تست با آدرس مرده → ready=False با پیام صریح (overrides لحظتی)",
+   j.get("ready") is False and j.get("detail"), str(j)[:180])
+c, j, _ = req("POST", "/api/ai/admin/save", {"enabled": False},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+c, j, _ = req("POST", "/api/ai/admin/test", {},
+              admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)
+ck("F3 حالت غیرفعال: تست صادقانه رد می‌کند", j.get("disabled") is True
+   and j.get("ready") is False, str(j)[:160])
+req("POST", "/api/ai/admin/save", {"enabled": True, "base_url": "http://127.0.0.1:%d/v1" % MOCKPORT},
+    admin=PASSCODE, csrf=TOKEN, raw_cookie=COOKIE)      # تنظیمات سلامت بازگردد
+adm = json.loads(adminf.read_text(encoding="utf-8"))
+ck("F4 آخرین تست در سمت سرور ثبت شد (بدون هیچ کلیدی)",
+   isinstance(adm.get("last_test"), dict)
+   and all(k not in json.dumps(adm["last_test"]) for k in KEYS_SEEN), str(adm.get("last_test")))
+
+# ---------- G) عدم افشای کلید در API/HTML/JS/لاگ
+ALL_TEXT.append((SAMPLE / "config.json").read_text(encoding="utf-8"))
+slog = (SAMPLE / "server.log")
+ALL_TEXT.append(slog.read_text(encoding="utf-8") if slog.exists() else "")
+ALL_TEXT.append(jh.get("_raw", "")); ALL_TEXT.append(jj.get("_raw", ""))
+blob = "\n".join(ALL_TEXT)
+leak = [k for k in KEYS_SEEN + [PASSCODE] if k in blob]
+ck("G1 هیچ کلیدی/رمزی در پاسخ‌ها، HTML، JS، config و لاگ",
+   not leak, "leaked=%s" % leak)
+c, j, _ = req("GET", "/api/ai/admin/settings")
+ck("G2 settings GET هیچ کلیدی ندارد (فقط set/unset)",
+   j.get("key") == "set" and all(k not in json.dumps(j) for k in KEYS_SEEN))
+
+# ---------- H) ZIP: دو فایل خصوصی + کلیدها هرگز
+sys.path.insert(0, str(ROOT))
+from core import exporter
+zout = SAMPLE / "sample.zip"
+exporter._zip_project(SAMPLE, zout)
+import zipfile, io
+zf = zipfile.ZipFile(zout)
+names = zf.namelist()
+private = [n for n in names if n.endswith("ai_key.json") or n.endswith("ai_admin.json")]
+ck("H1 فایل‌های خصوصی (ai_key.txt/ai_admin.json) در ZIP نیستند",
+   not private and not [n for n in names if n.endswith("ai_key.txt")],
+   str([n for n in names if "ai_key" in n or "ai_admin" in n]))
+ck("H2 فایل‌های UI و ماژول داخل ZIP هستند",
+   any(n.endswith("ui/ai.html") for n in names)
+   and any(n.endswith("app/ai_admin.py") for n in names)
+   and any(n.endswith("app/aiclient.py") for n in names), str(names))
+zblob = "\n".join(zf.read(n).decode("utf-8", "replace") for n in names)
+zleak = [k for k in KEYS_SEEN + [PASSCODE] if k in zblob]
+ck("H3 هیچ کلیدی/رمزی داخل محتوای ZIP", not zleak, "leaked=%s" % zleak)
+zout.unlink()
+
+proc.terminate()
+proc.wait(timeout=10)
+
+if fails:
+    try: errf.close()
+    except Exception: pass
+    print("SERVER-STDERR head+tail:")
+    txt = ERRFILE.read_text(encoding="utf-8", errors="replace")
+    print(txt[:400] + "\n…\n" + txt[-2500:])
+    print("SAMPLE-FAILURES:", fails)
+    sys.exit(1)
+errf.close()
+print("SAMPLE-OK")
+PYEOF
+RC=$?
+check "sample admin app: all in-app mandatory checks green exit=$RC" "$RC" "0"
+
+echo "== 3) module installed ONLY for AI-capable projects (factory-level, tmp dir) =="
+RES=$(TMP="$T" python3 - <<'EOF'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, os.getcwd())
+import core.config as config
+from core import factory, paths
+tmp = Path(os.environ["TMP"]) / ("p3-factory-sel%d" % os.getpid())
+tmp.mkdir(parents=True, exist_ok=True)
+try:
+    factory.PROJECTS = tmp          # هر دو binding را به tmp هدایت می‌کنیم
+    config.PROJECTS_DIR = tmp
+    factory.create_project("t-webpage", "webpage", "بدون AI")
+    factory.create_project("t-aitool", "ai-tool", "با AI")
+    w, a = tmp / "t-webpage", tmp / "t-aitool"
+    assert not (w / "app").exists() and not (w / "ui").exists()
+    assert (a / "app" / "ai_admin.py").is_file()
+    assert (a / "app" / "aiclient.py").is_file()
+    assert (a / "ui" / "ai.html").is_file()
+    assert "صفحه تنظیمات AI" in (a / "README.md").read_text(encoding="utf-8")
+    assert "ai_admin" not in (w / "README.md").read_text(encoding="utf-8")
+    print("SELECTIVE")
+finally:
+    import shutil; shutil.rmtree(tmp, ignore_errors=True)
+EOF
+)
+check "ai_admin/ui فقط برای ai-tool نصب می‌شود (webpage چیزی نمی‌گیرد)" "SELECTIVE" "$RES"
+
+echo "== 4) ZIP secret list wired at config level (canonical) =="
+python3 -c "
+src = open('core/config.py', encoding='utf-8').read()
+sec = src.split('EXPORT_SECRET_NAMES')[1].split('}')[0]
+assert 'ai_key.txt' in sec and 'ai_admin.json' in sec, sec
+exc = src.split('EXPORT_EXCLUDE_SUFFIXES')[1].split('}')[0]
+assert '\".err\"' in exc, exc
+print('CONFIG-OK')" >/dev/null && check "EXPORT_SECRET_NAMES + .err سخت‌سازی wired" "0" "$?" || \
+  check "EXPORT_SECRET_NAMES wiring" "0" "1"
+
+echo "== 5) no factory/opencode endpoints or real keys in P3 template assets =="
+if grep -rEn "OPENCODE_SERVER_PASSWORD|127\.0\.0\.1:4556|:8580|sk-[A-Za-z0-9]{16,}|AKIA[A-Z0-9]{16}" \
+      core/aimodule_template/app/ai_admin.py core/aimodule_template/ui/ 2>/dev/null; then
+    FAIL=$((FAIL+1)); echo "❌ suspicious strings in P3 template"
+else
+    PASS=$((PASS+1)); echo "✅ P3 template assets clean"
+fi
+
+echo
+echo "RESULT: PASS=$PASS FAIL=$FAIL"
+if [ "$FAIL" -eq 0 ]; then
+    echo "ALL GREEN"
+    rm -rf "$SAMPLE"; rm -f "$T/ai-p3-unit.log"
+    exit 0
+fi
+rm -rf "$SAMPLE"; exit 1

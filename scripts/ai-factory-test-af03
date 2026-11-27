@@ -1,0 +1,234 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af03 — آزمون واقعی موتور اندروید (سریالی، کم‌مصرف)
+# پوشش: قرارداد/ثبت موتور، تشخیص/اعتبارسنجی، اندپوینت‌ها، صف/قفل، خطا/timeout،
+#       حفاظت رازها، ساخت واقعی APK، امضا، AAB + bundletool، SHA-256، رگرسیون
+# Run: bash scripts/ai-factory-test-af03
+set -u
+URL="http://127.0.0.1:8580"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+mkdir -p "$TMP"
+FIXTURE="af02-android-test"
+PASS=0; FAIL=0
+
+check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+grepq() { if grep -q "$2" "$1" 2>/dev/null; then PASS=$((PASS+1)); echo "✅ $3";
+          else FAIL=$((FAIL+1)); echo "❌ $3 (missing: $2)"; fi; }
+
+echo "== 0) syntax of new modules =="
+for f in core/engines/android.py core/engines/ziputil.py core/engines/registry.py core/release_center.py; do
+  if python3 -m py_compile "$ROOT/$f" 2>/dev/null; then PASS=$((PASS+1)); echo "✅ py_compile $f";
+  else FAIL=$((FAIL+1)); echo "❌ py_compile $f"; fi
+done
+
+echo "== 1) engine contract & registry (python, real) =="
+PYT=$(cd "$ROOT" && python3 - <<'EOF'
+import sys; sys.path.insert(0, ".")
+from core.engines import registry
+engs = registry.list_engines()
+assert any(e["id"] == "android-minimal" for e in engs), "android engine not registered"
+from core.engines import get_engine
+from core.engines.registry import EngineError
+e = get_engine("android")
+av = e.available()
+assert av["ok"], f"tools missing: {av['notes']}"
+for m in ("available", "detect", "validate", "preflight", "build"):
+    assert hasattr(e, m), f"contract missing: {m}"
+try:
+    get_engine("nonexistent")
+    print("FAIL: no error for unknown engine"); exit(1)
+except EngineError:
+    pass
+print("CONTRACT-OK")
+EOF
+)
+check "engine contract/registry" "CONTRACT-OK" "$PYT"
+
+echo "== 2) detect/validate fixture + gradle refusal + traversal =="
+PYT=$(cd "$ROOT" && python3 - <<'EOF'
+import sys; sys.path.insert(0, ".")
+from pathlib import Path
+from core.engines import get_engine
+e = get_engine("android")
+d = Path("projects/af02-android-test")
+det = e.detect(d)
+assert det["supported"] and det["mode"] == "minimal", det
+val = e.validate(d)
+assert val["ok"] and val["info"]["package"] == "com.aifactory.test", val["problems"]
+assert val["info"]["activity"] == ".MainActivity", val["info"]
+pre = e.preflight(d)
+assert pre["ok"], pre["checks"]
+# gradle projects صادقانه رد می‌شوند
+fake = Path("/data/data/com.termux/files/usr/tmp/opencode/af03-gradle-fake")
+fake.mkdir(exist_ok=True)
+(fake / "build.gradle").write_text("// fake")
+det2 = e.detect(fake)
+assert not det2["supported"] and det2["mode"] == "gradle", det2
+import shutil; shutil.rmtree(fake)
+print("DETECT-OK")
+EOF
+)
+check "detect/validate/preflight + gradle refusal" "DETECT-OK" "$PYT"
+
+echo "== 3) API endpoints (real HTTP with panel auth) =="
+. "$(dirname "$0")/ai-factory-panel-login" "$URL"
+papi() { command curl -sS -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+check "GET /api/engines lists android" "android-minimal" \
+  "$(papi $URL/api/engines | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["engines"][0]["id"])')"
+check "GET /api/factory/types includes android" "android" \
+  "$(papi $URL/api/factory/types | python3 -c 'import json,sys;print([t["id"] for t in json.load(sys.stdin)["types"] if t["id"]=="android"][0])')"
+check "inspect returns package" "com.aifactory.test" \
+  "$(papi "$URL/api/factory/android/inspect?project=$FIXTURE" | python3 -c 'import json,sys;print(json.load(sys.stdin)["info"]["package"])')"
+check "traversal refused on inspect" "400" "$(papi "$URL/api/factory/android/inspect?project=../master" -o /dev/null -w '%{http_code}')"
+check "key info (no secrets in response)" "False" \
+  "$(papi "$URL/api/factory/android/key?project=$FIXTURE" | python3 -c 'import json,sys;d=json.load(sys.stdin);print("KS_PASS" in json.dumps(d))' )"
+
+echo "== 4) lock/serial + invalid build requests =="
+check "build with unknown project -> 404" "404" \
+  "$(papi -X POST -H 'Content-Type: application/json' -d '{"project":"af03-no-such","kind":"apk"}' "$URL/api/factory/android/build" -o /dev/null -w '%{http_code}')"
+echo "== 5) REAL BUILD #1: signed APK via engine (from API) =="
+papi -X POST -H 'Content-Type: application/json' \
+  -d "{\"project\":\"$FIXTURE\",\"kind\":\"apk\",\"sign\":true,\"version_code\":2,\"version_name\":\"2.0.0\"}" \
+  "$URL/api/factory/android/build" > "$TMP/af03-b1.json"
+check "build accepted" "True" \
+  "$(python3 -c 'import json;print(json.load(open("'$TMP'/af03-b1.json")).get("started"))')"
+# poll until done (سقف 240s)
+DEADLINE=$(( $(date +%s) + 240 )); STATE="running"
+while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+  papi "$URL/api/factory/android/status?project=$FIXTURE" > "$TMP/af03-s1.json"
+  STATE=$(python3 -c 'import json;d=json.load(open("'$TMP'/af03-s1.json"));print("running" if d.get("running") else ("ok" if d.get("ok") is True else ("fail" if d.get("ok") is False else "none")))')
+  [ "$STATE" != "running" ] && break
+  sleep 4
+done
+check "build #1 finished" "ok" "$STATE"
+if [ "$STATE" = "ok" ]; then
+  papi "$URL/api/factory/android/status?project=$FIXTURE" > "$TMP/af03-s1.json"
+  BUILD1=$(python3 - <<'EOF'
+import json, sys, os, urllib.request
+d = json.load(open(os.environ["TMP"] + "/af03-s1.json"))
+r = d["report"]
+assert r["ok"] and r["kind"] == "apk" and r["sign_verified"] is True, r.get("steps", [])[-3:]
+assert r["version_code"] == 2 and r["version_name"] == "2.0.0", r
+apk = r["artifacts"]["apk"]["path"]
+import hashlib
+sha = hashlib.sha256(open(apk, "rb").read()).hexdigest()
+assert len(sha) == 64
+os.environ["AF03_APK"] = apk
+os.environ["AF03_SHA"] = sha
+open(os.environ["TMP"] + "/af03-apk.txt", "w").write(apk + "\n" + sha)
+print("BUILD1-OK")
+EOF
+)
+  check "engine APK: sign verified + version + sha256" "BUILD1-OK" "$BUILD1"
+  APKSIG=$(python3 -c "import os;print(open(os.environ['TMP']+'/af03-apk.txt').read().splitlines()[1])")
+  check "apk sha256 recorded (64hex)" "64" "${#APKSIG}"
+  # امضا از بیرون هم راستی‌آزمایی می‌شود (apksigner مستقل — در Termux خروجی متنی چاپ نمی‌شود؛ rc معیار است)
+  APKPATH=$(head -1 "$TMP/af03-apk.txt")
+  apksigner verify "$APKPATH" >/dev/null 2>&1
+  check "independent apksigner verify (rc=0)" "0" "$?"
+else
+  FAIL=$((FAIL+1)); echo "❌ build #1 failed — steps:"; cat "$TMP/af03-s1.json"
+fi
+
+echo "== 6) REAL BUILD #2: AAB via engine + bundletool =="
+papi -X POST -H 'Content-Type: application/json' \
+  -d "{\"project\":\"$FIXTURE\",\"kind\":\"aab\",\"sign\":true,\"version_code\":2,\"version_name\":\"2.0.0\"}" \
+  "$URL/api/factory/android/build" > "$TMP/af03-b2.json"
+check "aab build accepted" "True" \
+  "$(python3 -c 'import json;print(json.load(open("'$TMP'/af03-b2.json")).get("started"))')"
+DEADLINE=$(( $(date +%s) + 300 )); STATE="running"
+while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+  papi "$URL/api/factory/android/status?project=$FIXTURE" > "$TMP/af03-s2.json"
+  STATE=$(python3 -c 'import json;d=json.load(open("'$TMP'/af03-s2.json"));print("running" if d.get("running") else ("ok" if d.get("ok") is True else ("fail" if d.get("ok") is False else "none")))')
+  [ "$STATE" != "running" ] && break
+  sleep 4
+done
+check "aab build finished" "ok" "$STATE"
+if [ "$STATE" = "ok" ]; then
+  AABRES=$(python3 - <<'EOF'
+import json, os
+d = json.load(open(os.environ["TMP"] + "/af03-s2.json"))
+r = d["report"]
+assert r["kind"] == "aab", r["kind"]
+aab = r["artifacts"]["aab"]["path"]
+uni = r["artifacts"]["universal_apk"]["path"]
+import zipfile
+zf = zipfile.ZipFile(aab)
+names = zf.namelist()
+assert "base/manifest/AndroidManifest.xml" in names, names
+assert "base/resources.pb" in names, names
+assert "base/dex/classes.dex" in names, names
+assert "BundleConfig.pb" in names, names
+# universal APK از AAB باید امضا و منابع داشته باشد (Termux apksigner: rc معیار است)
+import subprocess
+out = subprocess.run(["apksigner", "verify", uni], capture_output=True, text=True)
+assert out.returncode == 0, out.stderr + out.stdout
+print("AAB-OK")
+EOF
+)
+  check "engine AAB structure + universal signed" "AAB-OK" "$AABRES"
+else
+  FAIL=$((FAIL+1)); echo "❌ aab build failed — steps:"; cat "$TMP/af03-s2.json"
+fi
+
+echo "== 7) releases + release state machine + no fake approval =="
+papi "$URL/api/factory/android/releases?project=$FIXTURE" > "$TMP/af03-rel.json"
+check "release registered (kind apk)" "apk" \
+  "$(python3 -c 'import json;d=json.load(open("'$TMP'/af03-rel.json"));print([r["kind"] for r in d["releases"] if r["kind"]=="apk"][0])')"
+RELID=$(python3 -c 'import json;d=json.load(open("'$TMP'/af03-rel.json"));print([r["id"] for r in d["releases"] if r["kind"]=="apk"][0])')
+# گذار نامعتبر باید رد شود: approved از built ممنوع است (بدون زنجیرهٔ صادقانه)
+CODE=$(papi -X POST -H 'Content-Type: application/json' \
+  -d "{\"project\":\"$FIXTURE\",\"release_id\":\"$RELID\",\"state\":\"approved\",\"confirm\":true}" \
+  "$URL/api/factory/android/release/state" -o /dev/null -w '%{http_code}')
+check "fake approval refused" "409" "$CODE"
+# گذارهای درست: built -> signed -> validated -> store_ready (خودکار، بدون confirm)
+for ST in signed validated store_ready; do
+  CODE=$(papi -X POST -H 'Content-Type: application/json' \
+    -d "{\"project\":\"$FIXTURE\",\"release_id\":\"$RELID\",\"state\":\"$ST\"}" \
+    "$URL/api/factory/android/release/state" -o /dev/null -w '%{http_code}')
+  check "transition to $ST allowed" "200" "$CODE"
+done
+# حالت‌های فروشگاهی فقط با confirm صریح کاربر
+CODE=$(papi -X POST -H 'Content-Type: application/json' \
+  -d "{\"project\":\"$FIXTURE\",\"release_id\":\"$RELID\",\"state\":\"submitted\"}" \
+  "$URL/api/factory/android/release/state" -o /dev/null -w '%{http_code}')
+check "submitted WITHOUT confirm refused" "409" "$CODE"
+CODE=$(papi -X POST -H 'Content-Type: application/json' \
+  -d "{\"project\":\"$FIXTURE\",\"release_id\":\"$RELID\",\"state\":\"submitted\",\"confirm\":true}" \
+  "$URL/api/factory/android/release/state" -o /dev/null -w '%{http_code}')
+check "submitted WITH confirm allowed" "200" "$CODE"
+# store-requirements: داده‌محور و قابل به‌روزرسانی
+check "store requirements served" "True" \
+  "$(papi $URL/api/factory/android/store-requirements | python3 -c 'import json,sys;print("google_play" in json.load(sys.stdin)["stores"])' )"
+
+echo "== 8) download endpoint + traversal guard =="
+CODE=$(papi "$URL/api/factory/android/download?project=$FIXTURE&release_id=$RELID&artifact=apk" -o "$TMP/af03-dl.apk" -w '%{http_code}')
+check "download apk 200" "200" "$CODE"
+if [ "$CODE" = "200" ]; then
+  DLSHA=$(sha256sum "$TMP/af03-dl.apk" | cut -d' ' -f1)
+  APKSRC=$(python3 -c 'import json;d=json.load(open("'$TMP'/af03-rel.json"));print([r["artifacts"]["apk"]["sha256"] for r in d["releases"] if r["kind"]=="apk" and "apk" in r.get("artifacts",{})][0])')
+  check "download sha256 == recorded" "$APKSRC" "$DLSHA"
+fi
+CODE=$(papi "$URL/api/factory/android/download?project=..%2F..&release_id=$RELID&artifact=apk" -o /dev/null -w '%{http_code}')
+check "download traversal refused" "400" "$CODE"
+
+echo "== 9) secrets never in API/logs =="
+if grep -rIl --exclude-dir=backups --exclude-dir=projects --exclude-dir=.git "KS_PASS=" "$ROOT/logs" 2>/dev/null | head -1 | grep -q .; then
+  FAIL=$((FAIL+1)); echo "❌ password leaked into logs!"
+else
+  PASS=$((PASS+1)); echo "✅ no keystore password in logs/"
+fi
+check "engine source never writes secret to logs" "1" \
+  "$(grep -c 'StepLog.SECRET_PAT' "$ROOT/core/engines/android.py" | awk '{print ($1>0)?1:0}')"
+
+echo "== 10) regression: existing engines untouched =="
+check "factory types still all present" "11" \
+  "$(papi $URL/api/factory/types | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["types"]))')"
+check "health ok" "True" "$(curl -sS $URL/api/health | python3 -c 'import json,sys;print(json.load(sys.stdin)["ok"])')"
+check "checker still works on web project" "True" \
+  "$(papi "$URL/api/factory/check?project=demo" | python3 -c 'import json,sys;print(json.load(sys.stdin)["ok"])')"
+
+echo
+echo "RESULT: PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" = "0" ] && echo "AF-03: ALL PASSED" || echo "AF-03: FAILURES PRESENT (honest report)"

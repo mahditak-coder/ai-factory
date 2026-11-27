@@ -1,0 +1,187 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# AI Factory v0.3.0 — factory acceptance tests (real E2E including the model).
+# Requires the panel running (scripts/ai-factory-start). Uses curl + python.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export ROOT
+BASE="http://127.0.0.1:8580"
+export BASE
+TMP="${TMPDIR:-/data/data/com.termux/files/usr/tmp}/af3-test-$$"
+mkdir -p "$TMP"
+PASS=0; FAIL=0; FAILED=""
+check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"; else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi; }
+pass_() { PASS=$((PASS+1)); echo "  ✅ $1"; }
+fail_() { FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1"; }
+
+cleanup() {
+    for v in TP TP2 TP3; do
+        [ -n "${!v:-}" ] && rm -rf "$ROOT/projects/${!v}" 2>/dev/null
+    done
+    rm -rf "$TMP"
+}
+trap cleanup EXIT
+
+# P6-2: protected APIs require panel login — curl wrapper injects
+# the session cookie + CSRF header into every call below.
+# (calls the real curl binary; pauth also uses it — no recursion)
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+echo "== آزمون پذیرش کارخانه (AI Factory v0.3.0) =="
+TS=$(date +%H%M%S)
+TP="af3-e2e-$TS"; export TP
+
+# ── ۱) ساخت پروژه جدید (با نوع) ─────────────────────────────────────────────
+C=$(curl -s -m 15 -X POST -d "{\"name\":\"$TP\",\"type\":\"webpage\",\"description\":\"e2e\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/projects" -o /dev/null -w '%{http_code}')
+check "۱) ساخت پروژه" "201" "$C"
+
+# ── ۲) ایجاد فایل واقعی داخل پروژه ─────────────────────────────────────────
+curl -s -m 20 -X PUT -d "{\"project\":\"$TP\",\"path\":\"app.js\",\"content\":\"function ok(){return 42;}\n\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/file" -o /dev/null
+[ -f "$ROOT/projects/$TP/app.js" ] && got=yes || got=no
+check "۲) فایل واقعی ایجاد شد" "yes" "$got"
+
+# ── ۳) بازکردن پروژه قبلی (متادیتا) ─────────────────────────────────────────
+TYP=$(curl -s -m 15 "$BASE/api/factory/projects" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+for p in d['projects']:
+    if p['name'] == '$TP':
+        print(p['type_label']); break
+else: print('missing')")
+check "۳) بازکردن مجدد پروژه + نوع" "وب‌سایت HTML/CSS/JS" "$TYP"
+
+# ── ۴) حفظ تغییرات قبلی + تولید واقعی ──────────────────────────────────────
+curl -s -m 20 -X PUT -d "{\"project\":\"$TP\",\"path\":\"notes.txt\",\"content\":\"my-change-v1\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/file" -o /dev/null
+G=$(curl -s -m 30 -X POST -d "{\"project\":\"$TP\",\"goal\":\"یک صفحه شرکتی جدید بساز: فایل index.html را از صفر بساز (فایل index.html هنوز وجود ندارد) با یک عنوان فارسی و یک دکمه؛ فایل دیگر نساز.\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/generate")
+GENSTART=$(echo "$G" | python -c "import json,sys; d=json.load(sys.stdin); print(d.get('session_id','NOTHING'))")
+if [ "$GENSTART" = "NOTHING" ] || [ -z "$GENSTART" ]; then fail_ "۴) شروع تولید واقعی"; else pass_ "۴) شروع تولید واقعی ($GENSTART)"; fi
+for i in $(seq 1 60); do
+    sleep 6
+    D=$(curl -s -m 20 "$BASE/api/factory/generation?project=$TP" | python -c "import json,sys; print('1' if json.load(sys.stdin).get('done') else '0')")
+    [ "$D" = "1" ] && break
+done
+[ "$(curl -s -m 20 "$BASE/api/factory/generation?project=$TP" | python -c "import json,sys; print('1' if json.load(sys.stdin).get('done') else '0')" 2>/dev/null)" = "1" ] \
+    && pass_ "۴c) تولید پایان رسید" || fail_ "۴c) تولید در ۶ دقیقه تمام نشد"
+[ -f "$ROOT/projects/$TP/index.html" ] && gen=yes || gen=no
+check "۴b) فایل واقعی از مدل → index.html" "yes" "$gen"
+KEEP=$(cat "$ROOT/projects/$TP/notes.txt" 2>/dev/null)
+check "۴d) تغییر قبلی حفظ شد" "my-change-v1" "$KEEP"
+
+# ── ۵+۶) اجرای پروژه وب و مشاهده خروجی ─────────────────────────────────────
+RR=$(curl -s -m 30 -X POST -d "{\"project\":\"$TP\"}" -H 'Content-Type: application/json' "$BASE/api/factory/run")
+PORT=$(echo "$RR" | python -c "import json,sys; print(json.load(sys.stdin).get('port') or '')")
+RUNOK=$(echo "$RR" | python -c "import json,sys; print(str(json.load(sys.stdin).get('running')))")
+check "۵) اجرای پروژه (runner)" "True" "$RUNOK"
+PREV=$(curl -s -m 10 -o "$TMP/prev.html" -w '%{http_code}' "http://127.0.0.1:$PORT/" 2>/dev/null)
+check "۶) پیش‌نمایش HTTP 200" "200" "$PREV"
+SAME=$(python -c "
+a=open('$TMP/prev.html', encoding='utf-8').read()
+b=open('$ROOT/projects/$TP/index.html', encoding='utf-8').read()
+print('same' if a==b else 'diff')")
+check "۶b) پیش‌نمایش == فایل تولیدشده" "same" "$SAME"
+
+# ── ۷) تشخیص خطای عمدی ──────────────────────────────────────────────────────
+printf 'var broken = ;\n' >> "$ROOT/projects/$TP/app.js"
+ERR=$(curl -s -m 20 "$BASE/api/factory/check?project=$TP" | python -c "
+import json,sys
+r=json.load(sys.stdin)['result']
+print(r['errors'][0]['kind'] if r['errors'] else 'none')")
+check "۷) خطای عمدی شناسایی شد" "js-syntax" "$ERR"
+
+# ── ۸) اصلاح خودکار (مدل واقعی) + ۹) آزمون مجدد ────────────────────────────
+curl -s -m 520 -X POST -d "{\"project\":\"$TP\",\"attempts\":2}" -H 'Content-Type: application/json' "$BASE/api/factory/fix" -o "$TMP/fix.json"
+FX=$(python -c "import json; print(str(json.load(open('$TMP/fix.json'))['fixed']))" 2>/dev/null)
+check "۸) چرخه اصلاح با مدل واقعی" "True" "$FX"
+OK2=$(curl -s -m 20 "$BASE/api/factory/check?project=$TP" | python -c "import json,sys; print(str(json.load(sys.stdin)['result']['ok']))")
+check "۹) بررسی مجدد پس از اصلاح" "True" "$OK2"
+PREV2=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/" 2>/dev/null)
+check "۹b) پروژه همچنان اجراست" "200" "$PREV2"
+BKP=$(python -c "import json; print(json.load(open('$TMP/fix.json'))['backup'][:25])" 2>/dev/null)
+[ -n "$BKP" ] && pass_ "۸b) نسخه پشتیبان پیش از اصلاح ساخته شد" || fail_ "۸b) نسخه پشتیبان"
+
+# ── ۱۰+۱۱) ساخت ZIP و سلامت ────────────────────────────────────────────────
+echo "SECRET=x" > "$ROOT/projects/$TP/.env"
+EX=$(curl -s -m 30 -X POST -d "{\"project\":\"$TP\"}" -H 'Content-Type: application/json' "$BASE/api/factory/export")
+ZP=$(echo "$EX" | python -c "import json,sys; print(json.load(sys.stdin)['path'])")
+INTEG=$(echo "$EX" | python -c "import json,sys; print(str(json.load(sys.stdin)['integrity_bad_file']))")
+check "۱۱) سلامت ZIP (zipfile.testzip)" "None" "$INTEG"
+SECL=$(python -c "
+import zipfile
+names=zipfile.ZipFile('$ZP').namelist()
+print('leak' if any('.env' in n or n.endswith('.token') for n in names) else 'clean')")
+check "۱۱b) فایل محرمانه (.env) در ZIP نیست" "clean" "$SECL"
+rm -f "$ROOT/projects/$TP/.env"
+
+# ── ۱۲) مسیر غیرمجاز / عملیات حساس بدون تأیید ─────────────────────────────
+# dummy project (not running) for the delete-permission test, so the live
+# e2e project keeps running for scenario 14.
+TP3="af3-e2e3-$TS"; export TP3
+curl -s -m 15 -X POST -d "{\"name\":\"$TP3\",\"type\":\"webpage\"}" -H 'Content-Type: application/json' "$BASE/api/factory/projects" -o /dev/null
+D1=$(curl -s -m 20 -X POST -d "{\"project\":\"$TP3\"}" -H 'Content-Type: application/json' "$BASE/api/factory/delete" -o /dev/null -w '%{http_code}')
+check "۱۲) حذف بدون confirm → 403" "403" "$D1"
+RN=$(curl -s -m 20 -X POST -d "{\"old\":\"$TP\",\"new\":\"../hack\"}" -H 'Content-Type: application/json' "$BASE/api/factory/rename" -o /dev/null -w '%{http_code}')
+check "۱۲b) rename مسیرمخرب → 400" "400" "$RN"
+DL=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$BASE/api/factory/export?project=$TP&path=%2Fdata%2Fdata%2Fcom.termux%2Ffiles%2Fhome%2FAI-Factory%2Flogs%2Fopencode.token&download=1" 2>/dev/null)
+DL=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "http://127.0.0.1:8580/api/factory/export?project=$TP&path=%2Fdata%2Fdata%2Fcom.termux%2Ffiles%2Fhome%2FAI-Factory%2Flogs%2Fopencode.token&download=1")
+check "۱۲c) دانلود مسیر خارج exports → 403" "403" "$DL"
+
+# ── ۱۳) عدم افشای اطلاعات محرمانه ──────────────────────────────────────────
+PW=$(cat "$ROOT/logs/opencode.token")
+LEAK=no
+for ep in "/api/factory/projects" "/api/factory/runs" "/api/factory/export" "/api/factory/generation?project=$TP" "http://127.0.0.1:8580/factory.js"; do
+    curl -s -m 15 "$ep" | grep -q "$PW" && LEAK=yes
+done
+grep -q "$PW" "$ZP" && LEAK=yes
+RLOG=$(curl -s -m 15 "$BASE/api/factory/runlog?project=$TP&lines=200")
+echo "$RLOG" | grep -q "$PW" && LEAK=yes
+check "۱۳) توکن در هیچ پاسخ/ZIP/لاگ نیست" "no" "$LEAK"
+
+# ── ۱۴) استقلال دو پروژه هم‌زمان ───────────────────────────────────────────
+TP2="af3-e2e2-$TS"; export TP2
+curl -s -m 15 -X POST -d "{\"name\":\"$TP2\",\"type\":\"api\"}" -H 'Content-Type: application/json' "$BASE/api/factory/projects" -o /dev/null
+curl -s -m 15 -X PUT -d "{\"project\":\"$TP2\",\"path\":\"only-mine.txt\",\"content\":\"p2\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/file" -o /dev/null
+# a REAL runnable python service so 14c can test two live runs simultaneously:
+python - <<'PYEOF'
+import json, os, urllib.request
+content = (
+    "import json, os\n"
+    "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+    "PORT = int(os.environ.get(\"AI_FACTORY_PORT\", \"8800\"))\n"
+    "class H(BaseHTTPRequestHandler):\n"
+    "    def do_GET(self):\n"
+    "        b = json.dumps({\"service\": \"e2e2\"}).encode()\n"
+    "        self.send_response(200)\n"
+    "        self.send_header(\"Content-Length\", str(len(b)))\n"
+    "        self.end_headers()\n"
+    "        self.wfile.write(b)\n"
+    "    def log_message(self, *a):\n"
+    "        pass\n"
+    "HTTPServer((\"127.0.0.1\", PORT), H).serve_forever()\n"
+)
+body = json.dumps({"project": os.environ["TP2"], "path": "server.py",
+                   "content": content}).encode()
+req = urllib.request.Request(os.environ["BASE"] + "/api/file", data=body,
+                             method="PUT",
+                             headers={"Content-Type": "application/json"})
+urllib.request.urlopen(req, timeout=20)
+PYEOF
+P1F=$(cat "$ROOT/projects/$TP/notes.txt" 2>/dev/null)
+P2F=$(cat "$ROOT/projects/$TP2/only-mine.txt" 2>/dev/null)
+check "۱۴) پروژه ۱ دست‌نخورده" "my-change-v1" "$P1F"
+check "۱۴b) پروژه ۲ مستقل" "p2" "$P2F"
+R2=$(curl -s -m 30 -X POST -d "{\"project\":\"$TP2\"}" -H 'Content-Type: application/json' "$BASE/api/factory/run")
+PORT2=$(echo "$R2" | python -c "import json,sys; print(json.load(sys.stdin).get('port') or '')")
+if [ -n "$PORT2" ] && [ "$PORT2" != "$PORT" ]; then pass_ "۱۴c) دو اجرا روی دو پورت جدا"; else fail_ "۱۴c) پورت مشترک ($PORT/$PORT2)"; fi
+curl -s -m 20 -X POST -d "{\"project\":\"$TP2\"}" -H 'Content-Type: application/json' "$BASE/api/factory/stop" >/dev/null
+S1=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/" 2>/dev/null)
+check "۱۴d) پروژه ۱ پس از توقف پروژه ۲ سالم" "200" "$S1"
+curl -s -m 20 -X POST -d "{\"project\":\"$TP\"}" -H 'Content-Type: application/json' "$BASE/api/factory/stop" >/dev/null
+
+echo
+echo "== نتیجه: $PASS موفق، $FAIL ناموفق $([ -n "$FAILED" ] && echo "($FAILED)") =="
+[ "$FAIL" = "0" ]

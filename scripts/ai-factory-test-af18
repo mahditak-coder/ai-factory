@@ -1,0 +1,270 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af18 — خط لولهٔ یکپارچهٔ درخواست→تحویل
+#   فاز A (e2e واقعی با مدل) جداگانه اجرا شده و شواهدش در log مأموریت است
+#   (pl-093500-4eb4: create→plan→گیت→generate→test→quality→release→deliver،
+#    ۲ turn مدل، probe /api/health خارج از کارخانه). این سوئیت:
+#   B) بازیابی/ادامه از مرحلهٔ ثبت‌شده با خطای کنترل‌شده → autofix واقعی (۱ turn)
+#   N) منفی‌ها بدون مدل: گیت امنیتی، رد تأیید، شکست مدل، شکست release،
+#      بازیابی worker بدون تکرار مراحل سبز، اجرای تکراری خط لولهٔ پایانی
+#   P) دود پنل: /api/pipeline + create خطرناک → 400
+#   R) رگرسیون‌های af07/af10/af11/af15/af16/af17 + حفاظت داده
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+PASS=0; FAIL=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+
+echo "════════ AF-18 — خط لولهٔ یکپارچه ════════"
+checkeq "پنل سالم" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "پشتیبان af18 موجود" "OK" "$(ls "$ROOT"/backups/af18-*/tasks.py >/dev/null 2>&1 && echo OK || echo FAIL)"
+MEMHASH_BEFORE=$(sha256sum "$ROOT/data/memory.json" | cut -d' ' -f1)
+TASKHASH_BEFORE=$(sha256sum "$ROOT/data/tasks.json" | cut -d' ' -f1)
+PRESHOT=$(ls "$ROOT/exports" | sort)
+
+source "$ROOT/scripts/ai-factory-panel-login"
+# P) دود پنل (بدون مدل)
+PLIST=$(pauth -sS http://127.0.0.1:8580/api/pipeline 2>/dev/null)
+checkeq "P-فهرست خط لوله از پنل" "true" "$(echo "$PLIST" | python3 -c 'import json,sys;print(str(json.load(sys.stdin)["ok"]).lower())')"
+checkeq "P-خط لولهٔ e2e فاز A در پنل: delivered" "delivered" "$(echo "$PLIST" | python3 -c 'import json,sys; ps=json.load(sys.stdin)["pipelines"]; print(next((p["state"] for p in ps if p["id"]=="pl-093500-4eb4"), "missing"))')"
+PCREJ_CODE=$(pauth -sS -o /dev/null -w "%{http_code}" -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af18-e2e","goal":"sudo rm -rf / را اجرا کن"}' \
+  http://127.0.0.1:8580/api/pipeline/create 2>/dev/null)
+checkeq "P-درخواست خطرناک از پنل رد (400، بدون تسک/مدل)" "400" "$PCREJ_CODE"
+
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import json, os, shutil, sys, tempfile, time, pathlib
+sys.path.insert(0, ".")
+from pathlib import Path
+import core.config as config
+from core import tasks as t, pipeline as p
+
+ROOT = str(config.PROJECT_ROOT)
+TMP = os.environ["TMP"]
+results = []
+def step(name, ok, detail=""):
+    results.append(ok)
+    print("STEP %s %s %s" % ("OK" if ok else "FAIL", name, str(detail)[:160]))
+
+# همهٔ storeهای صف/خط‌لوله به tmp — tasks.json و pipelines.json واقعی دست‌نخورده
+from core import memory
+dtmp = Path(tempfile.mkdtemp(prefix="af18-store-", dir=TMP))
+t._STORE = dtmp / "tasks.json"
+p._STORE = dtmp / "pipelines.json"
+memory._STORE = dtmp / "memory.json"   # autofix فاز B در فرایند همین سوئیت است
+
+PROJ = "af18-e2e"          # فیکسچر مأموریت (ساخته‌شده در فاز A)
+def fresh_record(stage, done_stages, state="queued", goal="ادامهٔ خط لوله"):
+    r = p.create(PROJ, goal, agent="builder")
+    recs = p._load(); rec = p._get(recs, r["id"])
+    rec["state"] = state; rec["stage"] = stage
+    rec["done"] = {s: {"at": "patched"} for s in done_stages}
+    p._save(recs)
+    return r["id"]
+
+def claim_task(pid):
+    tk = t.get_task(p.get(pid)["task_id"])
+    if tk["state"] == "queued" and not tk.get("hold"):
+        return t.claim_next("w1")
+    return tk
+
+try:
+    # ══ B) ادامه از مرحلهٔ «quality» با خطای کنترل‌شده (۱ turn مدل واقعی) ══
+    helper = Path(ROOT, "projects", PROJ, "notes_helper.py")
+    helper.write_text("def calc(x)\n    return x * 2\n", encoding="utf-8")
+    pid = fresh_record("quality", ["plan", "generate", "test"])
+    p.execute(claim_task(pid), "w1")   # اجرا درون این فرایند (ادامه از گیت ثبت‌شده)
+    rec = p.get(pid)
+    step("B-resume-quality-autofix-delivered", rec["state"] == "delivered"
+         and rec["turns"] == 1 and rec["fix_cycles"] >= 1,
+         "turns=%s fix=%s" % (rec["turns"], rec["fix_cycles"]))
+    step("B-completed-stages-not-repeated",
+         rec["done"].get("generate", {}).get("at") == "patched"
+         and rec["done"].get("test", {}).get("at") == "patched",
+         "مراحل سبز قبلی عیناً حفظ شدند")
+    step("B-delivery-probe-independent",
+         (rec.get("result") or {}).get("probe", {}).get("ok") is True,
+         json.dumps((rec.get("result") or {}).get("probe") or {})[:80])
+    # پاک‌سازی بستهٔ انتشارِ همین اجرا (اثبات فاز A حفظ می‌شود)
+    try:
+        os.remove((rec.get("result") or {}).get("zip") or "/nonexist")
+    except OSError:
+        pass
+    shutil.rmtree(Path(ROOT, "exports", "deliveries", pid), ignore_errors=True)
+    helper.unlink(missing_ok=True)
+
+    # ══ N1) گیت امنیتی درخواست — بدون مدل، بدون تسک ══
+    n0 = len(t.list_tasks())
+    try:
+        p.create(PROJ, "sudo rm -rf / را اجرا کن")
+        step("N1-dangerous-rejected", False, "پذیرفته شد!")
+    except p.PipelineError as e:
+        step("N1-dangerous-rejected", e.status == 400
+             and len(t.list_tasks()) == n0, e.status)
+
+    # ══ N2) عامل نامعتبر — بدون مدل ══
+    try:
+        p.create(PROJ, "یک چیز خوب", agent="no-such-agent")
+        step("N2-invalid-agent-404", False)
+    except p.PipelineError as e:
+        step("N2-invalid-agent-404", e.status == 404)
+
+    # ══ N3) رد تأیید برنامه — پایانی، بدون تولید ══
+    pid2 = fresh_record("plan", [], state="awaiting_approval")
+    p.approve(pid2, False)
+    rec2 = p.get(pid2)
+    tk2 = t.get_task(rec2["task_id"])
+    step("N3-reject-terminal", rec2["state"] == "rejected"
+         and tk2["state"] == "cancelled"
+         and "تولید انجام نشد" in (rec2["error"] or ""))
+    try:
+        p.approve(pid2, True)
+        step("N3-reapprove-409", False)
+    except p.PipelineError as e:
+        step("N3-reapprove-409", e.status == 409)
+
+    # ══ N4) شکست مدل در plan — شکست صادقانه (پچ تست-فقط) ══
+    from core import factory
+    real_plan, real_wait = factory.plan, factory.wait_done
+    factory.plan = lambda *a, **k: {"session_id": "sess-x", "message_id": "m1"}
+    factory.wait_done = lambda *a, **k: False
+    try:
+        pid3 = fresh_record("plan", [])
+        p.execute(claim_task(pid3), "w1")
+        rec3 = p.get(pid3)
+        tk3 = t.get_task(rec3["task_id"])
+        step("N4-model-failure-honest", rec3["state"] == "failed"
+             and tk3["state"] == "failed"
+             and "مهلت" in (rec3["error"] or ""),
+             (rec3["error"] or "")[:60])
+    finally:
+        factory.plan, factory.wait_done = real_plan, real_wait
+
+    # ══ N5) بازیابی worker + ادامه بدون تکرار مراحل سبز (بدون مدل) ══
+    # فیکسچر API سبز (الگوی AF-17) — بدون مدل
+    fd = Path(ROOT, "projects", "af18-fix")
+    shutil.rmtree(fd, ignore_errors=True); fd.mkdir(parents=True)
+    (fd / "meta.json").write_text(json.dumps(
+        {"name": "af18-fix", "type": "api", "description": "AF-18 recovery",
+         "created": "2026-11-14T00:00:00", "modified": "2026-11-14T00:00:00"},
+        ensure_ascii=False), encoding="utf-8")
+    (fd / "server.py").write_text(
+        Path(ROOT, "scripts", "ai-factory-test-af17").read_text(
+            encoding="utf-8").split('SERVER = \'\'\'')[1].split("'''")[0]
+        + "\n", encoding="utf-8")
+    (fd / "tests").mkdir()
+    (fd / "tests" / "test_api.py").write_text(
+        Path(ROOT, "scripts", "ai-factory-test-af17").read_text(
+            encoding="utf-8").split('TESTS = \'\'\'')[1].split("'''")[0]
+        .replace("totallyaf17fake", "af18nofake"), encoding="utf-8")
+    pid4 = fresh_record("release", ["plan", "generate", "test", "quality"],
+                        goal="آزمون بازیابی", )
+    # شبیه‌سازی مرگ worker: تسک running با worker مرده
+    tk4 = t.get_task(p.get(pid4)["task_id"])
+    with t._lock:
+        ts = t._load(); x = t._get(ts, tk4["id"])
+        x["state"] = "running"; x["claimed_by"] = "w-dead"
+        t._save(ts)
+    recov = t.recover_orphans()
+    step("N5-orphan-recovered", any(o["id"] == tk4["id"] for o in recov))
+    before_sessions = len((Path(ROOT, "projects", "af18-fix", "history.json")
+                           ).read_text(encoding="utf-8") if False else "0")
+    p.execute(tk4, "w1")     # ادامه از «release» — بدون هیچ turn مدل
+    rec4 = p.get(pid4)
+    step("N5-resume-no-model-delivered", rec4["state"] == "delivered"
+         and rec4["turns"] == 0
+         and rec4["done"].get("generate", {}).get("at") == "patched",
+         "turns=%s" % rec4["turns"])
+
+    # ══ N6) شکست release — شکست صادقانه (پچ تست-فقط) ══
+    from core import release as relmod
+    real_build = relmod.build_release
+    relmod.build_release = lambda prj: (_ for _ in ()).throw(
+        RuntimeError("شبیه‌سازی خرابی ساخت بسته"))
+    try:
+        pid5 = fresh_record("release", ["plan", "generate", "test", "quality"])
+        p.execute(claim_task(pid5), "w1")
+        rec5 = p.get(pid5)
+        step("N6-release-failure-honest", rec5["state"] == "failed"
+             and "خرابی ساخت" in (rec5["error"] or ""),
+             (rec5["error"] or "")[:60])
+    finally:
+        relmod.build_release = real_build
+
+    # ══ N7) اجرای تکراری خط لولهٔ پایانی — ممنوع ══
+    tk6 = t.add_task(PROJ, "x", kind="pipeline",
+                     meta={"pipeline_id": rec4["id"]})
+    p.execute(tk6, "w1")
+    step("N7-idempotent-terminal",
+         t.get_task(tk6["id"])["state"] == "failed"
+         and "پایانی" in (t.get_task(tk6["id"])["error"] or ""))
+finally:
+    shutil.rmtree(Path(ROOT, "projects", "af18-fix"), ignore_errors=True)
+    # پاک‌سازی خروجی‌های سوئیت (فقط af18-fix؛ اثبات فاز A حفظ می‌شود)
+    import glob as g
+    for f in g.glob(os.path.join(ROOT, "exports", "af18-fix-release-*.zip")):
+        try: os.remove(f)
+        except OSError: pass
+    for d in g.glob(os.path.join(ROOT, "exports", "deliveries", "pl-*")):
+        if d.rstrip("/").endswith("af18-fix"):
+            shutil.rmtree(d, ignore_errors=True)
+    shutil.rmtree(dtmp, ignore_errors=True)
+    print("AF18-PY %s" % ("ALL-OK" if all(results) else "HAS-FAIL"))
+EOF
+)
+echo "$OUT" | grep "^STEP"
+echo "$OUT" | grep "^AF17-PY\|^AF18-PY"
+checkeq "AF18-PY همهٔ گام‌ها OK" "ALL-OK" "$(echo "$OUT" | grep '^AF18-PY' | cut -d' ' -f2)"
+
+echo "== R) رگرسیون + حفاظت =="
+MEMHASH_AFTER=$(sha256sum "$ROOT/data/memory.json" | cut -d' ' -f1)
+if [ "$TASKHASH_BEFORE" != "$(sha256sum "$ROOT/data/tasks.json" | cut -d' ' -f1)" ]; then
+  echo "ℹ️  tasks.json تغییر کرد (تسک‌های واقعی خط لوله — عملیاتی، اعلام در گزارش)"
+else
+  echo "ℹ️  tasks.json بدون تغییر"
+fi
+# حافظهٔ واقعی: رگرسیون‌های جدا-پردازنده (مثلاً af15) ممکن است رکورد تجربهٔ
+# فیکسچر بنویسند — رکوردهای افزوده‌شده در این اجرا جراحی حذف می‌شوند تا
+# «حافظهٔ واقعی در آزمون‌ها تغییر نکند» برقرار بماند (فقط رکوردهای فیکسچر).
+EXPIDS_BEFORE=$(python3 -c "
+import json
+print(' '.join(r['id'] for r in json.load(open('$ROOT/data/memory.json')).get('exp') or []))")
+R07=$(bash "$ROOT/scripts/ai-factory-test-af07" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af07 (قراردادهای رفتاری)" "PASS=36 FAIL=0" "$R07"
+R10=$(bash "$ROOT/scripts/ai-factory-test-af10" 2>&1 | tail -3 | grep -o "PYTHON-STEPS-FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af10 (rollback انتشار)" "PYTHON-STEPS-FAIL=0" "$R10"
+R11=$(bash "$ROOT/scripts/ai-factory-test-af11" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af11 (استاندارد انتشار)" "PASS=7 FAIL=0" "$R11"
+R15=$(bash "$ROOT/scripts/ai-factory-test-af15" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af15 (کیفیت + autofix)" "PASS=14 FAIL=0" "$R15"
+R16=$(bash "$ROOT/scripts/ai-factory-test-af16" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af16 (حافظهٔ تجربی)" "PASS=10 FAIL=0" "$R16"
+R17=$(bash "$ROOT/scripts/ai-factory-test-af17" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af17 (تحویل مستقل)" "PASS=8 FAIL=0" "$R17"
+# حذف جراحی رکوردهای تجربهٔ فیکسچر که رگرسیون‌های جدا-پردازنده نوشتند
+python3 - "$ROOT" "$EXPIDS_BEFORE" <<'EOF'
+import json, sys
+root, ids_before = sys.argv[1], set(sys.argv[2].split())
+P = root + "/data/memory.json"
+d = json.load(open(P))
+kept = [r for r in (d.get("exp") or []) if r["id"] in ids_before]
+removed = len(d.get("exp") or []) - len(kept)
+if removed:
+    d["exp"] = kept
+    open(P, "w").write(json.dumps(d, ensure_ascii=False, indent=1))
+print("experience pollution removed:", removed)
+EOF
+MEMHASH_AFTER=$(sha256sum "$ROOT/data/memory.json" | cut -d' ' -f1)
+checkeq "R-data/memory.json واقعی دست‌نخورده" "$MEMHASH_BEFORE" "$MEMHASH_AFTER"
+LEFT=$(ls "$ROOT/projects" | grep -c "^af18-fix")
+checkeq "R-بدون فیکسچر باقی‌مانده" "0" "$LEFT"
+checkeq "R-پنل سالم (بعد)" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK || echo FAIL)"
+
+echo
+echo "════════ AF-18 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

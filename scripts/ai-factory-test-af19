@@ -1,0 +1,385 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af19 — اعتبارسنجی واقعی وابستگی‌ها و نصب آن‌ها
+#   همهٔ بخش‌های این سوئیت بدون مدل هستند (رگرسیون af18 خودش turnهای
+#   مدل‌دار داخلی‌اش را دارد). سه وضعیت: اعلام‌شده/نصب‌شده/قابل‌استفاده،
+#   شکست واقعی pip آفلاین، نصب واقعی wheel دست‌ساز محلی، خط لوله با
+#   گام deps (مثبت و منفی)، «exit 0 اما واردشدنی نیست» و رگرسیون‌ها.
+#   هیچ بستهٔ اصلی Termux تغییر نمی‌کند؛ af19demo (wheel دست‌ساز) پس از
+#   آزمون حذف می‌شود و site-packages پاک برمی‌گردد.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+PASS=0; FAIL=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+
+echo "════════ AF-19 — وابستگی‌ها: واقعی، نه جعلی ════════"
+checkeq "پنل سالم" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "پشتیبان af19 موجود" "OK" "$(ls "$ROOT"/backups/af19-*/deps.py >/dev/null 2>&1 && echo OK || echo FAIL)"
+MEMHASH_BEFORE=$(sha256sum "$ROOT/data/memory.json" | cut -d' ' -f1)
+SITE_AF19_BEFORE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('af19demo') is not None)")
+
+OUT=$(cd "$ROOT" && python3 - <<'PYEOF'
+import json, os, re, shutil, subprocess, sys, tempfile, glob
+sys.path.insert(0, ".")
+from pathlib import Path
+import core.paths as paths
+import core.config as config
+from core import deps, runner, tasks as t, pipeline as p
+
+ROOT = str(config.PROJECT_ROOT)
+TMP = os.environ["TMP"]
+results = []
+def step(name, ok, detail=""):
+    results.append(ok)
+    print("STEP %s %s %s" % ("OK" if ok else "FAIL", name, str(detail)[:170]))
+
+dtmp = Path(tempfile.mkdtemp(prefix="af19-store-", dir=TMP))
+t._STORE = dtmp / "tasks.json"
+p._STORE = dtmp / "pipelines.json"
+
+AF17SRC = Path(ROOT, "scripts", "ai-factory-test-af17").read_text(encoding="utf-8")
+SERVER = re.search(r"SERVER = '''(.*?)'''", AF17SRC, re.DOTALL).group(1)
+TESTS = re.search(r"TESTS = '''(.*?)'''", AF17SRC, re.DOTALL).group(1)
+
+def mkproj(name, server, reqs):
+    d = Path(ROOT, "projects", name)
+    shutil.rmtree(d, ignore_errors=True); d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps(
+        {"name": name, "type": "api", "description": "AF-19 fixture",
+         "created": "2026-11-14T00:00:00", "modified": "2026-11-14T00:00:00"},
+        ensure_ascii=False), encoding="utf-8")
+    if server is not None:
+        (d / "server.py").write_text(server, encoding="utf-8")
+    if reqs is not None:
+        (d / "requirements.txt").write_text(reqs, encoding="utf-8")
+    return d
+
+def cleanup_project(name):
+    shutil.rmtree(Path(ROOT, "projects", name), ignore_errors=True)
+    for f in glob.glob(os.path.join(ROOT, "exports", name + "-release-*.zip")):
+        try: os.remove(f)
+        except OSError: pass
+    for d in glob.glob(os.path.join(ROOT, "exports", "deliveries", "pl-*")):
+        # فقط تحویل‌های مربوط به فیکسچرهای همین اجرا (رکورد در tmp است)
+        pass
+
+def resume_from_generate(goal):
+    r = p.create("af19-a", goal, agent="builder")
+    recs = p._load(); rec = p._get(recs, r["id"])
+    rec["state"] = "queued"; rec["stage"] = "generate"
+    rec["done"] = {"plan": {"at": "patched"}, "generate": {"at": "patched"}}
+    rec["plan_text"] = "برنامهٔ پچ‌شدهٔ آزمون"
+    p._save(recs)
+    tk = t.get_task(r["task_id"])
+    c = t.claim_next("w1")
+    return r["id"], tk, c
+
+try:
+    # ══ T1) سه وضعیت در یک survey واقعی ══════════════════════════════════
+    mkproj("af19-s", "import six, texttable\n",
+           "six\n# comment\ntexttable\nsix==999.0.0\nsix~=1.17\n")
+    sv = deps.survey("af19-s")
+    st = sv["requirements_status"]
+    step("T1-declared-key-exists", all(v["declared"] for v in st.values()))
+    step("T1-installed-state(six)", st.get("six", {}).get("state") == "installed",
+         st.get("six", {}).get("state"))
+    step("T1-missing-state(texttable)", st.get("texttable", {}).get("state") == "missing",
+         st.get("texttable", {}).get("state"))
+    step("T1-incompatible-state(six==999.0.0)",
+         st.get("six==999.0.0", {}).get("state") == "incompatible"
+         and st["six==999.0.0"].get("version") == "1.17.0",
+         json.dumps(st.get("six==999.0.0", {}))[:110])
+    step("T1-version-ok(six~=1.17)", st.get("six~=1.17", {}).get("state") == "installed")
+    step("T1-missing_requirements-list", sv["missing_requirements"] == ["texttable"],
+         str(sv["missing_requirements"]))
+    step("T1-usable-flag-consistent",
+         all(v["usable"] == (v["state"] == "installed") for v in st.values()))
+
+    # ══ T2) شکست واقعی pip آفلاین (texttable==1.7.3) ═════════════════════
+    # AF-20 fix (environment-proven): the phone's network is sometimes UP
+    # (pypi.org reachable) — then real pip really installs and the honest
+    # offline path can't be demonstrated against the live index. Force a
+    # REAL offline failure deterministically with a dead index (same
+    # mechanism _parse_fail already detects — "connection"), pip's own
+    # env vars (install_deps passes os.environ through).
+    mkproj("af19-b", "import texttable\n", "texttable==1.7.3\n")
+    os.environ["PIP_INDEX_URL"] = "http://127.0.0.1:9/simple"
+    os.environ["PIP_RETRIES"] = "1"
+    os.environ["PIP_TIMEOUT"] = "1"
+    ins = runner.install_deps("af19-b", timeout=180)
+    for _k in ("PIP_INDEX_URL", "PIP_RETRIES", "PIP_TIMEOUT"):
+        os.environ.pop(_k, None)
+    step("T2-install-fails-honestly", ins["installed"] is False
+         and ins.get("verified") is False, ins.get("exit"))
+    step("T2-offline-evidence", ins.get("offline") is True,
+         (ins.get("note") or "")[:110])
+    step("T2-note-names-cause", "آفلاین" in (ins.get("note") or ""),
+         (ins.get("note") or "")[:110])
+
+    # ══ T3) استخراج نام بسته از خروجی واقعی pip (--no-index نام ناموجود) ══
+    r3 = subprocess.run([sys.executable, "-m", "pip", "install", "--no-index",
+                         "--no-input", "definitelynotarealpkg-af19"],
+                        capture_output=True, text=True, timeout=60)
+    pkgs, offline = runner._parse_fail((r3.stderr or "") + (r3.stdout or ""))
+    step("T3-real-package-name-extracted",
+         pkgs == ["definitelynotarealpkg-af19"], str(pkgs))
+
+    # ══ T4) نصب واقعی سبک: wheel دست‌ساز محلی + probe isolated ═══════════
+    wdir = dtmp / "wheeldir"; wdir.mkdir()
+    (wdir / "setup.py").write_text(
+        "from setuptools import setup\nsetup(name='af19demo', version='0.1.0',"
+        " py_modules=['af19demo'])\n", encoding="utf-8")
+    (wdir / "af19demo.py").write_text("VALUE = 42\n", encoding="utf-8")
+    wr = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps",
+                         "--no-build-isolation", "-w", str(dtmp / "wheels"),
+                         str(wdir)], capture_output=True, text=True, timeout=120)
+    wheel = next((dtmp / "wheels").glob("af19demo-*.whl"), None)
+    step("T4-wheel-built-with-setuptools", wheel is not None,
+         wheel.name if wheel else (wr.stderr or "")[-90:])
+    tgt = dtmp / "target"
+    wproj = Path(ROOT, "projects", "af19-w")
+    mkproj("af19-w", None, "./wheels/%s\n" % wheel.name)
+    (wproj / "wheels").mkdir()
+    shutil.copyfile(wheel, wproj / "wheels" / wheel.name)
+    ins4 = runner.install_deps("af19-w", target=str(tgt))
+    step("T4-isolated-install-verified", ins4["installed"] is True
+         and ins4.get("verified") is True, (ins4.get("note") or "")[:90])
+    step("T4-probe-in-target-env",
+         deps.importable("af19demo", wproj, extra_path=str(tgt)))
+    step("T4-site-packages-clean",
+         deps.importable("af19demo", wproj) is False)
+
+    # ══ T5) «exit 0 اما واردشدنی نیست» — wheel بی‌ماژول، صادقانه رد ═══════
+    gdir = dtmp / "ghostdir"; gdir.mkdir()
+    (gdir / "setup.py").write_text(
+        "from setuptools import setup\nsetup(name='af19ghost', version='0.1.0',"
+        " py_modules=[])\n", encoding="utf-8")
+    subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps",
+                    "--no-build-isolation", "-w", str(dtmp / "wheels"),
+                    str(gdir)], capture_output=True, text=True, timeout=120)
+    ghost = next((dtmp / "wheels").glob("af19ghost-*.whl"), None)
+    if ghost:
+        shutil.copyfile(ghost, wproj / "wheels" / ghost.name)
+        (wproj / "requirements.txt").write_text(
+            "./wheels/%s\n" % ghost.name, encoding="utf-8")
+        ins5 = runner.install_deps("af19-w", target=str(dtmp / "target2"))
+        step("T5-exit0-but-unverified-honest",
+             ins5["installed"] is False and ins5.get("verified") is False
+             and any("af19ghost" in x for x in (ins5.get("unverified") or [])),
+             (ins5.get("note") or "")[:110])
+    else:
+        step("T5-exit0-but-unverified-honest", False, "ghost wheel ساخته نشد")
+
+    # ══ T6) خط لوله — مثبت: وابستگی نصب‌شده (six) → delivered بدون مدل ════
+    mkproj("af19-a", SERVER.replace("totallyaf17fake", "totallyaf19fake"),
+           "six\n")
+    (Path(ROOT, "projects", "af19-a", "tests")).mkdir(exist_ok=True)
+    (Path(ROOT, "projects", "af19-a", "tests", "test_api.py")).write_text(
+        TESTS.replace("totallyaf17fake", "totallyaf19fake"), encoding="utf-8")
+    pid_a, tk_a, c_a = resume_from_generate("ادامهٔ خط لولهٔ آزمون وابستگی six")
+    p.execute(c_a, "w1")
+    rec_a = p.get(pid_a)
+    step("T6-pipeline-delivered-no-model", rec_a["state"] == "delivered"
+         and rec_a["turns"] == 0, "turns=%s" % rec_a["turns"])
+    step("T6-deps-stage-green",
+         rec_a["done"].get("deps", {}).get("installed") == ["six"]
+         or rec_a["done"].get("deps", {}).get("note") is not None,
+         json.dumps(rec_a["done"].get("deps", {}))[:110])
+    step("T6-plan-not-repeated",
+         rec_a["done"].get("plan", {}).get("at") == "patched")
+    step("T6-delivery-probe-independent",
+         (rec_a.get("result") or {}).get("probe", {}).get("ok") is True,
+         json.dumps((rec_a.get("result") or {}).get("probe") or {})[:90])
+    cleanup_project("af19-a")
+
+    # ══ T7) خط لوله — منفی: وابستگی مفقود آفلاین → شکست صادقانه ═══════════
+    r7 = p.create("af19-b", "ادامهٔ خط لولهٔ وابستگی مفقود", agent="builder")
+    recs = p._load(); rec = p._get(recs, r7["id"])
+    rec["state"] = "queued"; rec["stage"] = "generate"
+    rec["done"] = {"plan": {"at": "patched"}, "generate": {"at": "patched"}}
+    rec["plan_text"] = "برنامهٔ پچ‌شدهٔ آزمون"
+    p._save(recs)
+    c7 = t.claim_next("w1")
+    # AF-20 fix: same dead-index offline forcing as T2 (the pipeline's
+    # deps stage runs in THIS process → env passes through to pip).
+    os.environ["PIP_INDEX_URL"] = "http://127.0.0.1:9/simple"
+    os.environ["PIP_RETRIES"] = "1"
+    os.environ["PIP_TIMEOUT"] = "1"
+    p.execute(c7, "w1")
+    for _k in ("PIP_INDEX_URL", "PIP_RETRIES", "PIP_TIMEOUT"):
+        os.environ.pop(_k, None)
+    rec7 = p.get(r7["id"])
+    res7 = rec7.get("result") or {}
+    step("T7-pipeline-failed-honest", rec7["state"] == "failed"
+         and "نصب/تأیید نشدند" in (rec7["error"] or ""),
+         (rec7["error"] or "")[:110])
+    step("T7-failure-has-offline-evidence",
+         (res7.get("install") or {}).get("offline") is True
+         and res7.get("missing") == ["texttable"],
+         json.dumps({k: res7.get("install", {}).get(k)
+                     for k in ("offline", "failed_packages")})[:90])
+    tk7 = t.get_task(rec7["task_id"])
+    step("T7-task-failed-no-retry", tk7["state"] == "failed")
+    cleanup_project("af19-b")
+    shutil.rmtree(Path(ROOT, "projects", "af19-s"), ignore_errors=True)
+    shutil.rmtree(Path(ROOT, "projects", "af19-w"), ignore_errors=True)
+
+    # ══ T8) خط لوله — نصب واقعی در خط لوله: wheel محلی → محصول واقعا اجرا ═
+    mkproj("af19-c", "import af19demo\n" + SERVER.replace(
+        "totallyaf17fake", "totallyaf19fake"), "./wheels/%s\n" % wheel.name)
+    (Path(ROOT, "projects", "af19-c", "wheels")).mkdir()
+    shutil.copyfile(wheel, Path(ROOT, "projects", "af19-c", "wheels", wheel.name))
+    (Path(ROOT, "projects", "af19-c", "tests")).mkdir(exist_ok=True)
+    (Path(ROOT, "projects", "af19-c", "tests", "test_api.py")).write_text(
+        TESTS.replace("totallyaf17fake", "totallyaf19fake"), encoding="utf-8")
+    r8 = p.create("af19-c", "ادامهٔ خط لولهٔ نصب wheel محلی", agent="builder")
+    recs = p._load(); rec = p._get(recs, r8["id"])
+    rec["state"] = "queued"; rec["stage"] = "generate"
+    rec["done"] = {"plan": {"at": "patched"}, "generate": {"at": "patched"}}
+    rec["plan_text"] = "برنامهٔ پچ‌شدهٔ آزمون"
+    p._save(recs)
+    c8 = t.claim_next("w1")
+    p.execute(c8, "w1")
+    rec8 = p.get(r8["id"])
+    step("T8-real-install-in-pipeline-delivered",
+         rec8["state"] == "delivered" and rec8["turns"] == 0,
+         "state=%s turns=%s" % (rec8["state"], rec8["turns"]))
+    step("T8-deps-records-install",
+         rec8["done"].get("deps", {}).get("missing_before") == ["af19demo"]
+         or rec8["done"].get("deps", {}).get("installed") == ["af19demo"],
+         json.dumps(rec8["done"].get("deps", {}))[:110])
+    step("T8-bundle-carries-wheel", 
+         any("wheels/af19demo" in f for f in
+             ((rec8.get("result") or {}).get("files") or [])),
+         str((rec8.get("result") or {}).get("files"))[:110])
+    step("T8-probe-independent-run",
+         (rec8.get("result") or {}).get("probe", {}).get("ok") is True)
+    cleanup_project("af19-c")
+finally:
+    # بازگرداندن محیط: af19demo نباید در site-packages بماند
+    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "af19demo"],
+                   capture_output=True, text=True, timeout=60)
+    import importlib.util
+    gone = importlib.util.find_spec("af19demo") is None
+    if not gone:
+        print("STEP FAIL env-restore af19demo still importable!")
+        results.append(False)
+    else:
+        print("STEP OK env-restore af19demo uninstalled")
+        results.append(True)
+    for name in ("af19-s", "af19-a", "af19-b", "af19-c", "af19-w"):
+        shutil.rmtree(Path(ROOT, "projects", name), ignore_errors=True)
+    for f in glob.glob(os.path.join(ROOT, "exports", "af19-?-release-*.zip")) + \
+             glob.glob(os.path.join(ROOT, "exports", "af19-w-release-*.zip")):
+        try: os.remove(f)
+        except OSError: pass
+    for d in glob.glob(os.path.join(ROOT, "exports", "deliveries", "pl-*")):
+        try:
+            if any("af19" in x for x in os.listdir(d)):
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+    shutil.rmtree(dtmp, ignore_errors=True)
+    print("AF19-PY %s" % ("ALL-OK" if all(results) else "HAS-FAIL"))
+PYEOF
+)
+echo "$OUT" | grep "^STEP"
+checkeq "AF19-PY همهٔ گام‌ها OK" "ALL-OK" "$(echo "$OUT" | grep '^AF19-PY' | cut -d' ' -f2)"
+
+echo "== P) پنل: /api/factory/deps واقعی (install آفلاین + survey سه‌وضعیتی) =="
+source "$ROOT/scripts/ai-factory-panel-login"
+pauth -fsS -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"af19-p","type":"api","description":"AF-19 panel fixture"}' \
+  http://127.0.0.1:8580/api/factory/projects >/dev/null 2>&1
+printf 'import texttable\n' > "$ROOT/projects/af19-p/server.py"
+printf 'texttable==1.7.3\n' > "$ROOT/projects/af19-p/requirements.txt"
+PDEPS=$(pauth -sS -m 240 -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af19-p"}' http://127.0.0.1:8580/api/factory/deps 2>/dev/null)
+echo "$PDEPS" | python3 -c "
+import json, sys
+try:
+    r = json.load(sys.stdin)
+    sv = r.get('survey') or {}
+    st = (sv.get('requirements_status') or {}).get('texttable==1.7.3') or {}
+    print('PANEL installed=%s offline=%s | survey state=%s usable=%s' % (
+        r.get('installed'), r.get('offline'), st.get('state'), st.get('usable')))
+    print('PANEL survey.missing_requirements=%s' % sv.get('missing_requirements'))
+except Exception as e:
+    print('PANEL parse-error', e)"
+# AF-20 fix (environment-proven): the panel's pip runs against the LIVE
+# index — when the phone's network is UP, a REAL verified success
+# (installed=True only after fresh-interpreter import probes) is the
+# honest outcome; when DOWN, the honest failure must carry offline
+# evidence. Both are accepted; the offline-failure path itself is
+# proven deterministically in-process (T2/T7 with a dead index).
+PJUDGE=$(echo "$PDEPS" | python3 -c "
+import json, sys
+r = json.load(sys.stdin)
+sv = r.get('survey') or {}
+st = (sv.get('requirements_status') or {}).get('texttable==1.7.3') or {}
+ok = False
+if r.get('installed') is True:
+    ok = (st.get('state') == 'installed' and st.get('usable') is True
+          and r.get('offline') is None and sv.get('missing_requirements') == [])
+elif r.get('installed') is False:
+    ok = (r.get('offline') is True and st.get('state') == 'missing'
+          and st.get('usable') is False)
+print('OK' if ok else 'BAD installed=%s offline=%s state=%s usable=%s miss=%s' % (
+    r.get('installed'), r.get('offline'), st.get('state'),
+    st.get('usable'), sv.get('missing_requirements')))")
+checkeq "P-install از پنل: نتیجهٔ صادقانه در هر دو وضعیت شبکه" "OK" "$PJUDGE"
+# اگر pip واقعا نصب کرد، آلودگی global site-packages را پاک کن —
+# محیط واقعی نباید تغییر کند (texttable مال هیچ پروژهٔ واقعی نیست).
+pip uninstall -y texttable >/dev/null 2>&1
+checkeq "P-survey سه‌وضعیت texttable از پنل (بعد پاک‌سازی)" \
+  "missing False" \
+  "$(cd "$ROOT" && python3 -c "
+import sys; sys.path.insert(0, '.')
+from core import deps
+from pathlib import Path
+st = deps.requirements_status(Path('projects/af19-p'))
+t = st.get('texttable==1.7.3') or {}
+print(t.get('state'), t.get('usable'))" 2>/dev/null || echo parse-err)"
+pauth -fsS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af19-p","confirm":true}' http://127.0.0.1:8580/api/factory/delete >/dev/null 2>&1
+LEFTP=$(ls "$ROOT/projects" | grep -c "^af19-p")
+checkeq "P-فیکسچر پنل حذف شد" "0" "$LEFTP"
+
+echo "== R) رگرسیون + حفاظت =="
+# رگرسیون‌های جدا-پردازنده ممکن است رکورد تجربهٔ فیکسچر بنویسند → جراحی
+EXPIDS_BEFORE=$(python3 -c "
+import json
+print(' '.join(r['id'] for r in json.load(open('$ROOT/data/memory.json')).get('exp') or []))")
+R17=$(bash "$ROOT/scripts/ai-factory-test-af17" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af17 (تحویل مستقل)" "PASS=8 FAIL=0" "$R17"
+R18=$(bash "$ROOT/scripts/ai-factory-test-af18" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af18 (خط لولهٔ یکپارچه + af07/10/11/15/16)" "PASS=15 FAIL=0" "$R18"
+python3 - "$ROOT" "$EXPIDS_BEFORE" <<'EOF'
+import json, sys
+root, ids_before = sys.argv[1], set(sys.argv[2].split())
+P = root + "/data/memory.json"
+d = json.load(open(P))
+kept = [r for r in (d.get("exp") or []) if r["id"] in ids_before]
+removed = len(d.get("exp") or []) - len(kept)
+if removed:
+    d["exp"] = kept
+    open(P, "w").write(json.dumps(d, ensure_ascii=False, indent=1))
+print("experience pollution removed:", removed)
+EOF
+MEMHASH_AFTER=$(sha256sum "$ROOT/data/memory.json" | cut -d' ' -f1)
+checkeq "R-data/memory.json واقعی دست‌نخورده" "$MEMHASH_BEFORE" "$MEMHASH_AFTER"
+SITE_AF19_AFTER=$(python3 -c "import importlib.util; print(importlib.util.find_spec('af19demo') is not None)")
+checkeq "R-site-packages پاک (af19demo حذف شد)" "$SITE_AF19_BEFORE" "$SITE_AF19_AFTER"
+LEFT=$(ls "$ROOT/projects" | grep -c "^af19")
+checkeq "R-بدون فیکسچر باقی‌مانده" "0" "$LEFT"
+checkeq "R-پنل سالم (بعد)" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK || echo FAIL)"
+
+echo
+echo "════════ AF-19 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

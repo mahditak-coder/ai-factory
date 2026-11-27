@@ -1,0 +1,365 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af10 — تضمین بازیابی و بازگشت امن انتشار
+#   فقط روی پروژهٔ ایزولهٔ af10-test (کپی af01-timecheck) و مقصد af10-dest
+#   سناریوها: deploy v1/v2 → rollback با اثبات hash+رفتار → شکست‌ها
+#   (نبود بسته، zip خراب در rollback، rollback تک‌نسخه، deploy بدون run.sh،
+#    health-fail، قطع در میانهٔ استخراج، تکرار deploy) → پاک‌سازی کامل
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+
+echo "════════ AF-10 — تضمین بازیابی و بازگشت امن انتشار ════════"
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import hashlib, json, os, shutil, sys, time, traceback, urllib.error, urllib.request, zipfile
+sys.path.insert(0, ".")
+import core.config as config
+from core import deploy as dep, release as relmod
+
+TMP = os.environ["TMP"]
+ROOT = str(config.PROJECT_ROOT)
+PROJ, DEST = "af10-test", "af10-dest"
+MARK = "AF10-MARK-V2"
+results = []
+def step(name, ok, detail=""):
+    results.append((name, ok, detail))
+    print("STEP %s %s %s" % ("OK" if ok else "FAIL", name, detail[:110]))
+
+def fetch(url):
+    try:
+        with urllib.request.urlopen(url, timeout=4) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, ""
+    except Exception:
+        return 0, ""
+
+def zip_hashes(zp):
+    """sha256 هر عضو فایلی zip — برای مقایسه با فایل‌های استقرار یافته."""
+    out = {}
+    with zipfile.ZipFile(zp) as z:
+        for n in z.namelist():
+            if n.endswith("/"):
+                continue
+            out[n] = hashlib.sha256(z.read(n)).hexdigest()
+    return out
+
+def deployed_matches_zip(zp, root_dir, proj):
+    zh = zip_hashes(zp)
+    bad = []
+    for n, h in zh.items():
+        p = os.path.join(root_dir, n)
+        if not os.path.isfile(p):
+            bad.append(n + ":missing"); continue
+        if hashlib.sha256(open(p, "rb").read()).hexdigest() != h:
+            bad.append(n + ":hash")
+    return bad
+
+def rewrite_zip(src, dst, skip=None, patch=None):
+    """ساخت zip بدل: حذف اعضا (skip) یا تغییر محتوا (patch: name→bytes)."""
+    with zipfile.ZipFile(src) as z, \
+         zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as o:
+        for n in z.namelist():
+            if skip and n in skip:
+                continue
+            data = patch.get(n, z.read(n)) if patch else z.read(n)
+            o.writestr(n, data)
+
+def prev_target_zip():
+    """همان الگوریتم انتخاب هدف rollback در core/deploy.py — zipِ نسخهٔ قبلی."""
+    s = dep._successes(PROJ, DEST)
+    cur = s[-1]
+    prev = None
+    for r in reversed(s[:-1]):
+        if r.get("release_path") != cur.get("release_path") \
+           or r.get("build") != cur.get("build"):
+            prev = r
+            break
+    return (os.path.join(ROOT, "exports", prev["release_path"])
+            if prev else None), cur
+
+try:
+    # ── ۰) پیش‌شرط + snapshot وضعیت مشترک (بازگردانی در پایان) ──
+    HIST = os.path.join(ROOT, "data", "deployments.json")
+    DESTS = os.path.join(ROOT, "data", "deploy_dests.json")
+    shutil.copy2(HIST, os.path.join(TMP, "af10-hist-snap.json"))
+    shutil.copy2(DESTS, os.path.join(TMP, "af10-dests-snap.json"))
+    user_root = os.path.expanduser("~/deployments")
+    before_users = sorted(os.listdir(user_root)) if os.path.isdir(user_root) else []
+    dep.save_dest({"name": DEST, "kind": "local",
+                   "root": os.path.join(TMP, "af10-root")})
+    rroot = os.path.join(TMP, "af10-root")
+
+    # ── ۱) پروژهٔ ایزوله + نسخهٔ ۱ ──
+    src = os.path.join(ROOT, "projects", "af01-timecheck")
+    dst = os.path.join(ROOT, "projects", PROJ)
+    shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst)
+    v1 = relmod.build_release(PROJ)
+    step("release-v1", bool(v1.get("ok")), v1.get("name", ""))
+
+    d1 = dep.deploy(PROJ, DEST, release_path=v1["path"], confirm=True)
+    step("deploy-v1", d1["status"] == "success",
+         "%s port=%s" % (d1["status"], d1.get("port")))
+    url1 = d1.get("url")
+    c, body = fetch(url1 + "/")
+    step("deploy-v1-serves", c == 200 and MARK not in body,
+         "code=%s marker-absent=%s" % (c, MARK not in body))
+    step("deploy-v1-content-hash",
+         not deployed_matches_zip(v1["path"], rroot, PROJ))
+
+    # ── ۲) نسخهٔ ۲ (رفتار متفاوت واقعی: نشانگر در index.html) ──
+    idx = os.path.join(dst, "index.html")
+    html = open(idx, encoding="utf-8").read()
+    open(idx, "w", encoding="utf-8").write(
+        html.replace("</body>", "<!-- %s --></body>" % MARK))
+    time.sleep(1.1)   # استمپ release باید یکتا باشد (نام فایل = ثانیه)
+    v2 = relmod.build_release(PROJ)
+    step("release-v2", bool(v2.get("ok")) and v2["path"] != v1["path"])
+    d2 = dep.deploy(PROJ, DEST, release_path=v2["path"], confirm=True)
+    step("deploy-v2", d2["status"] == "success")
+    c, body = fetch(d2.get("url") + "/")
+    step("deploy-v2-serves-marker", c == 200 and MARK in body,
+         "code=%s marker-present=%s" % (c, MARK in body))
+
+    # ── ۳) rollback واقعی + اثبات بازگشت نسخهٔ اول ──
+    try:
+        rb = dep.rollback(PROJ, DEST, confirm=True)
+    except Exception as e:
+        rb = {"status": "crash: %s: %s" % (type(e).__name__, e)}
+    step("rollback-runs", rb.get("status") == "success",
+         "action=%s target=%s" % (rb.get("action"), rb.get("release_path")))
+    c, body = fetch(rb.get("url") + "/") if rb.get("url") else (0, "")
+    step("rollback-serves-v1", rb.get("status") == "success"
+         and c == 200 and MARK not in body,
+         "code=%s marker-absent=%s" % (c, MARK not in body))
+    step("rollback-hash-matches-v1-zip",
+         not deployed_matches_zip(v1["path"], rroot, PROJ))
+    hist = dep.history(PROJ, DEST)
+    rbrec = [r for r in hist if r.get("action") == "rollback"
+             and r.get("status") == "success"]
+    step("rollback-recorded", len(rbrec) >= 1)
+
+    # ── ۴) شکست rollback: بستهٔ قبلی (هدف rollback) غایب ──
+    pz, cur = prev_target_zip()
+    cur_url = cur.get("url", "")
+    hidden = os.path.join(TMP, "af10-hidden.zip")
+    if pz and os.path.isfile(pz):
+        shutil.move(pz, hidden)
+        try:
+            dep.rollback(PROJ, DEST, confirm=True)
+            step("rollback-missing-zip-clean", False, "باید خطا می‌داد")
+        except dep.DeployError as e:
+            c2, body2 = fetch(cur_url + "/")
+            step("rollback-missing-zip-clean",
+                 "موجود نیست" in str(e) and c2 == 200 and MARK not in body2,
+                 "err=%s served=%s" % (str(e)[:70], c2))
+        finally:
+            shutil.move(hidden, pz)
+    else:
+        step("rollback-missing-zip-clean", False, "هدف قبلی یافت نشد")
+
+    # ── ۵) شکست rollback: zip هدف خراب (پیش از اصلاح: BadZipFile بدون catch) ──
+    pz, cur = prev_target_zip()
+    cur_url = cur.get("url", "")
+    raw = open(pz, "rb").read()
+    corrupted = pz + ".corrupt-tmp"
+    open(corrupted, "wb").write(raw[:len(raw) // 3])
+    os.replace(corrupted, pz)
+    try:
+        try:
+            dep.rollback(PROJ, DEST, confirm=True)
+            step("rollback-corrupt-zip-clean", False, "باید خطا می‌داد")
+        except dep.DeployError as e:
+            step("rollback-corrupt-zip-clean", True, "DeployError تمیز: %s" % e)
+        except Exception as e:
+            step("rollback-corrupt-zip-clean", False,
+                 "CRASH خام: %s: %s" % (type(e).__name__, e))
+    finally:
+        open(pz, "wb").write(raw)   # بازگردانی قطعی از حافظه
+        try:
+            os.remove(corrupted)
+        except OSError:
+            pass
+    c, body = fetch(cur_url + "/")
+    step("state-intact-after-corrupt-rollback", c == 200)
+
+    # ── ۶) rollback وقتی فقط یک نسخه وجود دارد (مقصد دوم) ──
+    dep.save_dest({"name": DEST + "-2", "kind": "local",
+                   "root": os.path.join(TMP, "af10-root2")})
+    dd = dep.deploy(PROJ, DEST + "-2", release_path=v1["path"], confirm=True)
+    step("deploy-d2-single", dd["status"] == "success")
+    try:
+        dep.rollback(PROJ, DEST + "-2", confirm=True)
+        step("rollback-single-version-clean", False, "باید خطا می‌داد")
+    except dep.DeployError as e:
+        step("rollback-single-version-clean",
+             "متفاوتی" in str(e) or "موجود ندارد" in str(e), "err=%s" % e)
+
+    # ── ۷) deploy بستهٔ بدون run.sh → شکست تمیز، نسخهٔ سالم دست‌نخورده ──
+    broken = os.path.join(ROOT, "exports", "%s-release-broken.zip" % PROJ)
+    rewrite_zip(v2["path"], broken, skip={PROJ + "/run.sh"})
+    try:
+        rec = dep.deploy(PROJ, DEST, release_path=broken, confirm=True)
+        outcome = "rec:" + rec.get("status", "")
+    except dep.DeployError as e:
+        outcome = "clean:%s" % e
+    except Exception as e:
+        outcome = "crash:%s" % type(e).__name__
+    step("deploy-no-runsh-fails-fast",
+         outcome.startswith(("clean:", "rec:failed")), outcome[:90])
+    c, body = fetch(dep._successes(PROJ, DEST)[-1].get("url", "") + "/")
+    step("healthy-untouched-after-broken-deploy", c == 200 and MARK not in body,
+         "code=%s" % c)
+    os.remove(broken)
+
+    # ── ۸) deploy با health-fail (run.sh فوری خارج می‌شود) ──
+    hf = os.path.join(ROOT, "exports", "%s-release-healthfail.zip" % PROJ)
+    rewrite_zip(v1["path"], hf,
+                patch={PROJ + "/run.sh": b"#!/bin/sh\nexit 0\n"})
+    rec = dep.deploy(PROJ, DEST, release_path=hf, confirm=True)
+    step("deploy-healthfail-recorded", rec["status"] == "failed"
+         and "Health" in (rec.get("error") or ""), rec.get("error", "")[:80])
+    c, _ = fetch("http://127.0.0.1:%d/" % (rec.get("port") or 0))
+    step("no-broken-version-served", c == 0, "code=%s" % c)
+    os.remove(hf)
+    # بازیابی با rollback واقعی
+    try:
+        rb2 = dep.rollback(PROJ, DEST, confirm=True)
+    except Exception as e:
+        rb2 = {"status": "crash: %s" % e}
+    step("recover-after-healthfail", rb2["status"] == "success")
+    c, body = fetch(rb2.get("url") + "/")
+    tgt = os.path.join(ROOT, "exports", rb2["release_path"])
+    step("recover-after-healthfail-verified",
+         c == 200 and not deployed_matches_zip(tgt, rroot, PROJ),
+         "code=%s" % c)
+
+    # ── ۹) قطع در میانهٔ استخراج (شبیه‌سازی kill حین deploy) ──
+    orig_extractall = zipfile.ZipFile.extractall
+    state = {"n": 0}
+    def fake_extractall(self, path="", members=None, pwd=None):
+        state["n"] += 1
+        if state["n"] == 1:   # فقط اولین عضو، سپس قطع ناگهانی
+            first = self.infolist()[0]
+            tgt_p = os.path.join(path, first.filename)
+            os.makedirs(os.path.dirname(tgt_p) or path, exist_ok=True)
+            with open(tgt_p, "wb") as f:
+                f.write(self.read(first))
+            raise RuntimeError("INTERRUPTED-AF10")
+        return orig_extractall(self, path, members, pwd)
+    zipfile.ZipFile.extractall = fake_extractall
+    try:
+        rec = dep.deploy(PROJ, DEST, release_path=v2["path"], confirm=True)
+    except Exception:
+        rec = {"status": "crash"}
+    finally:
+        zipfile.ZipFile.extractall = orig_extractall
+    step("interrupted-deploy-recorded-failed", rec.get("status") == "failed",
+         str(rec.get("error", ""))[:80])
+    c, _ = fetch("http://127.0.0.1:%d/" % (rec.get("port") or 0))
+    step("interrupted-nothing-served", c == 0, "code=%s" % c)
+    try:
+        rb3 = dep.rollback(PROJ, DEST, confirm=True)
+    except Exception as e:
+        rb3 = {"status": "crash: %s" % e}
+    c, body = fetch(rb3.get("url") + "/") if rb3["status"] == "success" else (0, "")
+    tgt = os.path.join(ROOT, "exports", rb3.get("release_path", ""))
+    step("recover-after-interrupt",
+         rb3["status"] == "success" and c == 200
+         and not deployed_matches_zip(tgt, rroot, PROJ),
+         "code=%s" % c)
+
+    # ── ۱۰) تکرار deploy همان نسخه → نسخهٔ سالم خراب نمی‌شود ──
+    cur = dep._successes(PROJ, DEST)[-1]["release_path"]
+    rd = dep.deploy(PROJ, DEST, release_path=os.path.join(
+        ROOT, "exports", cur), confirm=True)
+    c, body = fetch(rd.get("url") + "/")
+    step("redeploy-same-version-ok",
+         rd["status"] == "success" and c == 200
+         and not deployed_matches_zip(os.path.join(ROOT, "exports", cur),
+                                      rroot, PROJ),
+         "code=%s" % c)
+
+    # ── ۱۱) deploy با zip خراب (مسیر _check_release — بیرون از try خود deploy) ──
+    cz = os.path.join(ROOT, "exports", "%s-release-corrupt.zip" % PROJ)
+    open(cz, "wb").write(b"PK\x03\x04-not-a-real-zip-truncated")
+    try:
+        rec = dep.deploy(PROJ, DEST, release_path=cz, confirm=True)
+        outcome = "rec:%s err=%s" % (rec.get("status"),
+                                     (rec.get("error") or "")[:60])
+    except dep.DeployError as e:
+        outcome = "clean:%s" % e
+    except Exception as e:
+        outcome = "crash:%s:%s" % (type(e).__name__, e)
+    step("deploy-corrupt-zip-clean-error",
+         outcome.startswith("clean:") or
+         (outcome.startswith("rec:failed") and "غیرمنتظره" not in outcome),
+         outcome[:100])
+    os.remove(cz)
+    c, _ = fetch(dep._successes(PROJ, DEST)[-1].get("url", "") + "/")
+    step("healthy-untouched-after-corrupt-deploy", c == 200)
+
+    # ── ۱۲) قفل: استقرار هم‌زمان → 409 ──
+    dep._PROC_LOCK.acquire()
+    try:
+        dep.deploy(PROJ, DEST, release_path=os.path.join(
+            ROOT, "exports", cur), confirm=True)
+        step("concurrent-deploy-409", False, "باید خطا می‌داد")
+    except dep.DeployError as e:
+        step("concurrent-deploy-409", getattr(e, "status", 0) == 409, str(e)[:60])
+    finally:
+        dep._PROC_LOCK.release()
+
+    # ── ۱۳) ایمنی: محصولات کاربر دست‌نخورده ──
+    after_users = sorted(os.listdir(user_root)) if os.path.isdir(user_root) else []
+    step("user-deployments-untouched", before_users == after_users)
+finally:
+    # ── پاک‌سازی کامل ──
+    for dest in (DEST, DEST + "-2"):
+        try:
+            s = dep._successes(PROJ, dest)
+            if s:
+                dep.stop(PROJ, dest)
+        except Exception:
+            pass
+    # هر pid باقیماندهٔ af10 (فقط cwd داخل TMP/af10-root*)
+    import glob as g
+    for pid_dir in g.glob("/proc/[0-9]*/cwd"):
+        try:
+            cwd = os.readlink(pid_dir)
+            if os.path.join(TMP, "af10-root") in cwd:
+                os.kill(int(pid_dir.split("/")[2]), 9)
+        except (OSError, ValueError):
+            pass
+    shutil.rmtree(os.path.join(ROOT, "projects", PROJ), ignore_errors=True)
+    for z in g.glob(os.path.join(ROOT, "exports", "%s-release-*.zip" % PROJ)):
+        os.remove(z)
+    shutil.rmtree(rroot, ignore_errors=True)
+    shutil.rmtree(os.path.join(TMP, "af10-root2"), ignore_errors=True)
+    for lg in g.glob(os.path.join(ROOT, "logs", "deploy", "%s-*.log" % PROJ)):
+        os.remove(lg)
+    shutil.copy2(os.path.join(TMP, "af10-hist-snap.json"), HIST)
+    shutil.copy2(os.path.join(TMP, "af10-dests-snap.json"), DESTS)
+
+OK = sum(1 for _, o, _ in results if o)
+FAILS = [(n, d) for n, o, d in results if not o]
+print("STEPS-OK %d" % OK)
+for n, d in FAILS:
+    print("FAILED-STEP %s %s" % (n, d))
+print("AF10-PY %s" % ("ALL-OK" if not FAILS else "HAS-FAIL"))
+EOF
+)
+echo "$OUT" | grep "^STEP"
+echo
+echo "$OUT" | grep -E "^FAILED-STEP|^STEPS-OK|^AF10-PY"
+NT=0
+nt() { NT=$((NT+1)); echo "⚠️  NOT TESTED — $1"; }
+nt "استقرار remote (ssh/scp) — بدون VPS/سرویس خارجی ممنوع"
+echo
+echo "════════ AF-10 RESULT ════════"
+FAILCNT=$(echo "$OUT" | grep -c "^FAILED-STEP" || true)
+echo "PYTHON-STEPS-FAIL=$FAILCNT NOT-TESTED=$NT"
+if [ "$FAILCNT" = "0" ]; then echo "✅ RESULT: ALL GREEN"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

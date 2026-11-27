@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# ai-factory-test-p6 — P6 acceptance suite (real E2E):
+#   Part A: P6-2 panel auth over real HTTP (401/200/403/lockout/logout).
+#   Part B: P6-1 contract tests — 4 REAL products (shop/api/webpage/
+#           ai-tool) generated through the true factory path, then tested
+#           with the combined testrun; PLUS one deliberate error that the
+#           system must detect and circle around via /api/factory/fix.
+#   Part C: full regression (P1–P5 suites + ZIP + product independence).
+# Run: bash scripts/ai-factory-test-p6
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export ROOT
+BASE="http://127.0.0.1:8580"
+export BASE
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
+mkdir -p "$T"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+code() { curl -s -m "${2:-30}" -o /dev/null -w '%{http_code}' "$1"; }
+jget() { python3 -c "import json,sys;d=json.load(sys.stdin);print(eval('d'+sys.argv[1]))" "$2" < "$1" 2>/dev/null; }
+
+# identity check: server alive
+if ! curl -fsS "$BASE/api/health" >/dev/null 2>&1; then
+    bash "$ROOT/scripts/ai-factory-start" >/dev/null; sleep 2
+fi
+
+J="$T/p6"
+rm -rf "$J"; mkdir -p "$J"
+CJ="$J/cookies"
+
+echo "════ پیش از شروع: پاک‌سازی فایل اعتبار تست (اگر قبلاً با رمز مشابه ساخته شده بود حفظ می‌شود)"
+# AF-05.1: رمز پنل هرگز ثابت نیست — از env یا فایل امن محلی (0600) خوانده می‌شود
+PANEL_PASS="${PANEL_PASS:-}"
+if [ -z "$PANEL_PASS" ] && [ -r "$HOME/.af-panel/panel-pass.txt" ]; then
+    PANEL_PASS="$(tr -d '\n\r' < "$HOME/.af-panel/panel-pass.txt")"
+fi
+export PANEL_PASS
+if [ -z "$PANEL_PASS" ]; then
+    echo "panel credential missing — set PANEL_PASS or create ~/.af-panel/panel-pass.txt (0600)" >&2
+    exit 1
+fi
+
+echo "════ Part A — P6-2: احراز هویت پنل (HTTP واقعی)"
+
+# A1: public endpoints reachable WITHOUT login
+check "A1 health بدون ورود → 200" "200" "$(code $BASE/api/health)"
+check "A2 status بدون ورود → 200" "200" "$(code $BASE/api/status)"
+check "A3 model بدون ورود → 200" "200" "$(code $BASE/api/model)"
+check "A4 panel/state بدون ورود → 200" "200" "$(code $BASE/api/panel/state)"
+
+# A2: protected API blocks anonymous access
+check "A5 /api/projects بدون ورود → 401" "401" "$(code $BASE/api/projects)"
+check "A6 POST protected بدون ورود → 401" "401" \
+    "$(curl -s -m 15 -X POST -d '{}' -H 'Content-Type: application/json' "$BASE/api/factory/projects" -o /dev/null -w '%{http_code}')"
+
+# A3: secure first-run init (no default password anywhere)
+INITIALIZED=$(curl -fsS "$BASE/api/panel/state" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("initialized"))')
+if [ "$INITIALIZED" != "True" ]; then
+    C=$(curl -s -c "$CJ" -X POST -d '{"password":"af-p"}' -H 'Content-Type: application/json' "$BASE/api/panel/init" -o /dev/null -w '%{http_code}')
+    check "A7 رمز <=8 → رد (no default)" "400" "$C"
+    C=$(curl -s -c "$CJ" -X POST -d '{"password":"'"$PANEL_PASS"'"}' -H 'Content-Type: application/json' "$BASE/api/panel/init" -w '%{http_code}' -o /dev/null)
+    check "A8 init امن → 200" "200" "$C"
+    grep -q "panel_session" "$CJ" && check "A9 کوکی session صادر شد" "yes" "yes" \
+        || check "A9 کوکی session صادر شد" "yes" "no"
+else
+    rm -f "$CJ"
+    check "A7-A9 قبلاً تنظیم شده (بدون re-init)" "ok" "ok"
+fi
+
+# A4: re-init refused (no overwrite via public init)
+C=$(curl -s -X POST -d '{"password":"'"$PANEL_PASS"'-x"}' -H 'Content-Type: application/json' "$BASE/api/panel/init" -o /dev/null -w '%{http_code}')
+check "A10 re-init → 409" "409" "$C"
+
+# A5: bad password → 401 ; guessed thrice more → lockout 429
+rm -f "$CJ"
+curl -s -c "$CJ" -X POST -d '{"password":"همه_گم_شده_ک۱۲۳"}' -H 'Content-Type: application/json' "$BASE/api/panel/login" -o /dev/null -w '%{http_code}' > "$J/l1"
+check "A11 رمز نادرست → 401" "401" "$(cat "$J/l1")"
+# 4 more wrong attempts → counter=5 → 6th gets 429
+for i in 1 2 3 4 5; do
+    curl -s -X POST -d '{"password":"همه_گم_شده_ک۱۲۳"}' -H 'Content-Type: application/json' "$BASE/api/panel/login" -o /dev/null
+done
+C=$(curl -s -X POST -d '{"password":"همه_گم_شده_ک۱۲۳"}' -H 'Content-Type: application/json' "$BASE/api/panel/login" -o /dev/null -w '%{http_code}')
+check "A12 قفل تلاش (6 نادرست) → 429" "429" "$C"
+
+# A6: valid login → 200 + cookie + csrf
+rm -f "$CJ"
+L=$(curl -s -c "$CJ" -X POST -d '{"password":"'"$PANEL_PASS"'"}' -H 'Content-Type: application/json' "$BASE/api/panel/login")
+check "A13 ورود معتبر → ok:true" "True" "$(echo "$L" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("ok"))')"
+grep -q "panel_session" "$CJ" && P9=yes || P9=no
+check "A14 کوکی session در jar" "yes" "$P9"
+grep -q "^#HttpOnly_" "$CJ" && check "A15 کوکی HttpOnly" "yes" "yes" \
+    || check "A15 کوکی HttpOnly" "yes" "no"
+CSRF=$(python3 - "$CJ" <<'PYEOF'
+import sys
+for line in open(sys.argv[1]):
+    parts=line.split()
+    if len(parts)>=7 and parts[5]=="panel_csrf": print(parts[6]); break
+PYEOF
+)
+[ -n "$CSRF" ] && check "A16 کوکی csrf صادر شد" "yes" "yes" \
+    || check "A16 کوکی csrf صادر شد" "yes" "no"
+
+pauth() { curl -sS -b "$CJ" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+# A7: authenticated access works
+check "A17 /api/projects با login → 200" "200" "$(pauth -o /dev/null -w '%{http_code}' $BASE/api/projects)"
+
+# A8: CSRF enforcement on mutations
+C=$(curl -s -b "$CJ" -X POST -d '{}' -H 'Content-Type: application/json' "$BASE/api/factory/projects" -o /dev/null -w '%{http_code}')
+check "A18 mutation بدون CSRF → 403" "403" "$C"
+C=$(curl -s -b "$CJ" -X POST -d '{}' -H 'Content-Type: application/json' \
+    -H "X-Panel-CSRF: wrong-token-000" "$BASE/api/factory/projects" -o /dev/null -w '%{http_code}')
+check "A19 csrf نادرست → 403" "403" "$C"
+# real mutation WITH csrf (validation error expected but allowed-through: 400 not 403)
+C=$(pauth -X POST -d '{"name":"..bad"}' -H 'Content-Type: application/json' "$BASE/api/factory/projects" -o /dev/null -w '%{http_code}')
+check "A20 mutation با CSRF صاحب session → عبور از 401/403" "400" "$C"
+
+# A9: forged token / expired session denied
+C=$(curl -s -H 'Cookie: panel_session=forged-token-xxx' -o /dev/null -w '%{http_code}' $BASE/api/projects)
+check "A21 توکن جعلی → 401" "401" "$C"
+
+# A10: logout kills the session server-side
+CJ2="$J/cookies2"; rm -f "$CJ2"
+curl -s -c "$CJ2" -X POST -d '{"password":"'"$PANEL_PASS"'"}' -H 'Content-Type: application/json' "$BASE/api/panel/login" > /dev/null
+CSRF2=$(python3 - "$CJ2" <<'PYEOF'
+import sys
+for line in open(sys.argv[1]):
+    parts=line.split()
+    if len(parts)>=7 and parts[5]=="panel_csrf": print(parts[6]); break
+PYEOF
+)
+LO=$(curl -s -b "$CJ2" -H "X-Panel-CSRF: $CSRF2" -X POST -d '{}' "$BASE/api/panel/logout")
+check "A22 logout → ok" "True" "$(echo "$LO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("ok"))')"
+C=$(curl -s -b "$CJ2" -o /dev/null -w '%{http_code}' $BASE/api/projects)
+check "A23 session پس از logout → 401" "401" "$C"
+
+# re-login the MAIN jar (logout test killed the only live session —
+# single-admin policy) so Part B has a fresh authenticated session.
+rm -f "$CJ"
+curl -s -c "$CJ" -X POST -d '{"password":"'"$PANEL_PASS"'"}' -H 'Content-Type: application/json' "$BASE/api/panel/login" >/dev/null
+CSRF=$(python3 - "$CJ" <<'PYEOF'
+import sys
+for line in open(sys.argv[1]):
+    parts=line.split()
+    if len(parts)>=7 and parts[5]=="panel_csrf": print(parts[6]); break
+PYEOF
+)
+check "A24 نشست تازه برای Part B" "200" "$(pauth -o /dev/null -w '%{http_code}' $BASE/api/projects)"
+
+echo "════ Part B — P6-1: ۴ محصول واقعی مسیر Factory + قرارداد تست"
+
+gen() { # name type goal … creates + generates, waits done (timeout param $4 sec)
+    local NAME="$1" TYPE="$2" GOAL="$3" TO="${4:-420}"
+    local RC R
+    RC=$(pauth -X POST -d "{\"name\":\"$NAME\",\"type\":\"$TYPE\",\"description\":\"p6\"}" \
+        -H 'Content-Type: application/json' "$BASE/api/factory/projects" -o /dev/null -w '%{http_code}')
+    if [ "$RC" != "201" ] && [ "$RC" != "409" ]; then echo "create-failed:$RC"; return 1; fi
+    R=$(pauth -X POST -d "{\"project\":\"$NAME\",\"goal\":$(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$GOAL")}" \
+        -H 'Content-Type: application/json' "$BASE/api/factory/generate")
+    local SID=$(echo "$R" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("session_id") or "")')
+    if [ -z "$SID" ]; then echo "generate-failed"; return 1; fi
+    for i in $(seq 1 "$TO"); do
+        sleep 2
+        local D=$(pauth "$BASE/api/factory/generation?project=$NAME" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("done"))')
+        [ "$D" = "True" ] && { echo done; return 0; }
+    done
+    echo timeout; return 1
+}
+
+TS=$(date +%H%M%S)
+SH="p6-shop-$TS"; PG="p6-page-$TS"; AP="p6-api-$TS"; AI="p6-ai-$TS"
+for v in SH PG AP AI; do export $v; done
+
+echo "  — تولید واقعی ۴ پروژه (مدل واقعی؛ هر کدام تا ۶ دقیقه)…"
+SHOP_GOAL="یک فروشگاه اینترنتی کوچک: صفحه index.html با ۳ کارت محصول و دکمهٔ افزودن به سبد، <title> فارسی، <h1>، فایل style.css و script.js"
+GEN_SHOP=$(gen "$SH" shop "$SHOP_GOAL" 300)
+check "B1 shop تولید شد" "done" "$GEN_SHOP"
+
+PAGE_GOAL="یک صفحهٔ وب ساده: index.html با <title> فارسی، <h1>، یک لینک داخلی و style.css داخل پروژه"
+GEN_PG=$(gen "$PG" webpage "$PAGE_GOAL" 300)
+check "B2 webpage تولید شد" "done" "$GEN_PG"
+
+API_GOAL="سرویس API پایتون: server.py در ریشه (پورت از env PORT)، GET /api/health جواب JSON با ok:true و یک منبع ساده"
+GEN_API=$(gen "$AP" api "$API_GOAL" 300)
+check "B3 api تولید شد" "done" "$GEN_API"
+
+AI_GOAL="ابزار هوش مصنوعی طبق README-ai: server.py پورت از env PORT و مسیر /api/health با ok:true و صفحهٔ تنظیمات /ai.html سرو شود"
+GEN_AI=$(gen "$AI" ai-tool "$AI_GOAL" 300)
+check "B4 ai-tool تولید شد" "done" "$GEN_AI"
+
+echo "  — آزمون قرارداد عملکردی (testrun ترکیبی)…"
+trtest() { # project → prints state
+    pauth -X POST -d "{\"project\":\"$1\"}" -H 'Content-Type: application/json' "$BASE/api/factory/testrun" -o "$J/tr-$1.json" -m 120 >/dev/null
+    python3 - "$J/tr-$1.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(("ran" if d.get("ran") else "noran"), ("green" if d.get("ok") else "red"),
+      ("" if d.get("ran") else (d.get("note") or "")[:60]))
+PYEOF
+}
+ST_SHOP=$(trtest "$SH")
+ST_PAGE=$(trtest "$PG")
+ST_API=$(trtest "$AP")
+ST_AI=$(trtest "$AI")
+check "B5 shop testrun سبز" "ran green" "$(echo "$ST_SHOP" | cut -d' ' -f1-2)"
+check "B6 webpage testrun سبز" "ran green" "$(echo "$ST_PAGE" | cut -d' ' -f1-2)"
+check "B7 api testrun سبز" "ran green" "$(echo "$ST_API" | cut -d' ' -f1-2)"
+check "B8 ai-tool testrun سبز" "ran green" "$(echo "$ST_AI" | cut -d' ' -f1-2)"
+echo "     (جزئیات: shop=$ST_SHOP | page=$ST_PAGE | api=$ST_API | ai=$ST_AI)"
+
+echo "  — خطای عمدی: مرجع فایل گم‌شده در صفحهٔ shop"
+pauth "$BASE/api/file?project=$SH&path=index.html" -o "$J/imp" >/dev/null
+python3 - "$J/imp" <<'PYEOF'
+import sys
+open(sys.argv[1], "a", encoding="utf-8").write('<img src="BURJUET-missing.png">\n')
+PYEOF
+C=$(pauth -X PUT -d "{\"project\":\"$SH\",\"path\":\"index.html\",\"content\":$(python3 -c "import json;print(json.dumps(open('$J/imp',encoding='utf-8').read()))")}" \
+    -H 'Content-Type: application/json' "$BASE/api/file" -o /dev/null -w '%{http_code}')
+check "B9 خطای عمدی نوشته شد" "200" "$C"
+
+ST_BAD=$(trtest "$SH")
+check "B10 testrun خطا را واقعاً دید" "ran red" "$(echo "$ST_BAD" | cut -d' ' -f1-2)"
+KIND=$(python3 - "$J/tr-$SH.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+errs = d.get("errors") or []
+n = [e for e in errs if e.get("kind") in ("asset-missing", "contract-product", "contract-add", "contract-title", "contract-h1")]
+print(n[0]["kind"] if n else (errs[0]["kind"] if errs else "none"))
+PYEOF
+)
+check "B11 نوع خطا: asset-missing" "asset-missing" "$KIND"
+
+echo "  — حلقهٔ اصلاح کنترل‌شده (حداکثر ۱ دور + test})"
+FX=$(pauth -X POST -d "{\"project\":\"$SH\",\"attempts\":2}" -H 'Content-Type: application/json' "$BASE/api/factory/fix" -m 560 -o "$J/fix-$SH.json")
+C=$(echo "$FX" | head -c 1 | grep -q '{' && echo parsed || echo nojson)
+echo "     fix: $(python3 - "$J/fix-$SH.json" <<'PYEOF' 2>/dev/null || true
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    f = d.get("functional") or {}
+    b = f.get("before") or {}
+    a = f.get("after") or {}
+    print("cycles:", len(d.get("cycles") or []), "| functional fixed:", f.get("fixed"),
+          "| before ok:", b.get("ok"), "| after ok:", a.get("ok"))
+except Exception:
+    print("(json خوانا نبود)")
+PYEOF
+)"
+ST_FIX=$(trtest "$SH")
+check "B12 پس از حلقهٔ اصلاح → testrun سبز" "ran green" "$(echo "$ST_FIX" | cut -d' ' -f1-2)"
+
+echo "════ Part C — رگرسیون کامل (P1–P5 + ZIP + مسیرها + اطمینان)"
+cleanup() {
+    for v in SH PG AP AI; do
+        local n=${!v:-}
+        [ -n "$n" ] && pauth -X POST -d "{\"project\":\"$n\",\"confirm\":true}" \
+            -H 'Content-Type: application/json' "$BASE/api/factory/delete" >/dev/null 2>&1
+    done
+    rm -rf "$J"
+    trap - EXIT
+}
+trap cleanup EXIT
+
+for s in ai-factory-test ai-factory-test-zipfix ai-factory-test-oc \
+         ai-factory-test-factory ai-factory-test-workspace \
+         ai-factory-test-p5; do
+    echo "  — bash scripts/$s"
+    if P6RUN=yes bash "$ROOT/scripts/$s" > "$J/reg-$s.log" 2>&1; then
+        check "R: $s GREEN" "ok" "ok"
+    else
+        check "R: $s GREEN" "ok" "FAIL"
+        tail -5 "$J/reg-$s.log" | sed 's/^/       /'
+    fi
+done
+
+echo "──────────────────"
+echo "نتیجهٔ P6: $PASS موفق، $FAIL ناموفق"
+if [ "$FAIL" -gt 0 ]; then echo "موردهای ناموفق: $FAILED"; fi
+[ "$FAIL" -eq 0 ] && echo "P6 ALL GREEN" && exit 0
+exit 1

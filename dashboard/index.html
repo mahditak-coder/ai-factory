@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Factory — پنل مدیریت</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="design.css">
+</head>
+<body>
+<header>
+  <div class="row headrow" style="justify-content:space-between; width:100%;">
+    <div class="af-nav" role="navigation" aria-label="ناوبری اصلی">
+  <span class="af-brandmark">AI Factory</span>
+  <a href="/" data-page="/">🏠 خانه</a>
+  <a href="/workspace.html" data-page="workspace">💬 Workspace</a>
+  <a href="/factory.html" data-page="deliver">📦 تحویل</a>
+  <a href="/workflow.html" data-page="workflow">🎬 استودیو</a>
+  <button class="af-theme" type="button" title="تغییر حالت روشن/تاریک" aria-label="تغییر تم">🌙</button>
+</div>
+    <h1>🏭 AI Factory</h1>
+    <button id="btnRefresh" class="btn small">↻ بروزرسانی</button>
+  </div>
+</header>
+
+<main class="af-home">
+  <section class="card">
+    <h2>وضعیت سیستم</h2>
+    <div id="status" class="placeholder">در حال بارگذاری…</div>
+  </section>
+
+  <section class="card">
+    <h2>سرویس‌ها</h2>
+    <div id="services" class="placeholder">در حال بارگذاری…</div>
+  </section>
+
+  <section class="card">
+    <h2>مدل هوش مصنوعی فعال</h2>
+    <div id="model" class="placeholder">در حال بارگذاری…</div>
+  </section>
+
+  <section class="card" id="projectsCard">
+    <h2>پروژه‌ها <span class="af-chip">ادامه از جایی که ماندید</span></h2>
+    <form id="newProjectForm" class="row">
+      <input type="text" id="projectName" placeholder="نام پروژه (لاتین)" autocomplete="off" required>
+      <button type="submit" class="btn">+ پروژه جدید</button>
+    </form>
+    <div class="af-search">
+      <input id="projectSearch" type="search" placeholder="جستجوی پروژه…" aria-label="جستجوی پروژه">
+      <button id="btnOpenWorkspace" type="button" class="btn primary">💬 ورود به Workspace</button>
+    </div>
+    <div id="projects" class="placeholder">در حال بارگذاری…</div>
+  </section>
+
+  <section class="card">
+    <h2>🤖 عامل‌ها و وظایف</h2>
+
+    <div id="orchStatus" class="placeholder">در حال بارگذاری…</div>
+    <div class="row" style="margin:.4rem 0;">
+      <button id="btnOrchStart1" class="btn small">▶ شروع (۱ کارگر)</button>
+      <button id="btnOrchStart2" class="btn small">▶ شروع (۲ کارگر)</button>
+      <button id="btnOrchStop" class="btn small danger">⏹ توقف</button>
+    </div>
+
+    <h3 style="margin:.6rem 0 .2rem;">عامل‌ها</h3>
+    <div id="agents" class="placeholder">در حال بارگذاری…</div>
+
+    <h3 style="margin:.6rem 0 .2rem;">وظیفهٔ جدید</h3>
+    <form id="newTaskForm" class="row">
+      <select id="taskProject" required></select>
+      <select id="taskAgent"></select>
+      <input type="text" id="taskGoal" placeholder="هدف وظیفه…" autocomplete="off" required>
+      <button type="submit" class="btn">+ ثبت وظیفه</button>
+    </form>
+    <div id="taskMsg" class="msg"></div>
+
+    <h3 style="margin:.6rem 0 .2rem;">وظایف اخیر</h3>
+    <div id="tasks" class="placeholder">در حال بارگذاری…</div>
+  </section>
+
+  <section class="card" id="filesCard" hidden>
+    <h2>فایل‌های پروژه <span id="currentProject" class="muted"></span></h2>
+    <div id="files" class="placeholder">—</div>
+    <div id="editorWrap" hidden>
+      <div class="row">
+        <span id="openFile" class="muted"></span>
+        <button id="btnSave" class="btn small">💾 ذخیره</button>
+        <button id="btnDelete" class="btn small danger">🗑 حذف</button>
+      </div>
+      <textarea id="editor" spellcheck="false"></textarea>
+      <div id="editorMsg" class="msg"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>لاگ‌ها</h2>
+    <div class="row">
+      <select id="logWhich">
+        <option value="server">server.log</option>
+        <option value="error">error.log</option>
+      </select>
+      <button id="btnLogs" class="btn small">نمایش لاگ</button>
+    </div>
+    <pre id="logs" class="placeholder">—</pre>
+  </section>
+</main>
+
+<footer>AI Factory <span class="af-version">—</span> — اجرا فقط روی localhost</footer>
+<script src="design.js"></script>
+<script src="/panel.js"></script>
+<script src="common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

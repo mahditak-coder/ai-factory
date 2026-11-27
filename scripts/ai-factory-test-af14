@@ -1,0 +1,355 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af14 — آزمون امنیت و پایداری کارخانه
+#   B) احراز هویت/CSRF از بیرون (401/403/200 مثبت) از مسیر واقعی pauth
+#   T) Path Traversal و دسترسی خارج از workspace
+#   I) ورودی نامعتبر/بزرگ
+#   S) عدم افشای رمز (لیست/خواندن فایل/بستهٔ release/لاگ‌ها)
+#   P) پایداری: runner دوباره‌اجرا، قفل build اندروید، بازیابی orphan،
+#      خودآزمون ناموفق = بدون موفقیت جعلی، RAM guard، خطای provider
+#   X) خطاها و ایزوله: runner boot-fail صادقانه، export خراب کنترل‌شده،
+#      deploy zip خراب (پیام تمیز)، خرابی یک پروژه → بقیه سالم
+#   R) پاک‌سازی + رگرسیون af07/af11
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+PASS=0; FAIL=0; NT=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+nt() { NT=$((NT+1)); echo "⚠️  NOT TESTED — $1"; }
+
+echo "════════ AF-14 — امنیت و پایداری ════════"
+checkeq "پنل سالم (پیش)" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "پشتیبان af14 موجود" "OK" "$(ls "$ROOT"/backups/af14-*/server.py \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+
+# ── S) پروژهٔ ایزوله با رمز کاشته‌شده ──
+rm -rf "$ROOT/projects/af14-sec"
+mkdir -p "$ROOT/projects/af14-sec"
+cat > "$ROOT/projects/af14-sec/meta.json" <<'EOJ'
+{"name":"af14-sec","type":"api","description":"AF-14 secret fixture","created":"2026-11-14T00:00:00","modified":"2026-11-14T00:00:00"}
+EOJ
+echo 'print("hello")' > "$ROOT/projects/af14-sec/server.py"
+printf 'SECRET_TOKEN=af14secret12345\nDB_PASS=af14pass98765\n' > "$ROOT/projects/af14-sec/.env"
+
+echo "== B) احراز هویت و CSRF (بدون نشست) =="
+checkeq "B-GET عمومی /api/health بدون نشست → 200" "200" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:8580/api/health)"
+checkeq "B-GET /api/factory/projects بدون نشست → 401" "401" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:8580/api/factory/projects)"
+checkeq "B-POST /api/factory/delete بدون نشست → 401" "401" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' -m 5 -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8580/api/factory/delete)"
+checkeq "B-POST /api/panel/login رمز غلط → 401" "401" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' -m 5 -X POST -H 'Content-Type: application/json' -d '{"password":"definitely-wrong-af14"}' http://127.0.0.1:8580/api/panel/login)"
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+CR=$(pauth -sS -o /dev/null -w '%{http_code}' -m 15 -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"af14-auth","type":"api","description":"AF-14 auth test"}' \
+  http://127.0.0.1:8580/api/factory/projects)
+checkeq "B-create با نشست+CSRF → 201 (مثبت)" "201" "$CR"
+# آزمون منفی CSRF — دستی: فقط کوکی نشست، بدون کوکی/هدر CSRF (pauth خودش CSRF درست می‌فرستد)
+SESSVAL=$(awk '$6 == "panel_session" {print $7}' "$PANEL_COOKIES" | tail -1)
+CSRFBAD=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H 'Content-Type: application/json' \
+  -H "Cookie: panel_session=$SESSVAL" -H 'X-Panel-CSRF: wrong-token-af14' \
+  -d '{"project":"af14-auth","version":"9.9.9"}' http://127.0.0.1:8580/api/factory/version)
+checkeq "B-CSRF غلط (فقط کوکی نشست) → 403" "403" "$CSRFBAD"
+CSRFNO=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H 'Content-Type: application/json' \
+  -H "Cookie: panel_session=$SESSVAL" \
+  -d '{"project":"af14-auth","version":"9.9.9"}' http://127.0.0.1:8580/api/factory/version)
+checkeq "B-CSRF غایب → 403" "403" "$CSRFNO"
+
+echo "== T) Path Traversal =="
+checkeq "T-reading ../../core/server.py → 403" "403" \
+  "$(pauth -s -o /dev/null -w '%{http_code}' -m 10 \
+  "http://127.0.0.1:8580/api/file?project=af14-sec&path=..%2F..%2Fcore%2Fserver.py")"
+checkeq "T-absolute /etc/passwd → 403" "403" \
+  "$(pauth -s -o /dev/null -w '%{http_code}' -m 10 \
+  "http://127.0.0.1:8580/api/file?project=af14-sec&path=%2Fetc%2Fpasswd")"
+checkeq "T-project=.. → 400/403" "OK" \
+  "$(pauth -s -o /dev/null -w '%{http_code}' -m 10 \
+  "http://127.0.0.1:8580/api/files?project=.." | grep -qE '^(400|403)$' && echo OK || echo FAIL)"
+checkeq "T-project=../af01-timecheck (نام نامعتبر) → 400/403" "OK" \
+  "$(pauth -s -o /dev/null -w '%{http_code}' -m 10 \
+  "http://127.0.0.1:8580/api/files?project=..%2Faf01-timecheck" | grep -qE '^(400|403)$' && echo OK || echo FAIL)"
+checkeq "T-rename خارج از پروژه → 403" "403" \
+  "$(pauth -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af14-sec","path":"server.py","new_path":"../../af14-evil.py"}' \
+  http://127.0.0.1:8580/api/file/rename)"
+
+echo "== I) ورودی نامعتبر/بزرگ =="
+# PROJECT_NAME_RE فاصله و حروف فارسی را عمداً مجاز می‌کند (برای «معلم من») —
+# پس پذیرش نام با فاصله (201) رفتار درست طراحی است، NOT نقص؛ منفیِ واقعیِ نام
+# (../، /، خالی) در بخش T پوشش داده شد.
+CRSP=$(pauth -sS -o /dev/null -w '%{http_code}' -m 10 -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"af14 spaced","type":"api","description":"AF-14 design intent"}' \
+  http://127.0.0.1:8580/api/factory/projects)
+checkeq "I-نام با فاصله → 201 (رفتار عمدی طراحی)" "201" "$CRSP"
+checkeq "I-بدنهٔ JSON نامعتبر → 400" "400" \
+  "$(pauth -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H 'Content-Type: application/json' \
+  -d '{not json' http://127.0.0.1:8580/api/factory/version)"
+head -c 3000000 /dev/zero | tr '\0' 'a' > "$TMP/af14-big.json"
+BIG=$(pauth -s -o /dev/null -w '%{http_code}' -m 20 -X POST -H 'Content-Type: application/json' \
+  --data-binary @"$TMP/af14-big.json" http://127.0.0.1:8580/api/factory/version)
+checkeq "I-بدنهٔ 3MB → 400 (سقف 2MB)" "400" "$BIG"
+
+echo "== S) عدم افشای رمز =="
+checkeq "S-.env در /api/files فهرست نمی‌شود" "OK" \
+  "$(pauth -sS -m 10 "http://127.0.0.1:8580/api/files?project=af14-sec" \
+  | grep -q '"\.env"' && echo "LEAKED" || echo OK)"
+checkeq "S-خواندن .env از پنل → 403" "403" \
+  "$(pauth -s -o /dev/null -w '%{http_code}' -m 10 \
+  "http://127.0.0.1:8580/api/file?project=af14-sec&path=.env")"
+SRE=$(pauth -sS -m 20 -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af14-sec"}' http://127.0.0.1:8580/api/factory/release 2>/dev/null)
+SRPOK=$(echo "$SRE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ok'))" 2>/dev/null)
+checkeq "S-release پروژهٔ دارای .env موفق (حذف محرمانه)" "True" "$SRPOK"
+SRP=$(echo "$SRE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('path',''))" 2>/dev/null)
+checkeq "S-zip حاوی رمز نیست" "OK" \
+  "$(python3 -c "
+import zipfile,sys
+z=zipfile.ZipFile('$SRP')
+names=z.namelist()
+leak=any('.env' in n for n in names)
+content=b'af14secret12345' in open('$SRP','rb').read()
+print('OK' if not leak and not content else 'LEAKED')")"
+rm -f "$SRP"
+
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import json, os, shutil, subprocess, sys, threading, time
+sys.path.insert(0, ".")
+from pathlib import Path
+import core.config as config
+from core import paths, factory, runner, release as rel, tasks
+from core import orchestrator as orch
+from core import opencode_bridge as oc
+from core import deploy as dep
+from core.engines import android as androidmod
+
+ROOT = str(config.PROJECT_ROOT)
+TMP = os.environ["TMP"]
+results = []
+def step(name, ok, detail=""):
+    results.append((name, ok))
+    print("STEP %s %s %s" % ("OK" if ok else "FAIL", name, str(detail)[:140]))
+
+try:
+    # ══ P) runner: اجرای دوباره = بدون پروسهٔ دوقلو ══
+    shutil.rmtree(os.path.join(ROOT, "projects", "af14-node"), ignore_errors=True)
+    shutil.copytree(os.path.join(ROOT, "core", "nodeserver_template"),
+                    os.path.join(ROOT, "projects", "af14-node"))
+    factory.write_meta(paths.project_dir("af14-node"),
+        {"name": "af14-node", "type": "node-server",
+         "description": "AF-14", "created": "2026-11-14T00:00:00",
+         "modified": "2026-11-14T00:00:00"})
+    st1 = runner.start("af14-node")
+    st2 = runner.start("af14-node")
+    pids = {r["pid"] for r in runner._reg.values()} if hasattr(runner, "_reg") else set()
+    step("P-runner-idempotent", st2.get("running") and st1.get("pid") == st2.get("pid"),
+         "pid1=%s pid2=%s" % (st1.get("pid"), st2.get("pid")))
+
+    # ══ P) قطع worker واقعی: kill پروسهٔ node → وضعیت صادقانه، orphan پاک ══
+    pid = st1.get("pid")
+    os.kill(pid, 9)
+    time.sleep(1.0)
+    st3 = runner.status("af14-node")
+    step("P-worker-killed-honest", not st3.get("running"),
+         "status پس از kill = %s" % st3.get("running"))
+
+    # ══ P) خودآزمون ناموفق = بدون موفقیت جعلی ══
+    p = Path(ROOT, "projects", "af14-node", "server.js")
+    good = p.read_text()
+    p.write_text("module.exports = { broken !!! };")
+    r = runner.run_tests("af14-node")
+    step("P-run_tests-fail-honest", r["ran"] and not r["ok"], "exit=%s" % r.get("exit"))
+    c = factory.testrun_combined("af14-node")
+    step("P-testrun-fail-honest", not c["ok"] and c["ran"],
+         "note=%s" % (c.get("note") or "")[:60])
+    p.write_text(good)
+    r2 = runner.run_tests("af14-node")
+    step("P-run_tests-recovered", r2["ok"])
+    runner.stop("af14-node")
+    shutil.rmtree(os.path.join(ROOT, "projects", "af14-node"), ignore_errors=True)
+
+    # ══ P) قفل build اندروید (رقابت روی یک پروژه) ══
+    shutil.rmtree(os.path.join(ROOT, "projects", "af14-and"), ignore_errors=True)
+    shutil.copytree(os.path.join(ROOT, "projects", "af02-android-test"),
+                    os.path.join(ROOT, "projects", "af14-and"),
+                    ignore=shutil.ignore_patterns(".factory", "build"))
+    androidmod.start_build("af14-and", {"kind": "apk", "sign": False})
+    time.sleep(2.5)
+    try:
+        androidmod.start_build("af14-and", {"kind": "apk", "sign": False})
+        step("P-build-lock-race", False, "ساخت دوم پذیرفته شد!")
+    except androidmod.EngineError as e:
+        step("P-build-lock-race", "409" in str(getattr(e, "status", "")) or
+             "در جریان" in str(e), " EngineError: %s" % str(e)[:70])
+    for _ in range(180):
+        time.sleep(2)
+        if not androidmod.status("af14-and").get("running"):
+            break
+    shutil.rmtree(os.path.join(ROOT, "projects", "af14-and"), ignore_errors=True)
+    for dd in Path(ROOT, "exports", "android-builds", "af14-and").glob("*"):
+        shutil.rmtree(dd, ignore_errors=True)
+    try:
+        os.rmdir(os.path.join(ROOT, "exports", "android-builds", "af14-and"))
+    except OSError:
+        pass
+
+    # ══ P) بازیابی orphan از tasks.json ایزوله ══
+    tp = Path(ROOT, "data", "tasks.json")
+    snap = None
+    if tp.is_file():
+        snap = tp.read_text()
+    else:
+        tasks._save([])
+    # یک وظیفهٔ running یتیم + یک وظیفه با سقف پر
+    tasks._save([
+        {"id": "af14-orphan-a", "project": "af14-x", "type": "generate",
+         "state": "running", "claimed_by": "deadworker", "attempts": 0,
+         "max_attempts": 1, "created": "2026-11-14T00:00:00", "updated": "2026-11-14T00:00:00"},
+        {"id": "af14-orphan-b", "project": "af14-x", "type": "generate",
+         "state": "running", "claimed_by": "deadworker", "attempts": 1,
+         "max_attempts": 1, "created": "2026-11-14T00:00:00", "updated": "2026-11-14T00:00:00"},
+    ])
+    rec = tasks.recover_orphans()
+    byid = {r["id"]: r for r in rec}
+    st_a = tasks.stats()
+    step("P-orphan-recovered", byid.get("af14-orphan-a", {}).get("state") == "queued"
+         and "بازیابی" in (byid.get("af14-orphan-a", {}).get("error") or ""),
+         str({k: v.get("state") for k, v in byid.items()}))
+    step("P-orphan-exhausted-failed", byid.get("af14-orphan-b", {}).get("state") == "failed",
+         "سقف تلاش پر → failed صادقانه")
+    stt = tasks.stats()
+    step("P-orphan-no-fake-success", stt.get("running", 0) == 0, str(stt))
+    if snap is not None:
+        tp.write_text(snap)          # بازگردانی وضعیت واقعی کاربر
+    else:
+        tp.write_text("[]")
+
+    # ══ F) RAM guard (بدون فشار عمدی) ══
+    mem = orch._mem_available_mb()
+    real = None
+    for line in open("/proc/meminfo"):
+        if line.startswith("MemAvailable:"):
+            real = int(line.split()[1]) / 1024.0
+    st = orch.status()
+    step("F-ram-guard-real-reporting", abs(mem - real) < 1.0
+         and st.get("min_required_mb") == 450
+         and st.get("memory_available_mb") is not None,
+         "reported=%.0fMB real=%.0fMB floor=%s" % (mem, real,
+                                                   st.get("min_required_mb")))
+    step("F-ram-guard-floor-set", orch.MIN_AVAIL_MB == 450,
+         "کارگر زیر 450MB ادعا نمی‌کند (کد) — فشار واقعی اجرا نشد")
+
+    # ══ X) خطای provider صادقانه (بدون هزینهٔ مدل) ══
+    try:
+        oc.state("af14-bogus-session-id")
+        step("X-provider-error-honest", False, "نشست ناموجود جواب داد!")
+    except oc.OcError as e:
+        step("X-provider-error-honest", True, "OcError: %s" % str(e)[:60])
+
+    # ══ X) export خراب = شکست کنترل‌شده؛ بقیه سالم ══
+    shutil.rmtree(os.path.join(ROOT, "projects", "af14-broken"), ignore_errors=True)
+    shutil.copytree(os.path.join(ROOT, "projects", "af01-timecheck"),
+                    os.path.join(ROOT, "projects", "af14-broken"))
+    bp = Path(ROOT, "projects", "af14-broken", "meta.json")
+    bp.write_text("{ corrupted json !!!")
+    try:
+        rel.build_release("af14-broken")
+        step("X-export-corrupt-controlled", False, "متا خراب بسته تولید کرد!")
+    except Exception as e:      # noqa: BLE001 — شکست کنترل‌شده (بدون بستهٔ جعلی)
+        step("X-export-corrupt-controlled", True,
+             "%s: %s" % (type(e).__name__, str(e)[:60]))
+    shutil.rmtree(os.path.join(ROOT, "projects", "af14-broken"), ignore_errors=True)
+    shutil.copytree(os.path.join(ROOT, "projects", "af01-timecheck"),
+                    os.path.join(ROOT, "projects", "af14-ok"))
+    r2 = rel.build_release("af14-ok")
+    step("X-isolation-other-project-ok", r2["ok"], r2["name"])
+    try:
+        rel.build_release("af14-nonexistent")
+        step("X-export-missing-controlled", False, "پروژهٔ ناموجود بسته داد!")
+    except FileNotFoundError:
+        step("X-export-missing-controlled", True)
+    shutil.rmtree(os.path.join(ROOT, "projects", "af14-ok"), ignore_errors=True)
+    os.remove(r2["path"])
+
+    # ══ X) deploy zip خراب → پیام تمیز (رگرسیون AF-10) ══
+    # _check_release مسیر را پیش از بررسی zip کنترل می‌کند: zip باید داخل
+    # exports/ با نام قانونی <project>-release-*.zip باشد؛ از پروژهٔ واقعی
+    # af14-sec (فیکسچر بخش S) استفاده می‌کنیم.
+    cz = os.path.join(ROOT, "exports", "af14-sec-release-corrupt.zip")
+    with open(cz, "wb") as f:
+        f.write(b"PK\x03\x04" + b"\x00" * 40)   # zip بریده
+    try:
+        dep._check_release("af14-sec", cz)
+        step("X-deploy-corrupt-clean", False, "قبول شد!")
+    except dep.DeployError as e:
+        step("X-deploy-corrupt-clean", "ناخوانا" in str(e) or "خراب" in str(e),
+             str(e)[:80])
+    finally:
+        os.remove(cz)
+
+    # ══ X) لاگ‌ها: رمز کاشته‌شده نباید در لاگ‌ها باشد ══
+    leak = []
+    for lf in ("server.log", "error.log", "stdout.log"):
+        lp = Path(ROOT, "logs", lf)
+        if lp.is_file():
+            tail = lp.read_text(encoding="utf-8", errors="replace")[-200000:]
+            for needle in ("af14secret12345", "af14pass98765"):
+                if needle in tail:
+                    leak.append(lf + ":" + needle)
+    step("X-logs-no-secrets", not leak, leak or "no leak in server/error/stdout")
+finally:
+    import glob as g
+    for p in g.glob(os.path.join(ROOT, "projects", "af14-*")):
+        shutil.rmtree(p, ignore_errors=True)
+    for z in g.glob(os.path.join(ROOT, "exports", "af14-*.zip")):
+        os.remove(z)
+    tsk = Path(ROOT, "data", "tasks.json")
+    try:
+        cur = json.loads(tsk.read_text())
+        if any(str(t.get("id", "")).startswith("af14-") for t in cur):
+            tsk.write_text(json.dumps([t for t in cur
+                                       if not str(t.get("id", "")).startswith("af14-")],
+                                      ensure_ascii=False, indent=1))
+    except Exception:
+        pass
+print("AF14-PY %s" % ("ALL-OK" if all(o for _, o in results) else "HAS-FAIL"))
+EOF
+)
+echo "$OUT" | grep "^STEP"
+echo
+echo "$OUT" | grep "^AF14-PY"
+
+echo "== R) پاک‌سازی + رگرسیون =="
+pauth -fsS -m 15 -X POST http://127.0.0.1:8580/api/factory/delete \
+  -H 'Content-Type: application/json' -d '{"project":"af14-auth","confirm":true}' \
+  -o /dev/null 2>/dev/null || true
+pauth -fsS -m 15 -X POST http://127.0.0.1:8580/api/factory/delete \
+  -H 'Content-Type: application/json' -d '{"project":"af14-sec","confirm":true}' \
+  -o /dev/null 2>/dev/null || true
+# نام با فاصله: glob af14-* نمی‌گیرد — حذف صریح (API و پوشه)
+pauth -fsS -m 15 -X POST http://127.0.0.1:8580/api/factory/delete \
+  -H 'Content-Type: application/json' -d '{"project":"af14 spaced","confirm":true}' \
+  -o /dev/null 2>/dev/null || true
+rm -rf "$ROOT/projects/af14 spaced" "projects/af14 bad name"
+LEFT=$(ls "$ROOT/projects" 2>/dev/null | grep -ci "af14"; ls "$ROOT/exports" 2>/dev/null | grep -c "^af14-")
+checkeq "R-بدون باقی‌ماندهٔ af14" "0
+0" "$LEFT"
+R07=$(bash "$ROOT/scripts/ai-factory-test-af07" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af07 (امنیت)" "PASS=36 FAIL=0" "$R07"
+R11=$(bash "$ROOT/scripts/ai-factory-test-af11" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-رگرسیون af11" "PASS=7 FAIL=0" "$R11"
+checkeq "R-پنل سالم (بعد)" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK || echo FAIL)"
+
+nt "امتناع واقعی worker در کمبود RAM (نیازمند فشار واقعی حافظه — طبق محدودیت مأموریت اجرا نشد؛ منطق کد و گزارش status بررسی شد)"
+nt "رفتار orchestrator با کارگر دوم هم‌زمان (P7-4) — بدون هزینهٔ مدل واقعی قابل اثبات نیست"
+
+echo
+echo "════════ AF-14 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL NOT-TESTED=$NT"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN (بدون احتساب NOT-TESTED)"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

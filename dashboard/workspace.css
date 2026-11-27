@@ -1,0 +1,347 @@
+/* AI Workspace v0.4.0 — حرفه‌ای، فارسی/RTL، موبایل‌فرست.
+   این استایل additive است: صفحه‌های دیگر همچنان از style.css استفاده می‌کنند. */
+
+:root {
+  --wsbg: #0b101b;
+  --wspanel: #131a29;
+  --wspanel2: #0f1624;
+  --wsborder: #232c3f;
+  --wsaccent: #5ea8ff;
+  --wsok: #3ddc84;
+  --wswarn: #ffb74d;
+  --wsbad: #ff6b6b;
+  --wsmuted: #93a0b8;
+  --wstext: #e9eef7;
+  --wsradius: 14px;
+}
+
+body.ws {
+  background:
+    radial-gradient(1200px 500px at 80% -10%, rgba(94, 168, 255, .07), transparent),
+    radial-gradient(900px 400px at 10% 110%, rgba(61, 220, 132, .05), transparent),
+    var(--wsbg);
+  color: var(--wstext);
+  font-family: Vazirmatn, Tahoma, "Segoe UI", sans-serif;
+  padding-bottom: 2.4rem;
+  min-height: 100vh;
+}
+
+.ws-topnav { background: rgba(15, 22, 36, .92); border-bottom: 1px solid var(--wsborder); }
+.ws-nav { max-width: 900px; margin: 0 auto; display: flex; gap: 1rem; padding: .55rem 1rem; }
+.ws-nav .navlink { color: var(--wsmuted); text-decoration: none; font-size: .86rem; padding: .25rem .1rem; }
+.ws-nav .navlink.active { color: var(--wsaccent); font-weight: 700; border-bottom: 2px solid var(--wsaccent); }
+
+/* ═════════ نوار بالایی ═════════ */
+.ws-topbar {
+  max-width: 900px; margin: .8rem auto 0; padding: .8rem 1rem;
+  display: flex; flex-direction: column; gap: .55rem; align-items: flex-start;
+}
+.ws-topbar h1 { margin: 0; font-size: 1.25rem; letter-spacing: -.2px; }
+.ws-pills { display: flex; gap: .45rem; flex-wrap: wrap; }
+
+.wspill {
+  display: inline-flex; align-items: center; gap: .3rem;
+  padding: .28rem .65rem; border-radius: 999px; font-size: .78rem;
+  border: 1px solid var(--wsborder); background: var(--wspanel2);
+  color: var(--wsmuted); white-space: nowrap;
+}
+.wspill.ver { color: var(--wsaccent); border-color: var(--wsaccent); font-weight: 700; }
+.wspill.model { max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
+
+.st-idle  { color: var(--wsmuted); border-color: var(--wsborder); }
+.st-wait  { color: var(--wsaccent) !important; border-color: var(--wsaccent) !important; }
+.st-run   { color: var(--wswarn) !important; border-color: var(--wswarn) !important; }
+.st-ok    { color: var(--wsok) !important; border-color: var(--wsok) !important; }
+.st-bad   { color: var(--wsbad) !important; border-color: var(--wsbad) !important; }
+.st-off   { color: var(--wsmuted); border-color: var(--wsborder); }
+
+/* ═════════ نوار وضعیت دقیق ═════════ */
+.ws-statuscard {
+  max-width: 900px; margin: .7rem auto 0; padding: .7rem .9rem;
+  background: var(--wspanel2); border: 1px solid var(--wsborder);
+  border-radius: var(--wsradius);
+}
+.ws-statusrow { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.ws-statusrow .btn { margin-inline-start: auto; }
+.ws-stime, .ws-astime { color: var(--wsmuted); font-size: .78rem; }
+.ws-detail {
+  margin-top: .55rem; font-size: .82rem; color: var(--wstext);
+  background: #0c1322; border: 1px dashed var(--wsborder);
+  border-radius: 10px; padding: .55rem .7rem; white-space: pre-wrap;
+  word-break: break-word; max-height: 220px; overflow-y: auto;
+}
+.ws-warnrow {
+  margin-top: .55rem; font-size: .8rem; color: var(--wswarn);
+  border: 1px solid var(--wswarn); background: rgba(255, 183, 77, .08);
+  border-radius: 10px; padding: .45rem .7rem;
+}
+.ws-permbar {
+  margin-top: .55rem; font-size: .84rem; color: var(--wswarn);
+  border: 1px solid var(--wswarn); background: #241a06;
+  border-radius: 10px; padding: .55rem .7rem;
+}
+.ws-errbar {
+  margin-top: .55rem; font-size: .84rem; color: #ffb1b1;
+  border: 1px solid var(--wsbad); background: #26100f;
+  border-radius: 10px; padding: .55rem .7rem;
+  white-space: pre-wrap; word-break: break-word;
+}
+.ws-permbar .btn, .ws-errbar .btn { margin-top: .45rem; }
+
+/* ═════════ بدنه و پنل‌ها ═════════ */
+.ws-main { max-width: 900px; margin: .8rem auto 0; padding: 0 1rem; display: grid; gap: .9rem; }
+.wscard {
+  background: var(--wspanel); border: 1px solid var(--wsborder);
+  border-radius: var(--wsradius); padding: .95rem; margin: 0;
+}
+.wscard h2 { font-size: .95rem; margin: 0 0 .7rem; color: var(--wsaccent); }
+.ws-row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-bottom: .55rem; }
+.ws-row:last-child { margin-bottom: 0; }
+.ws-lb { color: var(--wsmuted); font-size: .82rem; min-width: 3.2rem; }
+.ws-row select { flex: 1 1 160px; min-width: 0; }
+.ws-note { color: var(--wsmuted); font-size: .78rem; margin-top: .3rem; white-space: pre-wrap; word-break: break-word; }
+
+/* ═════════ گفتگو ═════════ */
+.ws-chat {
+  display: flex; flex-direction: column; gap: .55rem;
+  max-height: 52vh; min-height: 160px; overflow-y: auto;
+  padding: .5rem .2rem; scroll-behavior: smooth; margin-bottom: .6rem;
+}
+.ws-chat::-webkit-scrollbar { width: 8px; }
+.ws-chat::-webkit-scrollbar-thumb { background: var(--wsborder); border-radius: 8px; }
+.bubble {
+  border: 1px solid var(--wsborder); border-radius: 12px; padding: .55rem .8rem;
+  max-width: 93%; white-space: pre-wrap; word-break: break-word; font-size: .9rem;
+  line-height: 1.65;
+}
+.bubble.user { align-self: flex-start; background: #14203a; border-color: #2b4470; }
+.bubble.assistant { align-self: flex-end; background: #101a14; }
+.bubble .meta { color: var(--wsmuted); font-size: .7rem; margin-top: .35rem; }
+.bubble details.reasoning {
+  color: var(--wsmuted); font-size: .76rem; margin-bottom: .3rem;
+  border: 1px dashed var(--wsborder); border-radius: 8px; padding: .3rem .45rem;
+}
+.bubble details.reasoning summary { cursor: pointer; color: var(--wswarn); }
+.bubble details.reasoning pre { white-space: pre-wrap; margin: .3rem 0 0; max-height: 180px; overflow: auto; }
+.bubble .toolline { color: var(--wsaccent); font-size: .76rem; font-family: monospace; direction: ltr; text-align: left; }
+.bubble .typing { color: var(--wswarn); font-size: .74rem; }
+
+/* ═══════════ UI-1: دکمهٔ کپی پیام دستیار ═══════════
+ * کوچک و کم‌رنگ در گوشهٔ پایانی پیام؛ هدف لمسی ≥30px برای موبایل */
+.bubble .msgfoot { display: flex; justify-content: flex-end; margin-top: .35rem; }
+/* AF-01: مُهر زمان پیام‌ها — کم‌حجم، خوانا در موبایل، سازگار با اعداد فارسی */
+.bubble .msgtime { color: var(--wsmuted); unicode-bidi: plaintext; white-space: nowrap; }
+.bubble.user .msgtime { color: #7d93bd; }
+.copybtn {
+  background: transparent; color: var(--wsmuted);
+  border: 1px solid var(--wsborder); border-radius: 8px;
+  font: inherit; font-size: .68rem; line-height: 1;
+  padding: .3rem .6rem; min-height: 30px; min-width: 68px;
+  cursor: pointer; opacity: .8; touch-action: manipulation;
+}
+.copybtn:hover, .copybtn:focus-visible {
+  opacity: 1; color: var(--wsaccent); border-color: var(--wsaccent);
+}
+.copybtn.copyok { color: var(--wsok); border-color: var(--wsok); opacity: 1; }
+.copybtn.copyerr { color: var(--wsbad); border-color: var(--wsbad); opacity: 1; }
+.info { color: var(--wsmuted); font-size: .84rem; }
+
+.ws-composer { display: flex; gap: .5rem; align-items: flex-end; }
+.ws-composer textarea {
+  flex: 1; resize: none; min-height: 52px; max-height: 180px;
+  background: var(--wspanel2); color: var(--wstext);
+  border: 1px solid var(--wsborder); border-radius: 10px;
+  padding: .6rem .7rem; font-family: inherit; font-size: .9rem;
+}
+.ws-composer .btn { height: fit-content; padding: .7rem 1.1rem; }
+.ws-usage { color: var(--wsmuted); font-size: .72rem; margin-top: .35rem; text-align: left; direction: ltr; }
+.toolspulse { animation: wsPulse 1.4s ease-in-out infinite; }
+@keyframes wsPulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+
+/* ═════════ ابزارها ═════════ */
+.ws-tabs { display: flex; gap: .35rem; overflow-x: auto; padding-bottom: .5rem; }
+.wtab {
+  background: var(--wspanel2); color: var(--wsmuted);
+  border: 1px solid var(--wsborder); border-radius: 999px;
+  padding: .32rem .8rem; font-size: .8rem; cursor: pointer; font-family: inherit;
+  white-space: nowrap;
+}
+.wtab.active { color: var(--wsaccent); border-color: var(--wsaccent); font-weight: 700; }
+
+.ws-filelist { list-style: none; padding: 0; margin: 0; max-height: 300px; overflow-y: auto; }
+.ws-filelist li {
+  display: flex; justify-content: space-between; align-items: center; gap: .5rem;
+  padding: .42rem .3rem; border-bottom: 1px dashed var(--wsborder); font-size: .84rem;
+}
+.ws-filelist li:last-child { border-bottom: 0; }
+.ws-filelist .fpath { font-family: monospace; direction: ltr; text-align: left; word-break: break-all; }
+.ws-filelist .fbtns { display: flex; gap: .3rem; }
+
+#editor {
+  width: 100%; min-height: 240px; font-family: monospace; font-size: .8rem;
+  direction: ltr; text-align: left; background: #0c1322; color: var(--wstext);
+  border: 1px solid var(--wsborder); border-radius: 10px; padding: .6rem; resize: vertical;
+}
+.ws-plain {
+  white-space: pre-wrap; word-break: break-word; font-size: .78rem;
+  max-height: 40vh; overflow-y: auto; border: 1px dashed var(--wsborder);
+  border-radius: 10px; padding: .55rem; background: #0c1322; color: var(--wsmuted);
+  direction: ltr; text-align: left;
+}
+#logsBox {
+  background: #0c1322; border: 1px solid var(--wsborder); border-radius: 10px;
+  padding: .6rem; max-height: 300px; overflow: auto; font-size: .74rem;
+  direction: ltr; text-align: left; color: var(--wsmuted); white-space: pre-wrap;
+}
+
+/* ═════════ واکنش‌گرایی موبایل ═════════ */
+@media (max-width: 560px) {
+  .ws-topbar h1 { font-size: 1.05rem; }
+  .wspill { font-size: .72rem; padding: .22rem .5rem; }
+  .wspill.model { max-width: 130px; }
+  .ws-statusrow .btn { margin-inline-start: 0; }
+  .ws-chat { max-height: 46vh; }
+  .bubble { max-width: 96%; font-size: .86rem; }
+  .ws-composer { flex-direction: row; }
+  .ws-composer .btn { padding: .55rem .8rem; }
+}
+
+footer { text-align: center; color: var(--wsmuted); font-size: .76rem; margin-top: 1.6rem; }
+
+/* ═══ P5: live preview + mobile-first polish ═══ */
+.ws-preview {
+  width: 100%; height: 60vh; min-height: 320px;
+  border: 1px solid var(--wsborder); border-radius: 10px; background: #fff;
+}
+#prevNote a { color: inherit; }
+.ws-filelist .fd summary { cursor: pointer; user-select: none; padding-block: .2rem; }
+.ws-filelist .fd ul { list-style: none; padding-inline-start: .9rem; margin: 0; }
+@media (max-width: 560px) {
+  .ws-preview { height: 52vh; min-height: 260px; }
+  .ws-filelist .fbtns button { padding: .4rem .6rem; }   /* touch targets */
+  #editor { min-height: 200px; font-size: .78rem; }
+  #newFileRel, #editPath { min-width: 0; }
+  .ws-main { padding-inline: .6rem; }
+}
+
+/* ═══════════════ AF-23: Markdown blocks in chat ═══════════════ */
+.bubble .mdh { font-weight: 700; margin: .45rem 0 .2rem; }
+.bubble .mdh1 { font-size: 1.12rem; }
+.bubble .mdh2 { font-size: 1.08rem; }
+.bubble .mdh3, .bubble .mdh4 { font-size: 1rem; }
+.bubble p { margin: .25rem 0; }
+.bubble .mdlist { margin: .25rem 0; padding-inline-start: 1.2rem; }
+.bubble .mdlist li { margin: .15rem 0; }
+.bubble .mdquote {
+  border-inline-start: 3px solid var(--accent, #7aa2f7);
+  padding: .15rem .6rem; margin: .3rem 0; opacity: .92;
+}
+.bubble .mdtable {
+  border-collapse: collapse; margin: .4rem 0; font-size: .88rem;
+  max-width: 100%; display: block; overflow-x: auto;
+}
+.bubble .mdtable th, .bubble .mdtable td {
+  border: 1px solid var(--line, #444); padding: .25rem .55rem; text-align: start;
+}
+.bubble .mdtable th { background: rgba(127,127,127,.15); }
+.bubble .mdcode {
+  margin: .4rem 0; border-radius: 8px; overflow: hidden;
+  background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.08);
+}
+.bubble .mdcodebar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: .15rem .55rem; background: rgba(255,255,255,.06);
+  font-size: .74rem; direction: ltr;
+}
+.bubble .mdlang { opacity: .75; font-family: monospace; }
+.bubble .mdcopy {
+  border: 1px solid rgba(255,255,255,.18); background: transparent;
+  color: inherit; border-radius: 6px; font-size: .72rem; padding: .05rem .45rem;
+  cursor: pointer;
+}
+.bubble .mdcopy:hover { background: rgba(255,255,255,.12); }
+.bubble .mdcopy.copyok { color: #7ad97a; }
+.bubble .mdcopy.copyerr { color: #ff8f8f; }
+.bubble .mdcode pre {
+  margin: 0; padding: .5rem .6rem; overflow-x: auto; direction: ltr;
+  text-align: left; font-size: .84rem; line-height: 1.45;
+}
+.bubble .mdcode pre code { font-family: ui-monospace, Menlo, monospace; }
+.bubble .mdinline {
+  background: rgba(0,0,0,.25); padding: .05rem .3rem; border-radius: 4px;
+  font-family: ui-monospace, Menlo, monospace; font-size: .88em;
+}
+
+/* ═══════════════ AF-23: structured error diagnosis ═══════════════ */
+.ws-errbar .ediag { display: flex; flex-direction: column; gap: .35rem; }
+.ws-errbar .ediag-reason { font-weight: 700; }
+.ws-errbar .edag-conf {
+  font-weight: 400; font-size: .78rem; opacity: .8;
+  border: 1px solid rgba(255,180,80,.5); border-radius: 6px; padding: 0 .35rem;
+}
+.ws-errbar .ediag-grid {
+  display: grid; grid-template-columns: auto 1fr; gap: .1rem .6rem;
+  font-size: .82rem; opacity: .95;
+}
+.ws-errbar .ediag-trace { direction: ltr; font-family: ui-monospace, monospace; }
+.ws-errbar .ediag-sug { font-size: .85rem; }
+.ws-errbar .ediag-tech summary { cursor: pointer; font-size: .8rem; opacity: .8; }
+.ws-errbar .ediag-tech pre {
+  max-height: 8rem; overflow: auto; direction: ltr; text-align: left;
+  font-size: .74rem; white-space: pre-wrap; word-break: break-word;
+  background: rgba(0,0,0,.25); padding: .35rem .5rem; border-radius: 6px;
+}
+
+/* ═════════ AF-51: reasoning + live interaction center ═════════ */
+.ws-row #reasonSel { max-width: 9rem; }
+#reasonBadge { font-size: .72rem; padding: .1rem .4rem; }
+.ws-interactions { display: flex; flex-direction: column; gap: .6rem; }
+.ws-interactions .info { color: var(--wsmuted); font-size: .86rem; padding: .5rem 0; }
+.ask-item {
+  border: 1px solid var(--wsborder); border-radius: 10px; padding: .65rem .75rem;
+  background: rgba(255,255,255,.025); display: flex; flex-direction: column; gap: .4rem;
+}
+.ask-item.open { border-right: 3px solid var(--wswarn); }
+.ask-item.answered { border-right: 3px solid var(--wsok); opacity: .75; }
+.ask-item.cancelled { border-right: 3px solid var(--wsbad); opacity: .65; }
+.ask-head { display: flex; gap: .45rem; flex-wrap: wrap; align-items: center; font-size: .8rem; }
+.ask-head strong { font-size: .86rem; }
+.ask-head .muted { color: var(--wsmuted); }
+.ask-q { font-size: .92rem; line-height: 1.7; }
+.ask-why { font-size: .8rem; color: var(--wswarn); }
+.ask-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.ask-actions input {
+  flex: 1 1 10rem; min-width: 8rem; background: var(--wspanel2); color: var(--wstext);
+  border: 1px solid var(--wsborder); border-radius: 8px; padding: .45rem .6rem; font: inherit;
+}
+.ask-msg { font-size: .78rem; color: var(--wsmuted); }
+@media (max-width: 640px) {
+  .ws-row { flex-wrap: wrap; }
+  .ask-actions { flex-direction: column; }
+  .ask-actions input { width: 100%; }
+}
+
+/* ═══ AF-52: mobile-first hierarchy (no feature removed) ═══ */
+.ws-summary {
+  cursor: pointer; font-weight: 700; color: var(--wsaccent); font-size: .95rem;
+  padding: .2rem 0 .6rem; list-style: none; display: flex; gap: .5rem; align-items: center;
+}
+.ws-summary::-webkit-details-marker { display: none; }
+.ws-summary::after { content: "▾"; font-size: .8rem; margin-inline-start: auto; }
+details#cfgDetails:not([open]) .ws-summary::after { content: "▸"; }
+.ws-summary .muted { color: var(--wsmuted); font-weight: 400; font-size: .78rem; }
+@media (max-width: 720px) {
+  .ws-main { display: flex; flex-direction: column; }
+  #chatCard { order: 1; }
+  #interactCard { order: 2; }
+  #cfgCard { order: 3; }
+  #toolsCard { order: 4; }
+  .ws-composer {
+    position: sticky; bottom: 0; z-index: 5; background: var(--wspanel);
+    padding: .5rem; border-radius: 12px;
+  }
+  .ws-composer textarea { min-height: 3.2rem; }
+  .ws-composer .btn { min-height: 3.2rem; }
+  .ask-item { padding: .75rem; }
+  .ask-actions .btn { min-height: 2.8rem; }
+}

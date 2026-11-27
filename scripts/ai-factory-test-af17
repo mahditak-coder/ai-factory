@@ -1,0 +1,335 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af17 — ممیزی توان واقعی محصول‌سازی (بدون تغییر کد کارخانه)
+#   فیکسچرهای ایزوله af17-* · بدون مدل · بدون نصب وابستگی خارجی
+#   A) چرخهٔ تحویل مستقل: testrun → build_release → verify → خارج از projects/
+#      اجرا با run.sh → رفتار واقعی /api/health + CRUD → MANIFEST.sha256
+#   B) تحویل وابستگی (ساختاری): requirements.txt → release.json/README (بدون نصب)
+#   C) استقلال پروژه‌ها + بدون فایل کارخانه در بسته + export/backup
+#   D) محافظت منابع گوشی: RAM guard + سقف تلاش (CODE-ONLY + شواهد AF-14)
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+PASS=0; FAIL=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+
+echo "════════ AF-17 — ممیزی توان محصول‌سازی ════════"
+checkeq "پنل سالم (پیش)" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK || echo FAIL)"
+MEMHASH_BEFORE=$(sha256sum "$ROOT/data/memory.json" | cut -d' ' -f1)
+checkeq "hash حافظهٔ واقعی (قبل)" "64" "${#MEMHASH_BEFORE}"
+
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import json, os, shutil, socket, subprocess, sys, tempfile, time
+import urllib.request, urllib.error, zipfile
+from pathlib import Path
+sys.path.insert(0, ".")
+import core.config as config
+from core import paths, factory, runner, typetests, release, exporter
+
+ROOT = str(config.PROJECT_ROOT)
+TMP = os.environ["TMP"]
+results = []
+def step(name, ok, detail=""):
+    results.append(ok)
+    print("STEP %s %s %s" % ("OK" if ok else "FAIL", name, str(detail)[:160]))
+
+def mk(name, ptype, with_req=False):
+    d = Path(ROOT, "projects", name)
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps(
+        {"name": name, "type": ptype, "description": "AF-17 audit",
+         "created": "2026-11-14T00:00:00", "modified": "2026-11-14T00:00:00"},
+        ensure_ascii=False), encoding="utf-8")
+    return d
+
+SERVER = '''#!/usr/bin/env python3
+"""standalone API product (stdlib-only) — AF-17 audit fixture."""
+import json, os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+ITEMS = {}
+
+class H(BaseHTTPRequestHandler):
+    def _j(self, code, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def do_GET(self):
+        p = self.path
+        if p == "/api/health":
+            return self._j(200, {"ok": True})
+        if p == "/api/items":
+            return self._j(200, list(ITEMS.values()))
+        if p.startswith("/api/items/"):
+            it = ITEMS.get(p.split("/")[-1])
+            return self._j(200, it) if it else self._j(404, {"error": "not found"})
+        self._j(404, {"error": "not found"})
+    def do_POST(self):
+        if self.path != "/api/items":
+            return self._j(404, {"error": "not found"})
+        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            data = json.loads(self.rfile.read(n) or b"null")
+        except ValueError:
+            data = None
+        if not isinstance(data, dict) or not str(data.get("name") or "").strip():
+            return self._j(400, {"error": "bad request"})
+        iid = "i%d" % (len(ITEMS) + 1)
+        ITEMS[iid] = {"id": iid, "name": data["name"]}
+        return self._j(201, ITEMS[iid])
+    def do_DELETE(self):
+        iid = self.path.split("/")[-1]
+        if iid in ITEMS:
+            ITEMS.pop(iid)
+            return self._j(204, None) if False else self._j(200, {"ok": True})
+        return self._j(404, {"error": "not found"})
+    def do_PUT(self):
+        iid = self.path.split("/")[-1]
+        if iid not in ITEMS:
+            return self._j(404, {"error": "not found"})
+        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            data = json.loads(self.rfile.read(n) or b"null")
+        except ValueError:
+            data = None
+        if not isinstance(data, dict) or not str(data.get("name") or "").strip():
+            return self._j(400, {"error": "bad request"})
+        ITEMS[iid]["name"] = data["name"]
+        return self._j(200, ITEMS[iid])
+    def log_message(self, *a):
+        pass
+
+def main():
+    HTTPServer(("127.0.0.1", int(os.environ.get("PORT", "8080"))), H).serve_forever()
+
+if __name__ == "__main__":
+    main()
+'''
+
+TESTS = '''import json, threading, unittest
+try:
+    import totallyaf17fake  # noqa — surveyed as missing on purpose
+except ImportError:
+    pass
+import urllib.request, urllib.error
+from http.server import HTTPServer
+import server  # the product module
+
+SRV = HTTPServer(("127.0.0.1", 0), server.H)
+BASE = "http://127.0.0.1:%d" % SRV.server_address[1]
+threading.Thread(target=SRV.serve_forever, daemon=True).start()
+
+class T(unittest.TestCase):
+    def test_health(self):
+        self.assertTrue(json.load(urllib.request.urlopen(BASE + "/api/health"))["ok"])
+    def test_crud(self):
+        r = urllib.request.urlopen(urllib.request.Request(
+            BASE + "/api/items", method="POST",
+            data=json.dumps({"name": "x"}).encode(),
+            headers={"Content-Type": "application/json"}))
+        it = json.load(r); self.assertIn("id", it)
+        self.assertIsInstance(json.load(urllib.request.urlopen(BASE + "/api/items")), list)
+        r2 = urllib.request.urlopen(urllib.request.Request(
+            BASE + "/api/items/" + it["id"], method="PUT",
+            data=json.dumps({"name": "y"}).encode(),
+            headers={"Content-Type": "application/json"}))
+        self.assertEqual(json.load(r2)["name"], "y")
+        self.assertEqual(urllib.request.urlopen(
+            BASE + "/api/items/" + it["id"]).status, 200)
+        self.assertEqual(urllib.request.urlopen(urllib.request.Request(
+            BASE + "/api/items/" + it["id"], method="DELETE")).status, 200)
+    def test_bad_post(self):
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                BASE + "/api/items", method="POST", data=b"null",
+                headers={"Content-Type": "application/json"}))
+            self.fail("should 400")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 400)
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+
+try:
+    # ── فیکسچر API واقعی (قرارداد api: stdlib، /api/health، CRUD) ──
+    d = mk("af17-rel", "api")
+    (d / "server.py").write_text(SERVER, encoding="utf-8")
+    tdir = d / "tests"; tdir.mkdir()
+    (tdir / "test_api.py").write_text(TESTS, encoding="utf-8")
+
+    # A1) آزمون ترکیبی واقعی (خود + قرارداد نوع) روی فیکسچر
+    runner.start("af17-rel")
+    try:
+        tr = typetests.run("af17-rel")
+        step("A1-typetests-contract-green",
+             tr.get("ran") and tr.get("ok") and not tr.get("no_coverage"),
+             json.dumps(tr.get("errors") or [])[:100])
+        ow = runner.run_tests("af17-rel")
+        step("A1-own-unittest-green",
+             ow.get("ran") and ow.get("ok"), ow.get("note", "")[:80])
+    finally:
+        runner.stop("af17-rel")
+
+    # A2) ساخت انتشار + اعتبارسنجی ساختاری
+    rel = release.build_release("af17-rel")
+    step("A2-release-build-ok", rel["ok"] and rel["integrity_bad_file"] is None
+         and rel["verify"]["ok"],
+         "files=%d sha=%s" % (rel["files"], rel["sha256"][:12]))
+
+    # A3) استخراج بیرون از projects/ + ساختار بستهٔ تحویل
+    ext = Path(tempfile.mkdtemp(prefix="af17-ext-", dir=TMP))
+    with zipfile.ZipFile(rel["path"]) as zf:
+        zf.extractall(ext)
+    pdir = ext / "af17-rel"
+    need = ["release.json", "README.md", "run.sh", "run.bat",
+            "MANIFEST.sha256", "server.py"]
+    have = [f for f in need if (pdir / f).is_file() and (pdir / f).stat().st_size > 0]
+    step("A3-delivery-files-complete", len(have) == len(need),
+         "missing=%s" % [f for f in need if f not in have])
+    step("A3-no-tests-no-factory-files",
+         rel["verify"]["checks"].get("no_factory_or_secret_files") is True
+         and not any("test" in p.name for p in pdir.iterdir()),
+         "آزمون‌ها طبق طراحی تحویل داده نمی‌شوند (quality block اعلامی)")
+    man = subprocess.run(["sha256sum", "-c", "MANIFEST.sha256"], cwd=str(pdir),
+                         capture_output=True, text=True)
+    step("A3-manifest-verifies", man.returncode == 0
+         and "OK" in man.stdout, man.stdout[-80:])
+
+    # A4) اجرای مستقل واقعی بیرون از کارخانه — با run.sh تحویل‌شده
+    port = 8744
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", port))
+    except OSError:
+        port = 8745
+    finally:
+        s.close()
+    env = dict(os.environ, PORT=str(port))
+    proc = subprocess.Popen(["sh", "run.sh"], cwd=str(pdir), env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        base = "http://127.0.0.1:%d" % port
+        alive = False
+        for _ in range(20):
+            try:
+                if urllib.request.urlopen(base + "/api/health",
+                                          timeout=1.5).status == 200:
+                    alive = True; break
+            except OSError:
+                time.sleep(0.5)
+        step("A4-standalone-boots", alive, "sh run.sh خارج از projects/")
+        if alive:
+            ok_h = json.load(urllib.request.urlopen(base + "/api/health"))["ok"] is True
+            step("A4-health-json-ok", ok_h)
+            r = urllib.request.urlopen(urllib.request.Request(
+                base + "/api/items", method="POST",
+                data=json.dumps({"name": "تست"}).encode(),
+                headers={"Content-Type": "application/json"}), timeout=4)
+            it = json.load(r); has_id = "id" in it
+            lst = json.load(urllib.request.urlopen(base + "/api/items"))
+            got = urllib.request.urlopen(base + "/api/items/" + it["id"]).status
+            d1 = urllib.request.urlopen(urllib.request.Request(
+                base + "/api/items/" + it["id"], method="DELETE"), timeout=4).status
+            gone = 0
+            try:
+                urllib.request.urlopen(base + "/api/items/" + it["id"], timeout=4)
+            except urllib.error.HTTPError as e:
+                gone = e.code
+            step("A4-crud-real", has_id and isinstance(lst, list)
+                 and got == 200 and d1 == 200 and gone == 404,
+                 "POST→id GET→%d DELETE→%d gone→%d" % (got, d1, gone))
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    # A5) export بستهٔ ZIP سالم
+    ex = exporter.export("af17-rel")
+    zok = False
+    if ex.get("path"):
+        with zipfile.ZipFile(ex["path"]) as zf:
+            zok = zf.testzip() is None
+    step("A5-export-zip-integrity", zok and ex.get("files", 0) > 0,
+         "files=%s" % ex.get("files"))
+
+    # B) تحویل وابستگی — ساختاری (بدون نصب؛ ممنوعیت مأموریت)
+    d2 = mk("af17-dep", "api")
+    (d2 / "server.py").write_text(SERVER, encoding="utf-8")
+    (d2 / "requirements.txt").write_text("pyyaml>=2\n", encoding="utf-8")
+    tdir2 = d2 / "tests"; tdir2.mkdir()
+    (tdir2 / "test_api.py").write_text(TESTS, encoding="utf-8")
+    rel2 = release.build_release("af17-dep")
+    rj = {}
+    with zipfile.ZipFile(rel2["path"]) as zf:
+        rj = json.loads(zf.read("af17-dep/release.json").decode())
+        rd = zf.read("af17-dep/README.md").decode()
+    step("B-deps-declared-in-release",
+         "pyyaml" in (rj.get("technology", {}).get("deps") or [])
+         and "pip install pyyaml" in rd,
+         "release.json.deps=%s" % rj.get("technology", {}).get("deps"))
+    from core import deps
+    sv = deps.survey("af17-dep")
+    step("B-survey-identifies-missing",
+         "totallyaf17fake" in ",".join(sv.get("missing_imports") or []),
+         "بدون نصب — فقط شناسایی")
+
+    # C) استقلال پروژه‌ها: کد فیکسچر صفر ارجاع به AI Factory
+    src = (d / "server.py").read_text()
+    step("C-no-factory-reference-in-product",
+         "AI Factory" not in src and "core." not in src
+         and "ai-factory" not in src.lower().replace("ai-factory audit", ""),
+         "محصول صرفاً stdlib")
+
+    # D) محافظت منابع (CODE-ONLY — شواهد رفتاری: AF-14)
+    import re
+    orch = Path("core/orchestrator.py").read_text()
+    tasks = Path("core/tasks.py").read_text()
+    step("D-ram-guard-code", "_mem_available_mb" in orch
+         and "MIN_AVAIL_MB" in orch and "low memory" in orch,
+         "worker قبل از claim حافظه را می‌سنجد")
+    step("D-retry-cap-code", "max_attempts" in tasks
+         and "attempts" in tasks, "سقف تلاش در صف")
+finally:
+    import glob as g
+    for p in g.glob(os.path.join(ROOT, "projects", "af17-*")):
+        shutil.rmtree(p, ignore_errors=True)
+    for p in g.glob(os.path.join(config.EXPORTS_DIR, "af17-*")):
+        try: os.remove(p)
+        except OSError: pass
+    for p in g.glob(os.path.join(TMP, "af17-ext-*")):
+        shutil.rmtree(p, ignore_errors=True)
+    print("AF17-PY %s" % ("ALL-OK" if all(results) else "HAS-FAIL"))
+EOF
+)
+echo "$OUT" | grep "^STEP"
+echo
+echo "$OUT" | grep "^AF17-PY"
+checkeq "AF17-PY همهٔ گام‌ها OK" "ALL-OK" "$(echo "$OUT" | grep '^AF17-PY' | cut -d' ' -f2)"
+
+echo "== R) وضعیت پایانی =="
+LEFT_P=$(ls "$ROOT/projects" 2>/dev/null | grep -c "^af17-")
+checkeq "R-بدون باقی‌ماندهٔ فیکسچر" "0" "$LEFT_P"
+MEMHASH_AFTER=$(sha256sum "$ROOT/data/memory.json" | cut -d' ' -f1)
+checkeq "R-data/memory.json واقعی دست‌نخورده" "$MEMHASH_BEFORE" "$MEMHASH_AFTER"
+checkeq "R-پنل سالم (بعد)" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health >/dev/null 2>&1 && echo OK || echo FAIL)"
+MOALEMAN=$(ls "$ROOT/projects" | grep -c "معلم\|moaleman")
+checkeq "R-«معلم من» موجود نیست (مطابق AF-16) و هیچ پروژهٔ کاربری ساخته/حذف نشد" "0" "$MOALEMAN"
+GITDIRTY=$(cd "$ROOT" && git status --porcelain | grep -v "^?? scripts/ai-factory-test-af17" | grep -v "^?? exports/" | wc -l)
+checkeq "R-بدون تغییر کد کارخانه" "0" "$GITDIRTY"
+
+echo
+echo "════════ AF-17 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

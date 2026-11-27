@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# ai-factory-test-p8-1 — REAL acceptance for the PWA behavioural contract.
+#   Part A: the scaffolded template passes the REAL contract (green)
+#   Part B: negative tests — each PWA requirement is REALLY enforced on a
+#           throwaway project (corrupt manifest / missing icon / fake icon /
+#           missing SW / missing registration → contract red, exact kind)
+#   Part C: back to green + cleanup
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/p8"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+TS=$(date +%H%M%S); PROJ="p8x-ct-$TS"
+# probe: REAL engine testrun → "ok|<kinds>" or "red|<kinds>"
+probe() {
+    curl -s -m 60 -X POST -d "{\"project\":\"$PROJ\"}" \
+        -H 'Content-Type: application/json' "$BASE/api/factory/testrun" \
+        | python3 -c "
+import json,sys
+r = json.load(sys.stdin)
+c = r.get('contract') or {}
+kinds = ','.join(sorted({e.get('kind','') for e in (c.get('errors') or [])})[:4])
+print(('ok' if r.get('ok') else 'red') + '|' + kinds)"
+}
+
+curl -s -m 20 -o /dev/null -X POST \
+    -d "{\"name\":\"$PROJ\",\"type\":\"pwa\",\"description\":\"p8-1 contract\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/projects"
+D="$ROOT/projects/$PROJ"
+B="$T/p8/$PROJ"; mkdir -p "$B/icons"
+cp -p "$D/manifest.json" "$D/sw.js" "$D/app.js" "$B/"
+cp -p "$D/icons/icon-512.png" "$B/icons/"
+
+echo "════ P8-1/A — قالب scaffold‌شده باید سبز باشد"
+R=$(probe); check "P8-1-A1 قرارداد PWA روی قالب استاندارد: سبز" "ok|" "$R"
+
+echo "════ P8-1/B — اجرای واقعی هر الزام قرارداد"
+# B1: corrupt manifest JSON
+printf 'not-json{{' > "$D/manifest.json"
+check "P8-1-B1 manifest خراب → قرمز manifest-invalid" "red|manifest-invalid" "$(probe)"
+cp -p "$B/manifest.json" "$D/manifest.json"
+
+# B2: remove the 512 icon file while the manifest still claims it
+mv "$D/icons/icon-512.png" "$B/icons/icon-512.parked"
+check "P8-1-B2 آیکون 512 غایب → قرمز icon-file-missing" "red|icon-file-missing" "$(probe)"
+mv "$B/icons/icon-512.parked" "$D/icons/icon-512.png"
+
+# B3: fake icon — a 192 real-PNG renamed as 512 (IHDR dims mismatch)
+cp -p "$D/icons/icon-192.png" "$D/icons/icon-512.png"
+check "P8-1-B3 آیکون دروغین (ابعاد غلط) → قرمز icon-invalid" "red|icon-invalid" "$(probe)"
+cp -p "$B/icons/icon-512.png" "$D/icons/icon-512.png"
+
+# B4: remove the service worker file
+mv "$D/sw.js" "$B/sw.js.parked"
+check "P8-1-B4 sw.js غایب → قرمز sw-missing" "red|sw-missing" "$(probe)"
+mv "$B/sw.js.parked" "$D/sw.js"
+
+# B5: neutralize the registration call in app.js
+python3 - "$D" <<'PYEOF'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1]) / "app.js"
+p.write_text(p.read_text(encoding="utf-8").replace(
+    "navigator.serviceWorker.register", "navigator.__noop__"), encoding="utf-8")
+PYEOF
+check "P8-1-B5 بدون ثبت SW → قرمز sw-not-registered" "red|sw-not-registered" "$(probe)"
+cp -p "$B/app.js" "$D/app.js"
+
+echo "════ P8-1/C — بازگشت به سبز و پاک‌سازی"
+check "P8-1-C1 پس از بازگردانی همهٔ فایل‌ها: سبز" "ok|" "$(probe)"
+
+DL=$(curl -s -m 30 -o /dev/null -w '%{http_code}' -X POST \
+    -d "{\"project\":\"$PROJ\",\"confirm\":true}" -H 'Content-Type: application/json' \
+    "$BASE/api/factory/delete")
+check "P8-1-C2 حذف پروژهٔ آزمایشی (با بکاپ)" "200" "$DL"
+LEFT=$(ls "$ROOT/projects/" 2>/dev/null | grep -c "p8x-ct")
+check "P8-1-C3 بدون بقایا" "0" "$LEFT"
+
+echo "──────────────────"
+echo "نتیجهٔ P8-1: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

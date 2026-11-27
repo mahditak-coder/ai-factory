@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""AF-26 Core trust suite — isolated, reproducible, no live-state mutation.
+
+Runs:
+  * stdlib unittest suite in core/tests/ (C1 real HTTP, C3 race, core units,
+    status semantics)
+  * Node behavioural test of dashboard/panel.js (C2 first-run + 401 recovery)
+
+Everything runs against AI_FACTORY_TEST_ROOT (a fresh temp tree), never the
+live data/, projects/ or credential files. Results are recorded with the
+canonical PASS/FAIL/SKIP/NOT TESTED/BLOCKED model: SKIP is never a pass.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+if not os.environ.get("AI_FACTORY_TEST_ROOT"):
+    iso = Path(tempfile.mkdtemp(prefix="af26-core-",
+                                dir="/data/data/com.termux/files/usr/tmp/opencode"))
+    for sub in ("data", "logs", "projects", "exports", "backups", "dashboard"):
+        (iso / sub).mkdir(parents=True, exist_ok=True)
+    os.environ["AI_FACTORY_TEST_ROOT"] = str(iso)
+    os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve())] + sys.argv[1:])
+
+from core import opstatus as ost  # noqa: E402
+
+REC = ost.Recorder()
+
+
+class RecordingResult(unittest.TextTestResult):
+    def addSuccess(self, test):
+        super().addSuccess(test)
+        REC.add(ost.PASS, str(test), "real unittest execution")
+
+    def addFailure(self, test, err):
+        super().addFailure(test, err)
+        REC.add(ost.FAIL, str(test), repr(err[1])[:400])
+
+    def addError(self, test, err):
+        super().addError(test, err)
+        REC.add(ost.FAIL, str(test), "ERROR " + repr(err[1])[:400])
+
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason)
+        REC.add(ost.SKIP, str(test), reason)
+
+
+def run_python() -> None:
+    suite = unittest.defaultTestLoader.discover(
+        str(ROOT / "core" / "tests"), top_level_dir=str(ROOT))
+    runner = unittest.TextTestRunner(stream=sys.stderr, verbosity=2,
+                                     resultclass=RecordingResult)
+    runner.run(suite)
+
+
+def run_node() -> None:
+    script = ROOT / "core" / "tests" / "test_panel_js.mjs"
+    try:
+        p = subprocess.run(["node", str(script)], capture_output=True,
+                           text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        REC.add(ost.NOT_TESTED, "panel.js behavioural test",
+                "node unavailable/failed: %s" % exc)
+        return
+    line = next((x for x in p.stdout.splitlines() if x.startswith("{")), "")
+    try:
+        payload = json.loads(line)
+    except ValueError:
+        REC.add(ost.FAIL, "panel.js behavioural test",
+                (p.stderr or p.stdout)[:300] or "no JSON result")
+        return
+    for c in payload.get("checks", []):
+        status = c.get("status") if c.get("status") in ost.STATUSES else ost.FAIL
+        REC.add(status, "panel.js/" + c.get("name", "?"), c.get("detail", ""))
+
+
+def main() -> int:
+    run_python()
+    run_node()
+    report = REC.finish()
+    out = ROOT / "docs" / "test-reports" / "core" / "test-results.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "isolation_root": os.environ.get("AI_FACTORY_TEST_ROOT"),
+        "status_model": list(ost.STATUSES),
+        "note": "SKIP never counted as PASS; all required checks must PASS",
+        "summary": {k: report[k] for k in
+                    ("status", "passed", "total", "counts", "required", "duration_s")},
+        "results": report["checks"],
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+    print("\nCORE OVERALL: %s | %s → %s" % (report["status"], report["counts"], out))
+    return 0 if report["status"] == ost.PASS else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

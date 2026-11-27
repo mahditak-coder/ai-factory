@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{APP_TITLE}} — ورود و ثبت‌نام</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header><h1>🧑‍💻 {{APP_TITLE}}</h1><p class="muted">فول‌استک محلی: بک‌اند پایتون + SQLite + UI</p></header>
+<main>
+  <section class="card">
+    <h2>ثبت‌نام</h2>
+    <form id="fReg">
+      <input id="rUser" placeholder="نام کاربری (۳-۳۲: حروف/عدد/._-)" autocomplete="username" required>
+      <input id="rPass" type="password" placeholder="رمز (حداقل ۶ کاراکتر)" autocomplete="new-password" required>
+      <button type="submit">ثبت‌نام</button>
+    </form>
+    <div id="regMsg" class="msg"></div>
+    <p class="muted small">نکته: اولین کاربرِ ثبت‌نام‌شده در این پایگاه داده، «مدیر» می‌شود.</p>
+  </section>
+  <section class="card">
+    <h2>ورود</h2>
+    <form id="fLogin">
+      <input id="lUser" placeholder="نام کاربری" autocomplete="username" required>
+      <input id="lPass" type="password" placeholder="رمز" autocomplete="current-password" required>
+      <button type="submit">ورود</button>
+    </form>
+    <div id="loginMsg" class="msg"></div>
+  </section>
+</main>
+<footer>{{APP_TITLE}} v0.1 — فقط localhost</footer>
+<script src="/app.js"></script>
+</body>
+</html>

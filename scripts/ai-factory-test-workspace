@@ -1,0 +1,117 @@
+# ai-factory-test-workspace — regression tests for the v0.36.0 Workspace
+# (status engine, version single-source, tools panel, security)
+# Run: bash scripts/ai-factory-test-workspace
+set -u
+URL="http://127.0.0.1:8580"
+DASH="$(cd "$(dirname "$0")/.." && pwd)/dashboard"
+PROJ="$(cd "$(dirname "$0")/.." && pwd)/projects"
+PASS=0; FAIL=0
+
+check() { # name, expected, actual
+    if [ "$2" = "$3" ]; then
+        PASS=$((PASS+1)); echo "✅ $1"
+    else
+        FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"
+    fi
+}
+contains() { # name, needle-file, needle-string
+    if grep -q "$3" "$2" 2>/dev/null; then
+        PASS=$((PASS+1)); echo "✅ $1"
+    else
+        FAIL=$((FAIL+1)); echo "❌ $1  (missing: $3)"
+    fi
+}
+http() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
+
+echo "== 1) static assets served =="
+for f in workspace.html workspace.css work.js common.js style.css app.js; do
+    check "GET /$f -> 200" "200" "$(http $URL/$f)"
+done
+
+echo "== P6: protected APIs need panel login =="
+. "$(dirname "$0")/ai-factory-panel-login" "$URL"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+echo "== 2) version from single source =="
+V=$(curl -fsS $URL/api/health | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+check "/api/health version == 0.36.0" "0.36.0" "$V"
+if grep -rq "v0\.3\.1" "$DASH"; then
+    FAIL=$((FAIL+1)); echo "❌ no hardcoded v0.3.1 in dashboard (found!)"
+else
+    PASS=$((PASS+1)); echo "✅ no hardcoded v0.3.1 in dashboard"
+fi
+contains "workspace.html uses .af-version" "$DASH/workspace.html" 'af-version'
+contains "index.html uses .af-version" "$DASH/index.html" 'af-version'
+contains "factory.html uses .af-version" "$DASH/factory.html" 'af-version'
+contains "common.js fills from /api/health" "$DASH/common.js" '/api/health'
+
+echo "== 3) 12 status states in work.js (real, no fake) =="
+for st in idle sending thinking generating tool permission testing fixing ok failed cancelled unknown; do
+    contains "state present: $st" "$DASH/work.js" "$st:"
+done
+contains "stall warning is a warning, not failure" "$DASH/work.js" 'شکست نیست'
+contains "SSE loss -> unknown state" "$DASH/work.js" "onConnectionLost"
+contains "recovery poll after SSE loss" "$DASH/work.js" 'recoverT'
+contains "abort verified by server" "$DASH/work.js" '/api/oc/interrupt'
+contains "turn reset clears prior failure" "$DASH/work.js" "hideError"
+contains "abort disabled by default in HTML" "$DASH/workspace.html" 'id="btnAbort" disabled'
+contains "page wires state resolver" "$DASH/work.js" "resolveServerState"
+
+echo "== 4) /api/oc/state against real TechStore failed session =="
+TECH="ses_e459fb52cffeRUzM7vc0lhfjkA"
+ST=$(curl -fsS "$URL/api/oc/state?session=$TECH")
+ok1=$(python3 - <<EOF
+import json
+d = json.loads('''$ST''')
+err = d.get("last_error") or {}
+print("ok" if d.get("ok") and d.get("outcome")=="failed" and err.get("type")=="provider.free-limit" else "bad")
+EOF
+)
+check "TechStore state outcome=failed + free-limit" "ok" "$ok1"
+running=$(python3 -c 'import json; d=json.loads("""'"$ST"'"""); print("false" if not d.get("running") else "true")')
+check "TechStore NOT running" "false" "$running"
+
+echo "== 5) /api/oc/state security =="
+check "bad session id (no ses_ prefix) -> 400" "400" "$(http "$URL/api/oc/state?session=xyz")"
+check "traversal in session -> 400" "400" "$(http "$URL/api/oc/state?session=ses_x%2F..%2Fy")"
+OUT=$(curl -sS "$URL/api/oc/state?session=$TECH")
+if echo "$OUT" | grep -q '"directory"'; then
+    FAIL=$((FAIL+1)); echo "❌ no internal directory path leaked to browser"
+else
+    PASS=$((PASS+1)); echo "✅ no internal directory path leaked to browser"
+fi
+
+echo "== 6) message endpoint model passthrough (4-arg prompt) =="
+contains "server forwards model to bridge" "$(cd "$(dirname "$0")/.." && pwd)/core/server.py" 'opencode_bridge.prompt(project, session, text, model or None)'
+contains "bridge builds model override body" "$(cd "$(dirname "$0")/.." && pwd)/core/opencode_bridge.py" '"providerID"'
+python3 -c "import sys; sys.path.insert(0,'$(cd "$(dirname "$0")/.." && pwd)'); import core.opencode_bridge" \
+  && { PASS=$((PASS+1)); echo "✅ bridge imports OK"; } || { FAIL=$((FAIL+1)); echo "❌ bridge import"; }
+
+echo "== 7) tools panel endpoints (real) =="
+TECHPROJ=$(python3 -c 'import urllib.parse; print(urllib.parse.quote("full stack pyton"))')
+check "/api/files?project=<tech> 200" "200" "$(http "$URL/api/files?project=$TECHPROJ")"
+check "/api/files without project -> 403 (security)" "403" "$(http "$URL/api/files")"
+check "/api/logs 200" "200" "$(http "$URL/api/logs?lines=5&which=server")"
+check "/api/oc/status 200" "200" "$(http $URL/api/oc/status)"
+check "/api/oc/models 200" "200" "$(http $URL/api/oc/models)"
+
+echo "== 8) work.js syntax valid =="
+node --check "$DASH/work.js" && { PASS=$((PASS+1)); echo "✅ work.js parses"; } || { FAIL=$((FAIL+1)); echo "❌ work.js syntax"; }
+node --check "$DASH/common.js" && { PASS=$((PASS+1)); echo "✅ common.js parses"; } || { FAIL=$((FAIL+1)); echo "❌ common.js syntax"; }
+
+echo "== 9) untouched assets (workspace.css additive, style.css untouched) =="
+if [ -f "$PROJ/shoplab/.factory/history.json" ] || [ -d "$PROJ/shoplab" ]; then
+    PASS=$((PASS+1)); echo "✅ shoplab still present (protected)"
+else
+    FAIL=$((FAIL+1)); echo "❌ shoplab missing!"
+fi
+if [ -d "$PROJ/full stack pyton" ]; then
+    PASS=$((PASS+1)); echo "✅ TechStore project dir still present (protected)"
+else
+    FAIL=$((FAIL+1)); echo "❌ TechStore dir missing!"
+fi
+
+echo
+echo "RESULT: PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

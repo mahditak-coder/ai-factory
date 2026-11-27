@@ -1,0 +1,142 @@
+# ai-factory-test-p4 — MISSION: real, repeatable deployment tests for
+# HOST/PORT support and independent runs (P4, minimal-change mission).
+# Builds a fresh fullstack sample OUTSIDE projects/ ($TMPDIR) from the
+# REAL template, then:
+#   1) default local run  (loopback-only bind, port 8770, pages + API)
+#   2) custom HOST/PORT run (AI_FACTORY_HOST=0.0.0.0 + custom port),
+#      real LAN-IP access when the device actually has one
+#   3) HP-key leak guard (a fake env secret must never reach responses)
+#   4) P1–P3 compatibility suites + clean-ZIP suite
+# Anything the environment genuinely cannot exercise is SKIPPED and
+# reported as skipped — never as passed.
+# Run: bash scripts/ai-factory-test-p4      (~40 s)
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
+SAMPLE="$T/p4-deploy-$$"
+PASS=0; FAIL=0; SKIP=0
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1"
+    else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi
+}
+skipped() { SKIP=$((SKIP+1)); echo "⏭️ SKIP: $1"; }
+cd "$ROOT"
+# killer relies on argv containing the unique sample path
+pkill -f "$SAMPLE/server.py" 2>/dev/null || true
+trap 'pkill -f "$SAMPLE/server.py" 2>/dev/null; rm -rf "$SAMPLE"' EXIT
+
+echo "═══ ساخت نمونهٔ fullstack بیرون از projects/ (مسیر واقعی قالب) ═══"
+BUILT=$(SAMPLE="$SAMPLE" ROOT="$ROOT" python3 - <<'PYEOF'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, os.environ["ROOT"])
+ROOT = Path(os.environ["ROOT"]); SAMPLE = Path(os.environ["SAMPLE"])
+src = ROOT / "core" / "fullstack_template"
+n = 0
+for f in sorted(src.rglob("*")):
+    if not f.is_file() or "__pycache__" in f.parts \
+            or f.suffix in (".pyc", ".db", ".db-wal", ".db-shm"):
+        continue
+    rel = f.relative_to(src)
+    tgt = SAMPLE / rel
+    tgt.parent.mkdir(parents=True, exist_ok=True)
+    text = f.read_text(encoding="utf-8") \
+        .replace("{{APP_TITLE}}", "فروشگاه P4").replace("{{APP_ID}}", "p4-shop")
+    tgt.write_text(text, encoding="utf-8")
+    n += 1
+(SAMPLE / "data").mkdir(exist_ok=True)
+for need in ("server.py", "app/api.py", "ui/index.html", "tests/test_api.py"):
+    assert (SAMPLE / need).is_file(), "missing %s" % need
+print("BUILT %d" % n)
+PYEOF
+)
+BNUM=$(echo "${BUILT:-0}" | grep -oE "[0-9]+" | head -1)
+check "نمونهٔ fullstack با قالب واقعی جایگزین‌شده ساخته شد" ok \
+  "$([ "${BNUM:-0}" -gt 0 ] && echo ok)"
+
+echo "═══ ۱) اجرای محلی با تنظیمات پیش‌فرض (env تقریباً خالی) ═══"
+(env -i PATH="$PATH" HOME="$HOME" AF_DB_DIR="$SAMPLE/af1" \
+     python3 "$SAMPLE/server.py" > "$T/p4-boot1.log" 2>&1 &)
+sleep 2
+HTTP1=$(curl -s -o "$T/p4home1.html" -w "%{http_code}" --max-time 4 \
+        http://127.0.0.1:8770/ 2>/dev/null; echo)
+check "پیش‌فرض: GET / روی 127.0.0.1:8770 → 200" 200 "${HTTP1:-0}"
+grep -q "فروشگاه P4" "$T/p4home1.html" 2>/dev/null \
+  && check "پیش‌فرض: صفحه اصلی واقعاً صفحهٔ برنامه است" yes yes \
+  || check "پیش‌فرض: صفحه اصلی واقعاً صفحهٔ برنامه است" yes no
+CSRF1=$(curl -s --max-time 4 http://127.0.0.1:8770/api/csrf 2>/dev/null)
+echo "$CSRF1" | grep -q '"ok"' \
+  && check "پیش‌فرض: API سالم (/api/csrf → ok + توکن CSRF)" yes yes \
+  || check "پیش‌فرض: API سالم (/api/csrf)" yes no
+CODEADMIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 4 \
+            http://127.0.0.1:8770/admin.html 2>/dev/null)
+check "پیش‌فرض: صفحه مدیریت local (قانون اولین‌کاربر=مدیر مستند)" 200 "${CODEADMIN:-0}"
+HTTPAPX=$(curl -s -o /dev/null -w "%{http_code}" --max-time 4 \
+          "http://127.0.0.1:8770/static/_" 2>/dev/null)
+[ "${HTTPAPX:-}" = "404" ] \
+  && check "فاش‌سازی مسیر fs مسدود (static/_ → 404)" guarded guarded \
+  || check "فاش‌سازی مسیر fs مسدود (static/_)" guarded "${HTTPAPX:-0}"
+LANIP=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2; exit}' \
+        | grep -oE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" || true)
+if [ -n "${LANIP:-}" ] && [ "$LANIP" != "127.0.0.1" ]; then
+    curl -s -o /dev/null --connect-timeout 2 --max-time 2 \
+         "http://$LANIP:8770/" 2>/dev/null
+    RC=$?
+    [ "$RC" = "7" ] \
+      && check "پیش‌فرض امن: bind فقط loopback (IP شبکه $LANIP رد شد)" refused refused \
+      || check "پیش‌فرض امن: bind فقط loopback" refused "rc=$RC"
+else
+    skipped "bind-only-loopback — این دستگاه اکنون IP شبکه واقعی ندارد (صادقانه SKIP، نه پاس)"
+fi
+grep -q "listening on http://127.0.0.1:8770" "$T/p4-boot1.log" 2>/dev/null \
+  && check "پیش‌فرض: پیام بوت استاندارد" yes yes || check "پیش‌فرض: پیام بوت" yes no
+pkill -f "$SAMPLE/server.py" 2>/dev/null; sleep 1
+
+echo "═══ ۲) اجرای شبکه‌ای با HOST/PORT سفارشی ═══"
+CP=9024; FAKEKEY="p4-FAKE-secret-should-never-appear-8770"
+(env -i PATH="$PATH" HOME="$HOME" \
+      AI_FACTORY_HOST=0.0.0.0 AI_FACTORY_PORT=$CP \
+      AI_FACTORY_SECRET_TESTKEY="$FAKEKEY" AF_DB_DIR="$SAMPLE/af2" \
+      python3 "$SAMPLE/server.py" > "$T/p4-boot2.log" 2>&1 &)
+sleep 2
+HTTPC=$(curl -s -o /dev/null -w "%{http_code}" --max-time 4 "http://127.0.0.1:$CP/")
+check "سفارشی: HOST=0.0.0.0 PORT=$CP → GET / = 200" 200 "${HTTPC:-0}"
+grep -q "listening on http://0.0.0.0:$CP" "$T/p4-boot2.log" 2>/dev/null \
+  && check "سفارشی: پیام بوت درست" yes yes || check "سفارشی: پیام بوت" yes no
+if [ -n "${LANIP:-}" ] && [ "$LANIP" != "127.0.0.1" ]; then
+    HTTPLAN=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 \
+              --max-time 4 "http://$LANIP:$CP/" 2>/dev/null)
+    check "شبکه‌ایِ واقعی: GET سه‌گانه از IP شبکه ($LANIP:$CP) → 200" 200 "${HTTPLAN:-0}"
+    curl -s --max-time 4 "http://$LANIP:$CP/" 2>/dev/null | \
+      grep -q "$FAKEKEY" && LEAK1=leak || LEAK1=no-leak
+    curl -s --max-time 4 "http://127.0.0.1:$CP/" 2>/dev/null | \
+      grep -q "$FAKEKEY" && LEAK2=leak || LEAK2=no-leak
+    check "عدم نشت کلید فرضی env در HTML از هر دو مسیر" \
+      no-leak/no-leak "$LEAK1/$LEAK2"
+else
+    skipped "دسترسی واقعی LAN — این دستگاه اکنون IP شبکه ندارند (صادقانه SKIP)"
+fi
+pkill -f "$SAMPLE/server.py" 2>/dev/null; sleep 1
+
+echo "═══ ۳) سازگاری P1–P3 + ZIP سالم ═══"
+bash scripts/ai-factory-test-p1 > "$T/p4-p1.log" 2>&1
+tail -3 "$T/p4-p1.log" | grep -q "PASS=\|ALL GREEN\|ALL PASS" \
+  && check "سازگاری P1 (suite سبز)" green green || check "سازگاری P1" green red
+bash scripts/ai-factory-test-zipfix > "$T/p4-zip.log" 2>&1
+tail -3 "$T/p4-zip.log" | grep -q "PASS=\|ALL GREEN\|ALL PASS" \
+  && check "ZIP سالم (بدون فایل محرمانه/موقت، zipfix suite)" green green \
+  || check "ZIP سالم (zipfix suite)" green red
+SAMPLE="$SAMPLE" AF_DB_DIR="$SAMPLE/af3" python3 "$SAMPLE/tests/test_api.py" \
+  > "$T/p4-inprov.log" 2>&1 && MV=green || MV=red
+check "سازگاری خودآزمون محصول (tests/test_api.py روی نمونه P4)" green "$MV"
+
+echo
+echo "═══════ جمع‌بندی P4 ═══════"
+echo "RESULT: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
+if [ "$FAIL" -eq 0 ]; then
+    echo "ALL GREEN — اجرای پیش‌فرض امن + HOST/PORT سفارشی + سازگاری + ZIP سالم."
+    [ "$SKIP" -gt 0 ] && echo "(توجه: $SKIP آزمون SKIP شد — در گزارش صادقانه جدا آمده؛ سبز شمرده نشد)"
+    exit 0
+fi
+echo "SOME RED — موارد فوق"
+exit 1

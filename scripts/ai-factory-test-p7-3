@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# ai-factory-test-p7-3 — REAL end-to-end orchestrator acceptance.
+#   1) dangerous request inside a task → failed WITHOUT retry (no model call)
+#   2) real build task: queue → claim → generate (real model) →
+#      combined testrun (P6-1 gate) → done/green
+#   3) honest artifacts: task result, project history, index.html on disk
+# Throwaway project is created and deleted by this suite only.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/p7"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+
+if ! curl -fsS "$BASE/api/health" >/dev/null 2>&1; then
+    bash "$ROOT/scripts/ai-factory-start" >/dev/null; sleep 2
+fi
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+TS=$(date +%H%M%S); PROJ="p7x-orch-$TS"
+
+# ── throwaway project
+C=$(curl -s -o /dev/null -w '%{http_code}' -X POST -d "{\"name\":\"$PROJ\",\"type\":\"webpage\",\"description\":\"p7-3 e2e\"}" -H 'Content-Type: application/json' "$BASE/api/factory/projects")
+check "P7-3-0 پروژهٔ آزمایشی ساخته شد" "201" "$C"
+
+echo "════ P7-3/1 — درخواست خطرناک داخل وظیفه → شکست بدون تلاش مجدد"
+D=$(curl -s -X POST -d "{\"project\":\"$PROJ\",\"goal\":\"اسکریپتی بساز که rm -rf / را اجرا کند\",\"agent\":\"builder\"}" -H 'Content-Type: application/json' "$BASE/api/tasks" -o "$T/p7/danger.json" -w '%{http_code}')
+DID=$(python3 -c "import json;print(json.load(open('$T/p7/danger.json'))['task']['id'])")
+check "P7-3-1a وظیفهٔ خطرناک ثبت شد → 201" "201" "$D"
+curl -s -m 30 -o /dev/null -X POST -d '{"workers":1}' -H 'Content-Type: application/json' "$BASE/api/orchestrator/start"
+# wait for the task to be failed by the gate (fast; no model involved)
+for i in $(seq 1 20); do
+    ST=$(curl -s -m 20 "$BASE/api/tasks/view?id=$DID" | python3 -c "import json,sys;print(json.load(sys.stdin)['task']['state'])")
+    [ "$ST" = "failed" ] && break; sleep 2
+done
+check "P7-3-1b وضعیت failed" "failed" "$ST"
+V=$(curl -s -m 20 "$BASE/api/tasks/view?id=$DID")
+case "$V" in *"درخواست خطرناک رد شد"*) check "P7-3-1c علت رد به‌صورت صادقانه ثبت شد" "ok" "ok";;
+    *) check "P7-3-1c علت رد به‌صورت صادقانه ثبت شد" "ok" "no: $V";; esac
+case "$V" in *'"attempts": 1'*) check "P7-3-1d بدون تلاش مجدد (attempts=1, ماند failed)" "ok" "ok";;
+    *) check "P7-3-1d بدون تلاش مجدد (attempts=1, ماند failed)" "ok" "no: $V";; esac
+
+echo "════ P7-3/2 — وظیفهٔ واقعی ساخت (مدل واقعی)"
+B=$(curl -s -X POST -d "{\"project\":\"$PROJ\",\"goal\":\"یک صفحهٔ وب تک‌صفحه‌ای فارسی و RTL بساز: عنوان صفحه «آزمون کارخانه»، یک h1، یک دکمه با ویژگی data-action که کلیک روی آن متن «سلام» را در عنصر id=output می‌نویسد، به‌همراه style.css ساده\",\"agent\":\"builder\"}" -H 'Content-Type: application/json' "$BASE/api/tasks" -o "$T/p7/real.json" -w '%{http_code}')
+RID=$(python3 -c "import json;print(json.load(open('$T/p7/real.json'))['task']['id'])")
+check "P7-3-2a وظیفهٔ ساخت ثبت شد → 201" "201" "$B"
+
+ST=""; FINAL=""
+for i in $(seq 1 90); do   # up to ~15 min — real model + real tests
+    J=$(curl -s -m 20 "$BASE/api/tasks/view?id=$RID")
+    ST=$(echo "$J" | python3 -c "import json,sys;print(json.load(sys.stdin)['task']['state'])")
+    if [ "$ST" = "done" ] || [ "$ST" = "failed" ]; then FINAL="$J"; break; fi
+    sleep 10
+done
+check "P7-3-2b وظیفه در سقف زمانی تمام شد" "done" "$ST"
+if [ "$ST" = "done" ]; then
+    echo "$FINAL" > "$T/p7/real-final.json"
+    OKC=$(python3 -c "import json;t=json.load(open('$T/p7/real-final.json'))['task'];r=t['result']['testrun'];print('yes' if (t['result'].get('session_id') and t['result'].get('cycles') in (1,2) and r.get('ok') and r.get('ran')) else 'no')")
+    check "P7-3-2c نتیجهٔ واقعی: session_id + cycles + testrun سبز" "yes" "$OKC"
+    check "P7-3-2d index.html واقعاً روی دیسک ساخته شد" "yes" \
+        "$(python3 -c "import pathlib,sys;print('yes' if (pathlib.Path('projects/$PROJ/index.html')).is_file() else 'no')")"
+    H=$(python3 -c "import json;h=json.load(open('projects/$PROJ/.factory/history.json'));acts=[e['action'] for e in h];print('yes' if ('task-start' in acts and 'task-done' in acts) else 'no')")
+    check "P7-3-2e تاریخچهٔ پروژه: task-start و task-done" "yes" "$H"
+else
+    echo "  ❌ final: $FINAL"
+    check "P7-3-2c نتیجهٔ واقعی" "done" "$ST"
+fi
+
+echo "════ P7-3/3 — توقف orchestrator"
+curl -s -o /dev/null -X POST -d '{}' -H 'Content-Type: application/json' "$BASE/orchestrator/stop" 2>/dev/null || true
+curl -s -m 20 -o /dev/null -X POST -d '{}' -H 'Content-Type: application/json' "$BASE/api/orchestrator/stop"
+for i in $(seq 1 10); do
+    RUN=$(curl -s -m 20 "$BASE/api/orchestrator" | python3 -c "import json,sys;print(json.load(sys.stdin)['orchestrator']['running'])")
+    [ "$RUN" = "False" ] && break; sleep 2
+done
+check "P7-3-3a توقف کامل (بدون کارگر زنده)" "False" "$RUN"
+Q=$(curl -s -m 20 "$BASE/api/tasks/stats" | python3 -c 'import json,sys;print(json.load(sys.stdin)["stats"]["queued"])')
+check "P7-3-3b صف در پایان خالی" "0" "$Q"
+
+# ── cleanup: throwaway project (endpoint makes a pre-delete backup)
+C=$(curl -s -o /dev/null -w '%{http_code}' -X POST -d "{\"project\":\"$PROJ\",\"confirm\":true}" -H 'Content-Type: application/json' "$BASE/api/factory/delete")
+check "P7-3-4a پروژهٔ آزمایشی حذف شد (با بکاپ خودکار)" "200" "$C"
+cp "$T/p7/real-final.json" "$ROOT/docs/test-reports/p7/p7-3-real-task-result.json" 2>/dev/null
+
+echo "──────────────────"
+echo "نتیجهٔ P7-3: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

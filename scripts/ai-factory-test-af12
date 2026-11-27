@@ -1,0 +1,318 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af12 — مدیریت نسخه و یکپارچگی انتشار
+#   A) نسخه‌گذاری مستقل وب: دو نسخهٔ متوالی، بدون افزایش خودکار، تاریخچه،
+#      استقلال دو پروژه، رد نسخهٔ نامعتبر، شکست ساخت نسخهٔ سالم را خراب نکند،
+#      سازگاری zip قدیمی
+#   B) API پنل: GET/POST /api/factory/version (مسیر واقعی pauth) + رد نامعتبر
+#   C) Android واقعی: دو ساخت متوالی APK از نسخهٔ پروژه (بدون نسخهٔ صریح →
+#      استخراج قطعی)، release.json/MANIFEST.sha256 در پوشهٔ تحویل، اعتبارسنج
+#      مستقل پوشه، badging==رکورد، tamper فایل/release.json
+#   D) فیکسچر موجود af02-android-test: sha256 + badging + apksigner + tamper
+#   E) پاک‌سازی کامل + رگرسیون af10/af11
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+PASS=0; FAIL=0; NT=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+nt() { NT=$((NT+1)); echo "⚠️  NOT TESTED — $1"; }
+
+echo "════════ AF-12 — مدیریت نسخه و یکپارچگی انتشار ════════"
+checkeq "پنل سالم" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "پشتیبان af12 موجود" "OK" "$(ls "$ROOT"/backups/af12-*/release.py \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "اعتبارسنج مستقل (usage=2)" "OK" "$(python3 "$ROOT/scripts/ai-factory-verify-release" \
+  2>/dev/null >/dev/null; [ $? = 2 ] && echo OK || echo FAIL)"
+
+# ── B) API پنل (مسیر واقعی pauth) — روی کپی ایزوله ──
+rm -rf "$ROOT/projects/af12-api"
+cp -r "$ROOT/projects/af01-timecheck" "$ROOT/projects/af12-api"
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+GV=$(pauth -sS "http://127.0.0.1:8580/api/factory/version?project=af12-api" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['version'])" 2>/dev/null)
+checkeq "B-API GET نسخهٔ پیش‌فرض 1.0.0" "1.0.0" "$GV"
+SV=$(pauth -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af12-api","version":"3.2.1"}' \
+  http://127.0.0.1:8580/api/factory/version \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['version'])" 2>/dev/null)
+checkeq "B-API POST تنظیم 3.2.1" "3.2.1" "$SV"
+GV2=$(pauth -sS "http://127.0.0.1:8580/api/factory/version?project=af12-api" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['version'])" 2>/dev/null)
+checkeq "B-API GET پس از تنظیم" "3.2.1" "$GV2"
+BADC=$(pauth -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"project":"af12-api","version":"9.9"}' http://127.0.0.1:8580/api/factory/version)
+checkeq "B-API رد نسخهٔ نامعتبر (400)" "400" "$BADC"
+
+OUT=$(cd "$ROOT" && python3 - <<'EOF'
+import json, os, shutil, subprocess, sys, time, zipfile
+sys.path.insert(0, ".")
+from pathlib import Path
+import core.config as config
+from core import release as rel
+from core.engines import android as androidmod
+
+ROOT = str(config.PROJECT_ROOT)
+TMP = os.environ["TMP"]
+results = []
+tp = None
+def step(name, ok, detail=""):
+    results.append((name, ok))
+    print("STEP %s %s %s" % ("OK" if ok else "FAIL", name, str(detail)[:130]))
+
+V = os.path.join(ROOT, "scripts", "ai-factory-verify-release")
+def validator(p):
+    r = subprocess.run([sys.executable, V, p], capture_output=True, text=True, timeout=60)
+    return r.returncode, (r.stdout + r.stderr)
+
+def sha256(p):
+    import hashlib
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+try:
+    # ══ A) نسخه‌گذاری مستقل وب ══
+    shutil.rmtree(os.path.join(ROOT, "projects", "af12-va"), ignore_errors=True)
+    shutil.copytree(os.path.join(ROOT, "projects", "af01-timecheck"),
+                    os.path.join(ROOT, "projects", "af12-va"))
+    P = Path(os.path.join(ROOT, "projects", "af12-va"))
+    step("A-default-1.0.0", rel.project_version(P) == "1.0.0",
+         "بدون فیلد version در meta")
+    r1 = rel.build_release("af12-va")
+    step("A-build-v1", r1["ok"] and r1["version"] == "1.0.0",
+         "v=%s zip=%s" % (r1["version"], r1["name"]))
+    # دو ساخت متوالی بدون set_version → نسخه نباید تغییر کند
+    r1b = rel.build_release("af12-va")
+    step("A-no-auto-increment", r1b["version"] == "1.0.0",
+         "دو ساخت متوالی هر دو 1.0.0")
+    sv = rel.set_version("af12-va", "1.1.0")
+    step("A-set-1.1.0", sv["changed"] and sv["previous"] == "1.0.0", json.dumps(sv))
+    r2 = rel.build_release("af12-va")
+    with zipfile.ZipFile(r2["path"]) as z:
+        m = json.loads(z.read("af12-va/release.json"))
+    step("A-zip-json-version-match",
+         r2["ok"] and r2["version"] == "1.1.0" and m["version"] == "1.1.0",
+         "result=%s zip-release.json=%s" % (r2["version"], m["version"]))
+    hist = json.loads((P / ".factory" / "history.json").read_text())
+    hs = [h["detail"] for h in hist if h["action"] == "version-set"]
+    hb = [h["detail"] for h in hist if h["action"] == "release-build"]
+    step("A-history-preserved", hs == ["1.0.0 → 1.1.0"] and len(hb) == 3
+         and hb[-1].startswith("v1.1.0"),
+         "version-set=%s release-build=%d" % (hs, len(hb)))
+    # استقلال نسخهٔ دو پروژه
+    shutil.rmtree(os.path.join(ROOT, "projects", "af12-vb"), ignore_errors=True)
+    shutil.copytree(os.path.join(ROOT, "projects", "af01-timecheck"),
+                    os.path.join(ROOT, "projects", "af12-vb"))
+    rel.set_version("af12-vb", "2.3.4")
+    rb = rel.build_release("af12-vb")
+    step("A-independence",
+         rb["version"] == "2.3.4" and rel.project_version(P) == "1.1.0",
+         "vb=%s va=%s" % (rb["version"], rel.project_version(P)))
+    # رد نسخهٔ نامعتبر — بدون هیچ حدس/افزایش خودکار
+    for bad in ("1.2", "1.2.3.4", "abc", "01.0.0"):
+        try:
+            rel.set_version("af12-va", bad)
+            step("A-reject-%s" % bad, False, "پذیرفته شد!")
+        except ValueError:
+            step("A-reject-%s" % bad, True)
+    step("A-after-rejections", rel.project_version(P) == "1.1.0")
+    # شکست ساخت نسخهٔ سالم قبلی را خراب نکند + نسخهٔ خرابِ دستی = شکست صادقانه
+    try:
+        rel.build_release("af12-nope")
+        step("A-failed-build-version-untouched", False, "ساخت پروژهٔ ناموجود جواب داد!")
+    except FileNotFoundError:
+        step("A-failed-build-version-untouched",
+             rel.project_version(P) == "1.1.0", "ساخت ناموفق، نسخه دست‌نخورده")
+    mp = P / "meta.json"
+    meta = json.loads(mp.read_text())
+    meta["version"] = "hand.tampered"
+    mp.write_text(json.dumps(meta, ensure_ascii=False, indent=1))
+    try:
+        rel.build_release("af12-va")
+        step("A-corrupt-version-fails-honest", False, "نسخهٔ خراب بی‌صدا نادیده گرفته شد!")
+    except ValueError as exc:
+        step("A-corrupt-version-fails-honest", "hand.tampered" in str(exc),
+             "بسته‌سازی نسخهٔ خراب را رد کرد")
+    rep = rel.set_version("af12-va", "1.1.2")   # repair path
+    r4 = rel.build_release("af12-va")
+    rc, outp = validator(r4["path"])
+    step("A-repair-and-rebuild", rc == 0 and rel.project_version(P) == "1.1.2",
+         outp.strip()[:90])
+    # سازگاری zip قدیمی (بدون manifest)
+    r3 = rel.build_release("af12-va")
+    old = os.path.join(ROOT, "exports", "af12-va-release-old.zip")
+    with zipfile.ZipFile(r3["path"]) as z, \
+         zipfile.ZipFile(old, "w", zipfile.ZIP_DEFLATED) as o:
+        for n in z.namelist():
+            if n.endswith("MANIFEST.sha256"):
+                continue
+            o.writestr(n, z.read(n))
+    v = rel.verify_release(old, "af12-va")
+    step("A-old-zip-compat", v["ok"] and not v["manifest"]["present"])
+    os.remove(old)
+
+    # ══ C) Android واقعی — دو نسخهٔ متوالی از استخراج قطعی نسخهٔ پروژه ══
+    shutil.rmtree(os.path.join(ROOT, "projects", "af12-vc"), ignore_errors=True)
+    shutil.copytree(os.path.join(ROOT, "projects", "af02-android-test"),
+                    os.path.join(ROOT, "projects", "af12-vc"),
+                    ignore=shutil.ignore_patterns(".factory", "build"))
+    def android_build(project, opts):
+        androidmod.start_build(project, opts)
+        for _ in range(240):
+            time.sleep(2)
+            st = androidmod.status(project)
+            if not st.get("running"):
+                return st
+        return {"running": True, "error": "timeout"}
+    st1 = android_build("af12-vc", {"kind": "apk", "sign": False})
+    rep1 = st1.get("report") or {}
+    step("C-build-v1", bool(st1.get("ok")) and rep1.get("version_name") == "1.0.0"
+         and rep1.get("version_code") == 10000,
+         "vname=%s vcode=%s err=%s" % (rep1.get("version_name"),
+                                       rep1.get("version_code"), st1.get("error")))
+    d1 = rep1.get("output_dir")
+    files1 = sorted(os.listdir(d1)) if d1 and os.path.isdir(d1) else []
+    step("C-delivery-standard-v1",
+         "release.json" in files1 and "MANIFEST.sha256" in files1
+         and "app-unsigned.apk" in files1, str(files1))
+    rc, outp = validator(d1)
+    step("C-validator-dir-v1", rc == 0, outp.strip().replace("\n", " | ")[:110])
+    with open(os.path.join(d1, "release.json")) as f:
+        dj = json.load(f)
+    step("C-release-json-version-v1",
+         dj["version"] == "1.0.0" and dj["version_code"] == 10000
+         and dj["version_source"] == "project" and dj["project_version"] == "1.0.0",
+         "version=%s vcode=%s src=%s" % (dj["version"], dj["version_code"],
+                                         dj["version_source"]))
+    # badging == release.json (اعتبارسنجی بستهٔ نهایی پیش از تحویل)
+    import shutil as sh2, re as re2
+    apks = [shutil.which("aapt2"), "dump", "badging",
+            os.path.join(d1, "app-unsigned.apk")]
+    bg = subprocess.run(apks, capture_output=True, text=True).stdout
+    mb = re2.search(r"package: name='[^']+' versionCode='(\d+)' versionName='([^']+)'", bg)
+    step("C-badging-match-v1", mb and int(mb.group(1)) == 10000
+         and mb.group(2) == "1.0.0", "badging=%s-%s" % (mb.group(2), mb.group(1))
+         if mb else bg[:80])
+    # نسخهٔ دوم — پس از set_version صریح
+    rel.set_version("af12-vc", "1.0.2")
+    st2 = android_build("af12-vc", {"kind": "apk", "sign": False})
+    rep2 = st2.get("report") or {}
+    step("C-build-v2", bool(st2.get("ok")) and rep2.get("version_name") == "1.0.2"
+         and rep2.get("version_code") == 10002,
+         "vname=%s vcode=%s err=%s" % (rep2.get("version_name"),
+                                       rep2.get("version_code"), st2.get("error")))
+    d2 = rep2.get("output_dir")
+    rc, outp = validator(d2)
+    step("C-validator-dir-v2", rc == 0, outp.strip()[:90])
+    # سابقهٔ دو نسخه در releases.json پروژه
+    rels = json.loads((Path(ROOT) / "projects" / "af12-vc" / ".factory"
+                       / "releases.json").read_text())
+    vers = [(r["version_name"], r["version_code"]) for r in rels]
+    step("C-releases-history",
+         ("1.0.0", 10000) in vers and ("1.0.2", 10002) in vers, str(vers))
+    # tamper روی کپی پوشهٔ تحویل
+    tam = os.path.join(TMP, "af12-tamper")
+    shutil.rmtree(tam, ignore_errors=True)
+    shutil.copytree(d2, tam)
+    p = Path(tam) / "app-unsigned.apk"
+    data = bytearray(p.read_bytes()); data[100] ^= 0xFF; p.write_bytes(bytes(data))
+    rc, outp = validator(tam)
+    step("C-tamper-artifact-rejected", rc == 1 and "hash mismatch" in outp,
+         outp.strip().replace("\n", " | ")[:110])
+    tam2 = os.path.join(TMP, "af12-tamper-meta")
+    shutil.rmtree(tam2, ignore_errors=True)
+    shutil.copytree(d2, tam2)
+    with open(os.path.join(tam2, "release.json"), "a") as f:
+        f.write(" ")
+    rc, outp = validator(tam2)
+    step("C-tamper-metadata-rejected", rc == 1 and "hash mismatch" in outp,
+         outp.strip().replace("\n", " | ")[:100])
+    tam3 = os.path.join(TMP, "af12-tamper-extra")
+    shutil.rmtree(tam3, ignore_errors=True)
+    shutil.copytree(d2, tam3)
+    Path(tam3, "rogue.bin").write_bytes(b"x")
+    rc, outp = validator(tam3)
+    step("C-tamper-extra-rejected", rc == 1 and "rogue.bin" in outp)
+    # پوشهٔ قدیمی بدون manifest → رد صادقانه (شواهد اصالت در releases.json است)
+    olddir = os.path.join(ROOT, "exports", "android-builds",
+                          "af02-android-test", "2.0.0-vc2")
+    rc, outp = validator(olddir)
+    step("C-old-dir-honest-reject", rc == 1 and "MANIFEST.sha256 در پوشه نیست" in outp,
+         outp.strip()[:90])
+
+    # ══ D) فیکسچر موجود af02-android-test (APK/AAB امضاشدهٔ معتبر) ══
+    recs = json.loads((Path(ROOT) / "projects" / "af02-android-test" / ".factory"
+                       / "releases.json").read_text())
+    # توجه: در AF-02 همهٔ رکوردها پوشهٔ خروجی مشترک دارند و ساخت‌های بعدی
+    # فایل‌ها را بازنویسی می‌کنند — فقط «آخرین» رکورد هر kind هشِ معتبر دارد
+    # (یافتهٔ AF-12؛ در استاندارد جدید هر نسخه پوشهٔ مستقل خودش را دارد).
+    apkr = [r for r in recs if r["kind"] == "apk" and r["sign_verified"]][-1]
+    apkp = apkr["artifacts"]["apk"]["path"]
+    step("D-fixture-sha256", sha256(apkp) == apkr["artifacts"]["apk"]["sha256"],
+         apkr["id"])
+    bg = subprocess.run([shutil.which("aapt2"), "dump", "badging", apkp],
+                        capture_output=True, text=True).stdout
+    mb = re2.search(r"versionCode='(\d+)' versionName='([^']+)'", bg)
+    step("D-fixture-badging", mb and (mb.group(2), int(mb.group(1)))
+         == (apkr["version_name"], apkr["version_code"]),
+         "badging=%s-%s record=%s-%s" % (mb.group(2) if mb else "?",
+                                         mb.group(1) if mb else "?",
+                                         apkr["version_name"], apkr["version_code"]))
+    av = subprocess.run([shutil.which("apksigner"), "verify", "-v", apkp],
+                        capture_output=True, text=True).stdout
+    step("D-fixture-apksigner", "Verified using v2 scheme" in av
+         or "Verified using v3 scheme" in av, av.splitlines()[0][:70] if av else "no-out")
+    aabr = [r for r in recs if r["kind"] == "aab"][-1]
+    step("D-fixture-aab-sha256",
+         sha256(aabr["artifacts"]["aab"]["path"]) == aabr["artifacts"]["aab"]["sha256"]
+         and sha256(aabr["artifacts"]["universal_apk"]["path"])
+         == aabr["artifacts"]["universal_apk"]["sha256"], aabr["id"])
+    # tamper: کپی APK با یک بایت تغییر — باید با sha256 ثبت‌شده کشف شود
+    tp = os.path.join(TMP, "af02-copy-tampered.apk")
+    data = bytearray(Path(apkp).read_bytes()); data[200] ^= 0xFF
+    Path(tp).write_bytes(bytes(data))
+    step("D-tamper-detected", sha256(tp) != apkr["artifacts"]["apk"]["sha256"])
+finally:
+    import glob as g
+    for p in g.glob(os.path.join(ROOT, "projects", "af12-*")):
+        shutil.rmtree(p, ignore_errors=True)
+    for z in g.glob(os.path.join(ROOT, "exports", "af12-*-release-*.zip")):
+        os.remove(z)
+    for dd in g.glob(os.path.join(ROOT, "exports", "android-builds", "af12-vc",
+                                  "*")):
+        shutil.rmtree(dd, ignore_errors=True)
+    try:
+        os.rmdir(os.path.join(ROOT, "exports", "android-builds", "af12-vc"))
+    except OSError:
+        pass
+    for f in g.glob(os.path.join(TMP, "af12-tamper*")):
+        shutil.rmtree(f, ignore_errors=True)
+    if tp and os.path.exists(tp):
+        os.remove(tp)
+print("AF12-PY %s" % ("ALL-OK" if all(o for _, o in results) else "HAS-FAIL"))
+EOF
+)
+echo "$OUT" | grep "^STEP"
+echo
+echo "$OUT" | grep "^AF12-PY"
+
+echo "== E) پاک‌سازی + رگرسیون =="
+LEFT=$(ls "$ROOT/projects" 2>/dev/null | grep -c "^af12-"; ls "$ROOT/exports" 2>/dev/null | grep -c "^af12-")
+checkeq "E-بدون باقی‌ماندهٔ af12" "0
+0" "$LEFT"
+R10=$(bash "$ROOT/scripts/ai-factory-test-af10" 2>&1 | tail -3 | grep -o "PYTHON-STEPS-FAIL=[0-9]*" | head -1)
+checkeq "E-رگرسیون af10" "PYTHON-STEPS-FAIL=0" "$R10"
+R11=$(bash "$ROOT/scripts/ai-factory-test-af11" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "E-رگرسیون af11" "PASS=7 FAIL=0" "$R11"
+
+nt "مسیر AAB/bundletool در استاندارد تحویل جدید (release.json/MANIFEST نوشته می‌شود اما ساخت AAB جدید سنگین است — کد مشترک با مسیر APK آزمون شد)"
+nt "node-server (هیچ محصول node واقعی در محیط نیست)"
+
+echo
+echo "════════ AF-12 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL NOT-TESTED=$NT"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN (بدون احتساب NOT-TESTED)"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

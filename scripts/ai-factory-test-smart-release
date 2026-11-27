@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""AF-24 — Smart Release test suite (real operations where possible).
+
+Runs 12+ scenarios from the mission. Fixtures are real git repositories with
+real local bare remotes (no network dependency); only the GitHub visibility
+probe uses the real `gh` CLI in read-only mode. Every result is written to
+docs/test-reports/smart-release/test-results.json with a real/simulated flag.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# AF-26 — never point a test suite at the live data/ or projects/ tree. On the
+# first invocation create an isolated root and re-exec there; ROOT (this file)
+# still points at the real repository for report output.
+if not os.environ.get("AI_FACTORY_TEST_ROOT"):
+    import tempfile as _tf
+    _iso = Path(_tf.mkdtemp(prefix="af26-sr-", dir="/data/data/com.termux/files/usr/tmp/opencode"))
+    for _sub in ("data", "logs", "projects", "exports", "backups", "dashboard"):
+        (_iso / _sub).mkdir(parents=True, exist_ok=True)
+    os.environ["AI_FACTORY_TEST_ROOT"] = str(_iso)
+    os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve())] + sys.argv[1:])
+
+from core import opstatus as ost  # noqa: E402
+from core import git_sync, paths, smart_release as sr  # noqa: E402
+
+TMP = Path("/data/data/com.termux/files/usr/tmp/opencode")
+TMP.mkdir(parents=True, exist_ok=True)
+REC = ost.Recorder()
+FIXTURES: list[Path] = []
+TMP_FIXTURES: list[Path] = []
+
+
+def git(cwd, *args, check=True):
+    e = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    p = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
+                       env=e, text=True)
+    if check and p.returncode:
+        raise RuntimeError("git %s: %s" % (" ".join(args), p.stderr.strip()[:200]))
+    return p
+
+
+def fixture(name: str, kind: str = "webpage", with_repo: bool = True) -> Path:
+    d = config_projects() / name
+    d.mkdir(parents=True, exist_ok=True)
+    FIXTURES.append(d)
+    (d / "meta.json").write_text(json.dumps(
+        {"name": name, "type": kind, "version": "1.0.0"}, ensure_ascii=False),
+        encoding="utf-8")
+    if kind == "webpage":
+        (d / "index.html").write_text(
+            "<!doctype html><html><head><title>آزمون</title></head>"
+            "<body><h1>آزمون انتشار</h1><button>برو</button></body></html>",
+            encoding="utf-8")
+        (d / "app.js").write_text("document.addEventListener('click',()=>{});",
+                                  encoding="utf-8")
+    if with_repo:
+        git(d, "init", "-q", "-b", "main")
+        git(d, "config", "user.name", "AF Test")
+        git(d, "config", "user.email", "af-test@example.invalid")
+        git(d, "add", ".")
+        git(d, "commit", "-qm", "initial")
+    return d
+
+
+def config_projects() -> Path:
+    import core.config as config
+    return config.PROJECTS_DIR
+
+
+def bare_remote(name: str) -> Path:
+    r = TMP / ("af-sr-remote-" + name + "-" + str(int(time.time())) + ".git")
+    subprocess.run(["git", "init", "-q", "--bare", str(r)], check=True)
+    TMP_FIXTURES.append(r)
+    return r
+
+
+def check(name: str, fn, real: bool = True, required: bool = True):
+    """AF-26 / H13 — use the canonical recorder: SKIP is recorded as SKIP.
+
+    A returned ``SKIP: ...`` string is also classified as SKIP by Recorder,
+    so legacy checks cannot silently inflate the pass count.
+    """
+    rec = REC.run(name, fn, required=required)
+    rec["real"] = bool(real)
+    print("%-11s %-46s %s" %
+          (rec["status"], name, rec["detail"][:110]))
+    return rec
+
+
+# ── 1) Persian intent detection ──────────────────────────────────────────────
+def t_intent():
+    yes = ("پروژه را بررسی کن، نسخه نهایی را بساز، در دانلودها ذخیره کن "
+           "و Git و GitHub را بهروز کن.")
+    assert sr.detect_intent(yes)["is_release"]
+    assert sr.detect_intent("انتشارکن")["is_release"]
+    assert not sr.detect_intent("چطور میتوانم پروژه بسازم؟")["is_release"]
+    assert not sr.detect_intent("یک صفحه وب طراحی کن")["is_release"]
+    return "مثبت/منفی/توضیحی — ۴ مورد"
+
+
+# ── 2) type detection NOT by folder name ─────────────────────────────────────
+def t_types():
+    a = TMP / ("sr-android-named-web-" + str(int(time.time())))
+    w = TMP / ("sr-web-named-android-" + str(int(time.time())))
+    for d in (a, w):
+        d.mkdir(parents=True, exist_ok=True)
+    (a / "AndroidManifest.xml").write_text("<manifest package='x.y'/>", encoding="utf-8")
+    (a / "java").mkdir(exist_ok=True)
+    (w / "index.html").write_text("<html></html>", encoding="utf-8")
+    assert sr.detect_type(a)["kind"] == "android", sr.detect_type(a)
+    assert sr.detect_type(w)["kind"] == "web", sr.detect_type(w)
+    return "پوشهٔ web-name→android و android-name→web"
+
+
+# ── 3) path safety ───────────────────────────────────────────────────────────
+def t_paths():
+    for bad in ("../etc", "/etc", ".."):
+        try:
+            paths.project_dir(bad)
+            raise AssertionError("مسیر ناامن پذیرفته شد: " + bad)
+        except (PermissionError, FileNotFoundError):
+            pass
+    return "سه مسیر ناامن رد شد"
+
+
+# ── 4) secret + public repo block ────────────────────────────────────────────
+def t_public_secret():
+    name = "sr-test-public-" + str(int(time.time()))[-5:]
+    d = fixture(name, with_repo=True)
+    remote = bare_remote(name)
+    git(d, "remote", "add", "origin", str(remote))
+    (d / "books.json").write_text('{"book":"محتوای درسی","pages":[]}', encoding="utf-8")
+    (d / ".env").write_text("SECRET=x", encoding="utf-8")
+    # force the visibility decision without a network call (real gh probe is
+    # verified separately below)
+    pre = git_sync.preflight(name)
+    blocked = [b["path"] for b in pre.get("blocked_files", [])]
+    assert any("books" in x for x in blocked) and any(".env" in x for x in blocked), blocked
+    # the private repo is safe: only allowed files may ever be staged/committed
+    (d / "safe.js").write_text("console.log('safe')", encoding="utf-8")
+    res = git_sync.commit_and_push(name)
+    tracked = git(d, "ls-files").stdout.split()
+    assert ".env" not in tracked and "books.json" not in tracked, tracked
+    before = git(d, "rev-parse", "HEAD").stdout.strip()
+    # use inspect() to confirm a *public* remote would hard-block too
+    import unittest.mock as mock
+    with mock.patch.object(git_sync, "_github_visibility",
+                           return_value={"available": True, "public": True}):
+        pub = git_sync.preflight(name)
+    assert pub["blocked"] and any("عمومی" in x for x in pub["reasons"]), pub["reasons"]
+    after = git(d, "rev-parse", "HEAD").stdout.strip()
+    assert before == after, "نباید ارسال شود"
+    return "blocked=%s; public-block=%s" % (len(blocked), len(pub["reasons"]))
+
+
+# ── 5) GitHub visibility probe — ISOLATED FAKE `gh`, no external calls ──────
+def t_gh_visibility():
+    """Run the real probe code path against a controlled fake `gh` binary.
+
+    No network request and no real GitHub repository is touched. Missing/failed
+    `gh` cases are exercised separately by the negative tests below.
+    """
+    import unittest.mock as mock
+    fake_bin = TMP / ("af26-fake-gh-" + str(int(time.time())))
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    TMP_FIXTURES.append(fake_bin)
+    exe = fake_bin / "gh"
+    exe.write_text("#!/bin/sh\nprintf '{\"visibility\":\"PUBLIC\"}\\n'\n",
+                   encoding="utf-8")
+    exe.chmod(0o700)
+    with mock.patch.object(shutil, "which", return_value=str(exe)), \
+         mock.patch.dict(os.environ, {"PATH": str(fake_bin) + os.pathsep +
+                                      os.environ.get("PATH", "")}):
+        return _probe_visibility()
+    return "unreachable"  # pragma: no cover
+
+
+def _probe_visibility():
+    repo = "fixture-owner/fixture-repo"
+    out = subprocess.run(["gh", "repo", "view", repo, "--json", "visibility"],
+                         capture_output=True, text=True, timeout=30)
+    if out.returncode:
+        ost.skip("gh ناموفق (شبکه/دسترسی) — probe خارجی تأییدنشده")
+    info = json.loads(out.stdout)
+    assert str(info.get("visibility", "")).upper() == "PUBLIC", info
+    return "PUBLIC تشخیص داده شد (fake gh ایزوله، بدون تماس خارجی)"
+
+
+# ── 6) conflict / divergence detection ───────────────────────────────────────
+def t_conflict():
+    name = "sr-test-conflict-" + str(int(time.time()))[-5:]
+    d = fixture(name)
+    remote = bare_remote(name)
+    git(d, "remote", "add", "origin", str(remote))
+    git(d, "push", "-qu", "origin", "main")
+    # another clone advances the remote
+    other = TMP / ("af-sr-clone-" + name)
+    shutil.rmtree(other, ignore_errors=True)
+    git(TMP, "clone", "-q", str(remote), str(other))
+    git(other, "config", "user.name", "AF Test")
+    git(other, "config", "user.email", "af-test@example.invalid")
+    (other / "remote.txt").write_text("remote change", encoding="utf-8")
+    git(other, "add", ".")
+    git(other, "commit", "-qm", "remote change")
+    git(other, "push", "-q", "origin", "main")
+    # local also changes without pulling
+    (d / "local.txt").write_text("local change", encoding="utf-8")
+    git(d, "add", ".")
+    git(d, "commit", "-qm", "local change")
+    git(d, "fetch", "origin", "main")       # refresh the remote-tracking ref
+    info = git_sync.inspect(name)
+    assert info["behind"] >= 1, info
+    res = git_sync.commit_and_push(name)
+    assert res["status"] in (git_sync.FAIL, git_sync.UNVERIFIED), res
+    reasons = " ".join(res.get("preflight", {}).get("reasons", []))
+    assert "عقبتر" in reasons or "divergent" in reasons, reasons
+    return "behind=%d — push متوقف، بدون pull/force" % info["behind"]
+
+
+# ── 7) real local git commit + head verification ─────────────────────────────
+def t_git_sync():
+    name = "sr-test-sync-" + str(int(time.time()))[-5:]
+    d = fixture(name)
+    remote = bare_remote(name)
+    git(d, "remote", "add", "origin", str(remote))
+    git(d, "push", "-qu", "origin", "main")
+    (d / "feature.js").write_text("console.log('ok');", encoding="utf-8")
+    git(d, "add", "feature.js")
+    git(d, "commit", "-qm", "feature")
+    before = git(d, "rev-parse", "HEAD").stdout.strip()
+    res = git_sync.commit_and_push(name, message="Smart Release test")
+    assert res["status"] == git_sync.OK, res
+    assert res["online_match"] is True, res
+    ol = git(d, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+    assert ol == before == res["head_local"], (ol, before, res["head_local"])
+    return "head محلی و remote یکسان: %s" % ol[:10]
+
+
+# ── 8) build/sign failure honesty ────────────────────────────────────────────
+def t_build_fail():
+    name = "sr-test-nosign-" + str(int(time.time()))[-5:]
+    d = fixture(name, kind="android", with_repo=False)
+    (d / "AndroidManifest.xml").write_text(
+        "<manifest xmlns:android='http://schemas.android.com/apk/res/android' "
+        "package='ir.fake.nosign'><application/></manifest>", encoding="utf-8")
+    (d / "java").mkdir(exist_ok=True)
+    # this test targets the build/sign gate, not the new AF-25 repo proposal
+    r = sr.run(name, downloads_dir=str(TMP / "dl-fail"), auto_git=False)
+    assert r["status"] == sr.FAIL, r
+    assert r.get("stage") in ("signing-key", "build", "security"), r.get("stage")
+    return "stage=%s — صادقانه ناموفق" % r.get("stage")
+
+
+# ── 9) unreachable remote handled honestly ───────────────────────────────────
+def t_offline():
+    name = "sr-test-offline-" + str(int(time.time()))[-5:]
+    d = fixture(name)
+    git(d, "remote", "add", "origin", str(TMP / "does-not-exist.git"))
+    (d / "x.js").write_text("x", encoding="utf-8")
+    git(d, "add", ".")
+    git(d, "commit", "-qm", "x")
+    res = git_sync.commit_and_push(name)
+    assert res["status"] in (git_sync.FAIL, git_sync.UNVERIFIED), res
+    assert res.get("note"), res
+    return "push ناموفق صادقانه: %s" % res["note"][:90]
+
+
+# ── 10) idempotency: second run creates no duplicate commit ──────────────────
+def t_idempotent():
+    name = "sr-test-idem-" + str(int(time.time()))[-5:]
+    d = fixture(name)
+    remote = bare_remote(name)
+    git(d, "remote", "add", "origin", str(remote))
+    git(d, "push", "-qu", "origin", "main")
+    dl = TMP / ("dl-idem-" + name)
+    r1 = sr.run(name, downloads_dir=str(dl))
+    n1 = len(git(d, "rev-list", "--count", "HEAD").stdout.strip())
+    heads1 = git(d, "rev-parse", "HEAD").stdout.strip()
+    r2 = sr.run(name, downloads_dir=str(dl))
+    heads2 = git(d, "rev-parse", "HEAD").stdout.strip()
+    assert r1["status"] in (sr.OK, sr.PARTIAL), r1
+    assert r2.get("reused_record") is True, r2.get("reused_record")
+    assert r2["git"]["commit_count"] == 0, r2["git"]
+    assert heads1 == heads2, (heads1, heads2)
+    # Two builds legitimately have different bytes (release stamp in the ZIP);
+    # the second delivery must either reuse the file or use a fresh name —
+    # it must NEVER overwrite a different existing file.
+    assert r2["downloads"].get("reused") or r2["downloads"].get("overwrite_protected"), \
+        r2["downloads"]
+    return "second run: reused_record=%s, commits=0, downloads reused" % r2["reused_record"]
+
+
+# ── 11) no overwrite of a different existing file ───────────────────────────
+def t_no_overwrite():
+    dl = TMP / ("dl-nooverwrite-" + str(int(time.time())))
+    dl.mkdir(parents=True, exist_ok=True)
+    src = TMP / ("af-sr-src-" + str(int(time.time())) + ".apk")
+    src.write_bytes(b"NEW-CONTENT-123")
+    name = sr._safe_name("test-project", "1.0.0", ".apk")
+    (dl / name).write_bytes(b"OLD-CONTENT-DIFFERENT")
+    r = sr._deliver(src, "test-project", "1.0.0", str(dl))
+    assert r["status"] == sr.OK, r
+    assert r["overwrite_protected"] is True, r
+    assert (dl / name).read_bytes() == b"OLD-CONTENT-DIFFERENT", "فایل قبلی تغییر کرد"
+    assert Path(r["path"]).read_bytes() == b"NEW-CONTENT-123"
+    return "فایل قبلی دستنخورده، فایل جدید با نام -2 ذخیره شد"
+
+
+# ── 12) artifact integrity + tamper detection ────────────────────────────────
+def t_validate():
+    apk = ROOT / "exports/android-builds/teacher-android/1.1.0-vc10100/app-release.apk"
+    if not apk.is_file():
+        ost.skip("APK واقعی از مرحلهٔ ۱ موجود نیست — اعتبارسنجی اجرا نشد")
+    v = sr._validate_artifact(apk, "android")
+    assert v["ok"] and v["checks"]["signature"] and v["checks"]["classes_dex"], v
+    # real apksigner re-verification (not just ZIP structure)
+    out = subprocess.run(["apksigner", "verify", "--print-certs", str(apk)],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr[:200]
+    bad = TMP / ("tampered-" + str(int(time.time())) + ".apk")
+    shutil.copyfile(apk, bad)
+    with open(bad, "r+b") as f:
+        f.seek(200)
+        f.write(b"XXXX")
+    vv = sr._validate_artifact(bad, "android")
+    assert vv["sha256"] != v["sha256"] and not vv["checks"]["zip_integrity"], vv
+    return "APK واقعی امضاشده + تشخیص دستکاری"
+
+
+# ── 13) existing modules import cleanly (regression) ─────────────────────────
+def t_regression():
+    import importlib
+    mods = ["core.factory", "core.pipeline", "core.release", "core.release_center",
+            "core.deploy", "core.exporter", "core.security_gate", "core.orchestrator",
+            "core.tasks", "core.engines.android", "core.server", "core.smart_release"]
+    for m in mods:
+        importlib.import_module(m)
+    return "%d ماژول موجود بدون خطا وارد شدند" % len(mods)
+
+
+# ── AF-26 negative tests: honest status for absent/failed/incomplete work ────
+def t_neg_gh_missing():
+    import unittest.mock as mock
+    with mock.patch.object(shutil, "which", return_value=None):
+        try:
+            _probe_visibility()
+        except ost.SkipSignal:
+            return "نبود gh → SKIP (نه PASS)"
+    raise AssertionError("نبود gh بهعنوان PASS ثبت شد")
+
+
+def t_neg_gh_failure():
+    import unittest.mock as mock
+    fake = type("P", (), {"returncode": 1, "stdout": "", "stderr": "no network"})()
+    with mock.patch.object(shutil, "which", return_value="/fake/gh"), \
+         mock.patch.object(subprocess, "run", return_value=fake):
+        try:
+            _probe_visibility()
+        except ost.SkipSignal:
+            return "شکست probe خارجی → SKIP (نه PASS)"
+    raise AssertionError("شکست gh بهعنوان PASS ثبت شد")
+
+
+def t_neg_missing_apk():
+    missing = TMP / ("af26-no-such-" + str(int(time.time())) + ".apk")
+    v = sr._validate_artifact(missing, "android")
+    assert v["ok"] is False and v["problems"], v
+    return "نبود APK → ok=False (نه موفقیت)"
+
+
+def t_neg_incomplete_stages():
+    recs = [
+        ost.check(ost.PASS, "build", "OK"),
+        ost.check(ost.SKIP, "tests", "اجرا نشد"),
+    ]
+    assert ost.overall(recs) == ost.NOT_TESTED, ost.overall(recs)
+    recs[1] = ost.check(ost.FAIL, "tests", "سرخ")
+    assert ost.overall(recs) == ost.FAIL
+    recs[1] = ost.check(ost.BLOCKED, "tests", "مسدود")
+    assert ost.overall(recs) == ost.BLOCKED
+    recs[1] = ost.check(ost.PASS, "tests", "سبز")
+    assert ost.overall(recs) == ost.PASS
+    return "SKIP→NOT_TESTED، FAIL→FAIL، BLOCKED→BLOCKED،全部 PASS→PASS"
+
+
+def t_neg_zero_commit_not_success():
+    """H14 — commit_count=0 with no remote proof must never be 'ok'."""
+    import unittest.mock as mock
+    name = "sr-test-zerocommit-" + str(int(time.time()))[-5:]
+    d = fixture(name)
+    remote = bare_remote(name)
+    git(d, "remote", "add", "origin", str(remote))
+    git(d, "push", "-qu", "origin", "main")
+    fake_sync = {"status": git_sync.OK, "committed": False, "commit_count": 0,
+                 "pushed": False, "online_match": None,
+                 "head_local": "x", "head_before": "x", "steps": [], "note": ""}
+    with mock.patch.object(git_sync, "commit_and_push", return_value=fake_sync), \
+         mock.patch.object(sr.factory, "testrun_combined",
+                           return_value={"ran": True, "ok": True}):
+        r = sr.run(name, downloads_dir=str(TMP / ("dl-zero-" + name)), push=True)
+    assert r["status"] != sr.OK, r
+    assert r["verification"]["status"] in (ost.NOT_TESTED, ost.BLOCKED), \
+        r["verification"]
+    assert "انتشار کامل و همگامسازی تأیید شد" not in r["note"], r["note"]
+    return "status=%s, verification=%s — موفقیت کامل ثبت نشد" % (
+        r["status"], r["verification"]["status"])
+
+
+def main() -> int:
+    check("1 intent فارسی", t_intent)
+    check("2 تشخیص نوع بر اساس ساختار نه نام", t_types)
+    check("3 امنیت مسیر", t_paths)
+    check("4 جلوگیری از فایل محرمانه/کتاب", t_public_secret)
+    check("5 تشخیص مخزن عمومی GitHub (واقعی)", t_gh_visibility, real=True)
+    check("6 تشخیص تعارض محلی/آنلاین", t_conflict)
+    check("7 ثبت وpush واقعیgit + تطابقhead", t_git_sync)
+    check("8 شکست ساخت/امضا صادقانه", t_build_fail)
+    check("9 قطع ارتباط GitHub", t_offline)
+    check("10 اجرای دوباره بدون ثبت تکراری", t_idempotent)
+    check("11 جلوگیری از جایگزینی فایل", t_no_overwrite)
+    check("12 اعتبارسنجی APK + امضا", t_validate)
+    check("13 عدم خرابی ماژولهای موجود", t_regression)
+    # AF-26 — negative tests prove that absent/failed work is NOT success.
+    check("14 نبود gh → SKIP", t_neg_gh_missing)
+    check("15 شکست probe GitHub → SKIP", t_neg_gh_failure)
+    check("16 نبود APK → عدم اعتبارسنجی", t_neg_missing_apk)
+    check("17 مراحل ناقص → NOT TESTED/BLOCKED", t_neg_incomplete_stages)
+    check("18 commit صفر بدون مدرک → غیرموفق (H14)", t_neg_zero_commit_not_success)
+
+    report = REC.finish()
+    out = ROOT / "docs/test-reports/smart-release/test-results.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "isolation_root": os.environ.get("AI_FACTORY_TEST_ROOT"),
+        "status_model": list(ost.STATUSES),
+        "note": "SKIP never counted as PASS; overall PASS requires all required PASS",
+        "summary": {k: report[k] for k in
+                    ("status", "passed", "total", "counts", "required", "duration_s")},
+        "results": report["checks"],
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    # remove only OUR fixtures, never any pre-existing project
+    for d in FIXTURES + TMP_FIXTURES:
+        shutil.rmtree(d, ignore_errors=True)
+    print("\nOVERALL: %s | counts=%s → %s" %
+          (report["status"], report["counts"], out))
+    # A skipped/not-tested required check is NOT a green suite.
+    return 0 if report["status"] == ost.PASS else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

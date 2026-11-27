@@ -1,0 +1,444 @@
+#!/usr/bin/env bash
+# ai-factory-test-r4-1 — R4: real deployment system acceptance suite.
+# Mission tests mapped:
+#   A (T1) static-web deploy → local-prod, service answers, port in 8700-8739
+#   B (T2) real API deploy → local-prod, health + CRUD cycle
+#   C (T3) independence: restart PANEL ONLY → deployed services survive;
+#          personal ports 8580(/4556/8610) state recorded
+#   D (T4) health + history records via API
+#   E (T5) failure simulation: broken server.py → deploy fails, error recorded,
+#          no orphan process
+#   F (T6) rollback: two different-content releases → deploy v2 → rollback →
+#          deployed bytes == v1 package bytes + audit record
+#   G (T9) concurrent-deploy lock (manual deploy.lock → 409) + port discipline
+#   H (T7) no secret/key material in logs, data files or API output
+#   I (T8) source immutability (sha256 of all touched product trees)
+#   J (T10) REMOTE path over real sshd on localhost:8022 (throwaway keypair):
+#          dest → preflight → deploy v1 → deploy v2 → rollback → cleanup.
+#          HONESTY: this proves the SSH/SCP pipeline against a real sshd, NOT
+#          an external server.
+#   K      regression: r3-1 (which itself runs p10-1 + r2-1)
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/r4"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+cd "$ROOT"
+if ! command curl -fsS "$BASE/api/health" >/dev/null 2>&1; then
+    bash "$ROOT/scripts/ai-factory-start" >/dev/null; sleep 2
+fi
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+PRODUCTS="r2-api-notes r2-dash-sales r2-webapp-calc r2-tool-passgen p6-ai-211542 af4mdl-115543 r3-store-fspy p8-app-demo"
+snap() {
+    for P in $PRODUCTS; do
+        find "projects/$P" -type f ! -path "*__pycache__*" ! -name "*.pyc" 2>/dev/null \
+            | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1
+    done
+}
+wait_up() { # url tries
+    local N="${2:-40}" i
+    for i in $(seq 1 "$N"); do
+        [ "$(command curl -s -m2 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" != "000" ] \
+            && return 0
+        sleep 0.5
+    done; return 1
+}
+restart_panel() {
+    local PID="" CMD=""
+    PID=$(cat "$ROOT/logs/server.pid" 2>/dev/null || echo "")
+    CMD=$(tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null || echo "")
+    case "$CMD" in
+        *core/server.py*)
+            kill "$PID"
+            local i
+            for i in $(seq 1 10); do [ -d "/proc/$PID" ] || break; sleep 0.5; done
+            [ -d "/proc/$PID" ] && kill -9 "$PID"
+            ;;
+        *) echo "  ⚠️ ردشدن از kill: pid=$PID cmd=$CMD" ;;
+    esac
+    bash "$ROOT/scripts/ai-factory-start" >/dev/null 2>&1
+    sleep 1.5
+    . "$ROOT/scripts/ai-factory-panel-login" "$BASE"   # نشست تازه پس از ری‌استارت
+    # orchestrator داخل پروسهٔ پنل است — با ری‌استارت پنل می‌میرد؛ باید دوباره
+    # بالا بیاید وگرنه وظایف مدل‌ساخت صف می‌مانند (شکست صادقانهٔ دور اول!)
+    curl -s -m30 -X POST -d '{"workers":1}' -H 'Content-Type: application/json' \
+        "$BASE/api/orchestrator/start" >/dev/null
+}
+api_deploy() { # project dest releasePath-or-"" outfile -> http_code
+    local PR="$1" DS="$2" RL="$3" OUT="$4" BODY
+    if [ -n "$RL" ]; then
+        BODY="{\"project\":\"$PR\",\"dest\":\"$DS\",\"release\":\"$RL\",\"confirm\":true}"
+    else
+        BODY="{\"project\":\"$PR\",\"dest\":\"$DS\",\"confirm\":true}"
+    fi
+    curl -s -m120 -o "$OUT" -w '%{http_code}' -X POST -d "$BODY" \
+        -H 'Content-Type: application/json' "$BASE/api/deploy/start"
+}
+rec_field() { # outfile python-expr
+    python3 -c "
+import json
+r = json.load(open('$1'))
+rec = r.get('record') if isinstance(r.get('record'), dict) else r
+print($2)" 2>/dev/null || echo PARSE-ERR
+}
+mkproj() { # name type -> http_code
+    curl -s -m20 -o /dev/null -w '%{http_code}' -X POST \
+        -d "{\"name\":\"$1\",\"type\":\"$2\",\"description\":\"R4 test fixture\"}" \
+        -H 'Content-Type: application/json' "$BASE/api/factory/projects"
+}
+build_rel() { # project outfile -> http_code
+    curl -s -m60 -o "$2" -w '%{http_code}' -X POST -d "{\"project\":\"$1\"}" \
+        -H 'Content-Type: application/json' "$BASE/api/factory/release"
+}
+
+SNAP_BEFORE=$(snap)
+PORT_APANEL_OK=$(command curl -s -m3 -o /dev/null -w '%{http_code}' "$BASE/api/health")
+echo "════ R4-1/P0 — بهداشت محیط"
+check "R4-1-P0 پنل پاسخ می‌دهد" "200" "$PORT_APANEL_OK"
+p_L=$(python3 -c "
+import socket
+for p in (8580,4556,8610):
+    s=socket.socket(); s.settimeout(1)
+    print('%d:%s' % (p, 'L' if s.connect_ex(('127.0.0.1',p))==0 else 'C')); s.close()" | tr '\n' ' ')
+echo "  ℹ️ وضعیت پورت‌های شخصی قبل از شروع: $p_L"
+
+echo "════ R4-1/A — آزمون ۱: استقرار static-web در Local Production"
+PRE_A=$(curl -s -m30 -X POST -d '{"project":"r2-tool-passgen","dest":"local-prod"}' \
+    -H 'Content-Type: application/json' "$BASE/api/deploy/preflight")
+check "R4-1-A preflight آماده" "True" \
+    "$(echo "$PRE_A" | python3 -c 'import json,sys;print(json.load(sys.stdin)["ok"])')"
+CA=$(api_deploy "r2-tool-passgen" "local-prod" "" "$T/r4/dep-passgen.json")
+check "R4-1-A استقرار با confirm → HTTP 201" "201" "$CA"
+UA=$(rec_field "$T/r4/dep-passgen.json" "rec['url']")
+PA=$(rec_field "$T/r4/dep-passgen.json" "rec['port']")
+SA=$(rec_field "$T/r4/dep-passgen.json" "rec['status']")
+check "R4-1-A وضعیت success" "success" "$SA"
+check "R4-1-A پورت در بازهٔ استقرار 8700-8739" "in" \
+    "$([ "$PA" -ge 8700 ] 2>/dev/null && [ "$PA" -le 8739 ] 2>/dev/null && echo in || echo out)"
+check "R4-1-A سرویس مستقل پاسخ می‌دهد" "200" \
+    "$(command curl -s -m5 -o /dev/null -w '%{http_code}' "$UA/")"
+check "R4-1-A محتوای واقعی محصول (HTML)" "html" \
+    "$(command curl -s -m5 "$UA/" | grep -qi '<html' && echo html || echo no)"
+
+echo "════ R4-1/B — آزمون ۲: استقرار API واقعی + چرخهٔ CRUD"
+curl -s -m30 -X POST -d '{"project":"r2-api-notes","dest":"local-prod"}' \
+    -H 'Content-Type: application/json' "$BASE/api/deploy/preflight" > "$T/r4/pre-api.json"
+check "R4-1-B preflight آماده" "True" \
+    "$(python3 -c 'import json;print(json.load(open("'$T'/r4/pre-api.json"))["ok"])')"
+CB=$(api_deploy "r2-api-notes" "local-prod" "" "$T/r4/dep-api.json")
+UB=$(rec_field "$T/r4/dep-api.json" "rec['url']")
+SB=$(rec_field "$T/r4/dep-api.json" "rec['status']")
+check "R4-1-B استقرار success" "success" "$SB"
+check "R4-1-B HTTP 201" "201" "$CB"
+wait_up "$UB/api/health" 20 || true
+HCB=$(command curl -s -m5 "$UB/api/health" | python3 -c \
+    'import json,sys;print("ok" if json.load(sys.stdin).get("ok") else "bad")' 2>/dev/null || echo bad)
+check "R4-1-B /api/health محصول مستقر" "ok" "$HCB"
+CRB=$(command curl -s -m5 -X POST -d '{"name":"r4-probe"}' -H 'Content-Type: application/json' \
+    -o "$T/r4/api-create.json" -w '%{http_code}' "$UB/api/items")
+IDB=$(python3 -c "import json;print(json.load(open('$T/r4/api-create.json')).get('id',''))" 2>/dev/null || echo "")
+check "R4-1-B POST /api/items (200/201+id)" "ok" \
+    "$({ [ "$CRB" = "200" ] || [ "$CRB" = "201" ]; } && [ -n "$IDB" ] && echo ok || echo "code=$CRB id=$IDB")"
+LB=$(command curl -s -m5 -o "$T/r4/api-list.json" -w '%{http_code}' "$UB/api/items")
+HITB=$(python3 -c "
+import json
+items = json.load(open('$T/r4/api-list.json'))
+items = items if isinstance(items, list) else items.get('items', [])
+print('yes' if any(str(i.get('id'))==str('$IDB') for i in items) else 'no')" 2>/dev/null || echo no)
+check "R4-1-B GET /api/items شامل رکورد ساخته‌شده" "200/yes" "$LB/$HITB"
+
+echo "════ R4-1/C — آزمون ۳: استقلال از پنل (ری‌استارت فقط-پنل)"
+UPA_BEFORE=$(command curl -s -m3 -o /dev/null -w '%{http_code}' "$UA/")
+UPB_BEFORE=$(command curl -s -m3 -o /dev/null -w '%{http_code}' "$UB/api/health")
+restart_panel
+sleep 1
+UPA_AFTER=$(command curl -s -m5 -o /dev/null -w '%{http_code}' "$UA/")
+UPB_AFTER=$(command curl -s -m5 -o /dev/null -w '%{http_code}' "$UB/api/health")
+check "R4-1-C پنل پس از ری‌استارت بالا" "200" \
+    "$(command curl -s -m5 -o /dev/null -w '%{http_code}' "$BASE/api/health")"
+check "R4-1-C سرویس static مستقر از ری‌استارت پنل جان به در برد" "$UPA_BEFORE" "$UPA_AFTER"
+check "R4-1-C سرویس API مستقر از ری‌استارت پنل جان به در برد" "$UPB_BEFORE" "$UPB_AFTER"
+P_C=$(python3 -c "
+import socket
+s=socket.socket(); s.settimeout(1)
+print('L' if s.connect_ex(('127.0.0.1',4556))==0 else 'C'); s.close()")
+echo "  ℹ️ بریج 4556 پس از ری‌استارت پنل: $P_C (با اولین وظیفه به‌طور خودکار بالا می‌آید — رگرسیون K اثبات می‌کند)"
+
+echo "════ R4-1/D — آزمون ۴: Health و ثبت تاریخچه"
+curl -s -m10 "$BASE/api/deploy/history?project=r2-tool-passgen" > "$T/r4/hist-passgen.json"
+curl -s -m10 "$BASE/api/deploy/history?project=r2-api-notes" > "$T/r4/hist-api.json"
+check "R4-1-D تاریخچهٔ passgen ≥۱ رکورد success با url" "ok" "$(python3 -c "
+import json
+h = json.load(open('$T/r4/hist-passgen.json'))['history']
+ok = any(r['status']=='success' and r.get('url') and r.get('port') for r in h)
+print('ok' if ok else 'empty')")"
+check "R4-1-D تاریخچهٔ api ≥۱ رکورد success با url" "ok" "$(python3 -c "
+import json
+h = json.load(open('$T/r4/hist-api.json'))['history']
+ok = any(r['status']=='success' and r.get('url') and r.get('port') for r in h)
+print('ok' if ok else 'empty')")"
+check "R4-1-D رکورد passgen مرحلهٔ health ok دارد" "ok" "$(python3 -c "
+import json
+h = json.load(open('$T/r4/hist-passgen.json'))['history']
+r = next(x for x in h if x['status']=='success')
+print('ok' if any(s['step']=='health' and s['ok'] for s in r['steps']) else 'missing')")"
+check "R4-1-D health زندهٔ سرویس API مستقر" "ok" "$(command curl -s -m5 "$UB/api/health" \
+    | python3 -c 'import json,sys;print("ok" if json.load(sys.stdin).get("ok") else "bad")' 2>/dev/null || echo bad)"
+
+echo "════ R4-1/E — آزمون ۵: شبیه‌سازی شکست استقرار"
+check "R4-1-E ساخت پروژهٔ دورریز r4x-fail" "201" "$(mkproj r4x-fail api)"
+printf '# R4 failure simulation: crashes at boot\nraise RuntimeError("R4 failure simulation - server must not start")\n' \
+    > "projects/r4x-fail/server.py"
+check "R4-1-E build_release بستهٔ معتبر می‌سازد" "201" "$(build_rel r4x-fail "$T/r4/rel-fail.json")"
+CE=$(api_deploy "r4x-fail" "local-prod" "" "$T/r4/dep-fail.json")
+check "R4-1-E استقرار ناموفق → HTTP 502" "502" "$CE"
+check "R4-1-E رکورد status=failed" "failed" "$(rec_field "$T/r4/dep-fail.json" "rec['status']")"
+check "R4-1-E خطا در رکورد ثبت شد" "yes" "$(rec_field "$T/r4/dep-fail.json" \
+    "'yes' if rec.get('error') else 'no'")"
+check "R4-1-E هیچ پروسهٔ یتیمی باقی نماند" "0" \
+    "$(pgrep -f "r4x[-]fail" 2>/dev/null | wc -l | tr -d ' ')"
+
+echo "════ R4-1/F — آزمون ۶: Rollback واقعی با محتوای متفاوت"
+check "R4-1-F ساخت پروژهٔ دورریز r4x-rb" "201" "$(mkproj r4x-rb webtool)"
+printf '<!DOCTYPE html><html lang="fa"><head><meta charset="utf-8"><title>R4 RB v1</title></head><body><h1>R4-rollback-version-ONE</h1></body></html>\n' \
+    > "projects/r4x-rb/index.html"
+check "R4-1-F build نسخهٔ ۱" "201" "$(build_rel r4x-rb "$T/r4/rel-rb1.json")"
+sleep 2   # build stamp به ثانیه — نباید دو بسته همنام شوند
+printf '<!DOCTYPE html><html lang="fa"><head><meta charset="utf-8"><title>R4 RB v2</title></head><body><h1>R4-rollback-version-TWO</h2></body></html>\n' \
+    > "projects/r4x-rb/index.html"
+check "R4-1-F build نسخهٔ ۲" "201" "$(build_rel r4x-rb "$T/r4/rel-rb2.json")"
+RB1=$(python3 -c "import json;print(json.load(open('$T/r4/rel-rb1.json'))['path'])")
+RB2=$(python3 -c "import json;print(json.load(open('$T/r4/rel-rb2.json'))['path'])")
+CF1=$(api_deploy "r4x-rb" "local-prod" "$RB1" "$T/r4/dep-rb1.json")
+check "R4-1-F استقرار نسخهٔ ۱ → 201/success" "201/success" \
+    "$CF1/$(rec_field "$T/r4/dep-rb1.json" "rec['status']")"
+CF2=$(api_deploy "r4x-rb" "local-prod" "$RB2" "$T/r4/dep-rb2.json")
+URB=$(rec_field "$T/r4/dep-rb2.json" "rec['url']")
+check "R4-1-F استقرار نسخهٔ ۲ → 201/success" "201/success" \
+    "$CF2/$(rec_field "$T/r4/dep-rb2.json" "rec['status']")"
+command curl -s -m5 "$URB/index.html" > "$T/r4/deployed-before-rb"
+V2H=$(sha256sum "projects/r4x-rb/index.html" | cut -d' ' -f1)
+BH=$(sha256sum "$T/r4/deployed-before-rb" | cut -d' ' -f1)
+check "R4-1-F نسخهٔ ۲ واقعاً مستقر شده بود (محتوای v2)" "same" \
+    "$([ "$V2H" = "$BH" ] && echo same || echo diff)"
+NOCONF=$(curl -s -m10 -o "$T/r4/rb-noconf.json" -w '%{http_code}' -X POST \
+    -d '{"project":"r4x-rb","dest":"local-prod"}' -H 'Content-Type: application/json' \
+    "$BASE/api/deploy/rollback")
+check "R4-1-F rollback بدون confirm → 400" "400" "$NOCONF"
+FRB=$(curl -s -m120 -o "$T/r4/dep-rb3.json" -w '%{http_code}' -X POST \
+    -d '{"project":"r4x-rb","dest":"local-prod","confirm":true}' \
+    -H 'Content-Type: application/json' "$BASE/api/deploy/rollback")
+SRB=$(rec_field "$T/r4/dep-rb3.json" "rec['status']")
+URB3=$(rec_field "$T/r4/dep-rb3.json" "rec['url']")
+check "R4-1-F rollback با confirm → 200/success" "200/success" "$FRB/$SRB"
+command curl -s -m5 "$URB3/index.html" > "$T/r4/deployed-after-rb"
+PYTHONDONTWRITEBYTECODE=1 python3 -c "
+import zipfile
+zipfile.ZipFile(r'''$RB1''').extract('r4x-rb/index.html', r'''$T/r4/zip1''')"
+Z1H=$(sha256sum "$T/r4/zip1/r4x-rb/index.html" | cut -d' ' -f1)
+AH=$(sha256sum "$T/r4/deployed-after-rb" | cut -d' ' -f1)
+check "R4-1-F پس از Rollback محتوای مستقر == بستهٔ نسخهٔ ۱ (sha256)" "same" \
+    "$([ "$Z1H" = "$AH" ] && echo same || echo diff)"
+check "R4-1-F رکورد rollback با rolled_back_from" "ok" "$(python3 -c "
+import json
+r = json.load(open('$T/r4/dep-rb3.json'))['record']
+print('ok' if r.get('action')=='rollback' and r.get('rolled_back_from') else 'missing')")"
+
+echo "════ R4-1/G — آزمون ۹: قفل استقرار هم‌زمان + نظم پورت"
+touch data/deploy.lock   # قفل تازه (age < 600s)
+CG=$(api_deploy "r2-tool-passgen" "local-prod" "" "$T/r4/dep-lock.json")
+rm -f data/deploy.lock
+check "R4-1-G استقرار هم‌زمان → HTTP 409" "409" "$CG"
+PG=$(python3 -c "
+import json
+h = json.load(open('data/deployments.json'))
+ports = [r.get('port') for r in h if r.get('dest')=='local-prod' and r.get('port')]
+bad = [p for p in ports if not (8700 <= p <= 8739)]
+personal = [p for p in ports if p in (8580, 4556, 8610)]
+print('ok' if not bad and not personal else 'bad=%s personal=%s' % (bad, personal))")
+check "R4-1-G همهٔ پورت‌های استقرار در 8700-8739 و خارج از پورت‌های شخصی" "ok" "$PG"
+
+echo "════ R4-1/J — آزمون ۱۰: مسیر Remote با sshd واقعی (localhost:8022، جفت‌کلید دورریز)"
+SSHDIR="$T/r4/ssh"; RROOT="$T/r4/remote-root"
+mkdir -p "$SSHDIR"
+[ -f "$SSHDIR/sshd.pid" ] && kill "$(cat "$SSHDIR/sshd.pid")" 2>/dev/null
+rm -f "$SSHDIR/id_ed25519" "$SSHDIR/id_ed25519.pub" "$SSHDIR/hostkey" \
+      "$SSHDIR/authorized_keys" "$SSHDIR/sshd.pid"
+sleep 0.5
+ssh-keygen -t ed25519 -N "" -f "$SSHDIR/id_ed25519" -C r4-test -q
+ssh-keygen -t ed25519 -N "" -f "$SSHDIR/hostkey" -q
+cp "$SSHDIR/id_ed25519.pub" "$SSHDIR/authorized_keys"
+# hostkey هر دور تازه است — ورودی کهنهٔ known_hosts اتصال را با
+# «REMOTE HOST IDENTIFICATION HAS CHANGED» می‌شکند؛ پاک‌سازی اجباری:
+ssh-keygen -R "[127.0.0.1]:8022" >/dev/null 2>&1
+cat > "$SSHDIR/sshd_config" <<EOF
+Port 8022
+ListenAddress 127.0.0.1
+HostKey $SSHDIR/hostkey
+AuthorizedKeysFile $SSHDIR/authorized_keys
+PidFile $SSHDIR/sshd.pid
+PasswordAuthentication no
+PubkeyAuthentication yes
+StrictModes no
+LogLevel QUIET
+EOF
+SSHD_BIN=$(command -v sshd || echo "")
+check "R4-1-J sshd موجود" "yes" "$([ -n "$SSHD_BIN" ] && echo yes || echo no)"
+if [ -n "$SSHD_BIN" ]; then
+    "$SSHD_BIN" -f "$SSHDIR/sshd_config" && SSHD_UP=yes || SSHD_UP=no
+    check "R4-1-J sshd روی 8022 بالا آمد" "yes" "$SSHD_UP"
+    SSH_OK=no
+    for i in $(seq 1 12); do
+        if command ssh -p 8022 -i "$SSHDIR/id_ed25519" -o BatchMode=yes \
+               -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
+               "$(whoami)@127.0.0.1" true 2>/dev/null; then SSH_OK=yes; break; fi
+        sleep 1
+    done
+    check "R4-1-J اتصال SSH با کلید دورریز" "yes" "$SSH_OK"
+    if [ "$SSH_OK" = "yes" ]; then
+        CJ=$(curl -s -m15 -o /dev/null -w '%{http_code}' -X POST \
+            -d "{\"name\":\"r4-test-remote\",\"kind\":\"remote\",\"host\":\"127.0.0.1\",\"port\":8022,\"user\":\"$(whoami)\",\"path\":\"$RROOT\",\"key_path\":\"$SSHDIR/id_ed25519\"}" \
+            -H 'Content-Type: application/json' "$BASE/api/deploy/dests")
+        check "R4-1-J ذخیرهٔ مقصد remote → 201" "201" "$CJ"
+        DESTS_OUT=$(curl -s -m10 "$BASE/api/deploy/dests")
+        HK=$(echo "$DESTS_OUT" | python3 -c "
+import json,sys
+ds = json.load(sys.stdin)['dests']
+d = next((x for x in ds if x['name']=='r4-test-remote'), {})
+print(d.get('has_key'))")
+        check "R4-1-J خروجی dests فقط has_key=true" "True" "$HK"
+        LEAK=$(echo "$DESTS_OUT" | grep -c "id_ed25519\|key_path" || true)
+        check "R4-1-J مسیر کلید در خروجی پنل افشا نشد" "0" "$LEAK"
+        curl -s -m30 -X POST -d '{"project":"r2-webapp-calc","dest":"r4-test-remote"}' \
+            -H 'Content-Type: application/json' "$BASE/api/deploy/preflight" > "$T/r4/pre-remote.json"
+        check "R4-1-J preflight remote (اتصال+ابزار+کلید)" "True" \
+            "$(python3 -c 'import json;print(json.load(open("'$T'/r4/pre-remote.json"))["ok"])')"
+        # دو نسخهٔ متفاوت (build) از webapp-calc
+        build_rel r2-webapp-calc "$T/r4/rel-wc.json" >/dev/null
+        ZW=$(ls -1 exports/r2-webapp-calc-release-*.zip | sort)
+        W1=$(echo "$ZW" | head -1); W2=$(echo "$ZW" | tail -1)
+        CJ1=$(api_deploy "r2-webapp-calc" "r4-test-remote" "$ROOT/$W1" "$T/r4/dep-wc1.json")
+        check "R4-1-J deploy remote نسخهٔ ۱ → 201/success" "201/success" \
+            "$CJ1/$(rec_field "$T/r4/dep-wc1.json" "rec['status']")"
+        CJ2=$(api_deploy "r2-webapp-calc" "r4-test-remote" "$ROOT/$W2" "$T/r4/dep-wc2.json")
+        UWC=$(rec_field "$T/r4/dep-wc2.json" "rec['url']")
+        check "R4-1-J deploy remote نسخهٔ ۲ → 201/success" "201/success" \
+            "$CJ2/$(rec_field "$T/r4/dep-wc2.json" "rec['status']")"
+        CJ3=$(curl -s -m120 -o "$T/r4/dep-wc3.json" -w '%{http_code}' -X POST \
+            -d '{"project":"r2-webapp-calc","dest":"r4-test-remote","confirm":true}' \
+            -H 'Content-Type: application/json' "$BASE/api/deploy/rollback")
+        check "R4-1-J rollback remote → 200/success" "200/success" \
+            "$CJ3/$(rec_field "$T/r4/dep-wc3.json" "rec['status']")"
+        PORTWC=$(rec_field "$T/r4/dep-wc3.json" "rec['port']")
+        RH=$(command ssh -p 8022 -i "$SSHDIR/id_ed25519" -o BatchMode=yes \
+            -o StrictHostKeyChecking=accept-new "$(whoami)@127.0.0.1" \
+            "curl -s -m3 -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORTWC/" 2>/dev/null)
+        check "R4-1-J محصول مستقر روی مقصد remote پاسخ می‌دهد (curl از طرف مقصد)" "200" "$RH"
+        NH=$(python3 -c "
+import json
+h = [r for r in json.load(open('data/deployments.json'))
+     if r.get('dest')=='r4-test-remote' and r.get('status')=='success']
+acts = [r['action'] for r in h]
+print('ok' if len(h) >= 3 and 'rollback' in acts else 'records=%d acts=%s' % (len(h), acts))")
+        check "R4-1-J تاریخچهٔ remote: deploy+deploy+rollback" "ok" "$NH"
+        # ── پاک‌سازی کامل J
+        command ssh -p 8022 -i "$SSHDIR/id_ed25519" -o BatchMode=yes \
+            "$(whoami)@127.0.0.1" \
+            "[ -f $RROOT/r2-webapp-calc/.deploy.pid ] && kill \$(cat $RROOT/r2-webapp-calc/.deploy.pid) 2>/dev/null; true" \
+            >/dev/null 2>&1
+        [ -f "$SSHDIR/sshd.pid" ] && kill "$(cat "$SSHDIR/sshd.pid")" 2>/dev/null
+        PYTHONDONTWRITEBYTECODE=1 python3 -c "
+import json
+d = json.load(open('data/deploy_dests.json'))
+d.pop('r4-test-remote', None)
+json.dump(d, open('data/deploy_dests.json','w'), ensure_ascii=False, indent=1)"
+        rm -rf "$RROOT"
+        check "R4-1-J پاک‌سازی: مقصد آزمایشی حذف شد" "ok" "$(python3 -c "
+import json
+d = json.load(open('data/deploy_dests.json'))
+print('ok' if 'r4-test-remote' not in d else 'still-there')")"
+    fi
+else
+    echo "  ℹ️ sshd در دسترس نیست — آزمون remote صادقانه رد شد"
+fi
+
+echo "════ R4-1/H — آزمون ۷: عدم افشای رمز و کلید"
+SEC1=$(grep -rl "PRIVATE KEY" logs/deploy data/deploy_dests.json data/deployments.json 2>/dev/null | wc -l)
+check "R4-1-H صفر PRIVATE KEY در لاگ‌ها و داده‌ها" "0" "$SEC1"
+SEC2=$(grep -rc '"password"' data/deploy_dests.json data/deployments.json 2>/dev/null \
+    | awk -F: '{s+=$2} END{print s+0}')
+check "R4-1-H صفر فیلد password در دادهٔ استقرار" "0" "$SEC2"
+SEC3=$(grep -rl "BEGIN OPENSSH\|ssh-ed25519 AAAA" logs/deploy data/deploy_dests.json \
+    data/deployments.json 2>/dev/null | wc -l)
+check "R4-1-H صفر مادهٔ کلید عمومی/خصوصی در لاگ و داده" "0" "$SEC3"
+
+echo "════ R4-1/I — آزمون ۸: مصونیت سورس پروژه‌های اصلی"
+SNAP_AFTER=$(snap)
+check "R4-1-I هر ۸ درخت سورس بایت‌به‌بایت دست‌نخورده" "ok" \
+    "$([ "$SNAP_BEFORE" = "$SNAP_AFTER" ] && echo ok || echo CHANGED)"
+
+echo "════ R4-1/L — پاک‌سازی فیکسچرهای دورریز (محصولات اصلی مستقر می‌مانند)"
+LSRB=$(curl -s -m15 -o "$T/r4/stop-rb.json" -w '%{http_code}' -X POST \
+    -d '{"project":"r4x-rb","dest":"local-prod"}' -H 'Content-Type: application/json' \
+    "$BASE/api/deploy/stop")
+echo "  ℹ️ توقف r4x-rb (HTTP $LSRB، وضعیت: $(rec_field "$T/r4/stop-rb.json" "rec.get('status')" 2>/dev/null || echo "-"))"
+[ -d "projects/r4x-fail" ] && curl -s -m15 -o /dev/null -X POST \
+    -d '{"project":"r4x-fail","confirm":true}' -H 'Content-Type: application/json' \
+    "$BASE/api/factory/delete"
+[ -d "projects/r4x-rb" ] && curl -s -m15 -o /dev/null -X POST \
+    -d '{"project":"r4x-rb","confirm":true}' -H 'Content-Type: application/json' \
+    "$BASE/api/factory/delete"
+rm -f exports/r4x-fail-release-*.zip exports/r4x-rb-release-*.zip
+check "R4-1-L فیکسچرها حذف شدند" "no/no" \
+    "$([ -d projects/r4x-fail ] && echo yes || echo no)/$([ -d projects/r4x-rb ] && echo yes || echo no)"
+check "R4-1-L سرویس‌های اصلی مستقر زنده ماندند" "200/200" \
+    "$(command curl -s -m5 -o /dev/null -w '%{http_code}' "$UA/")/$(command curl -s -m5 -o /dev/null -w '%{http_code}' "$UB/api/health")"
+
+echo "════ R4-1/K — رگرسیون P5..R3 (سوئیت r3-1 شامل p10-1 و r2-1)"
+bash "$ROOT/scripts/ai-factory-test-r3-1" > "$T/r4/reg-r3-1.log" 2>&1
+RC=$?
+if [ "$RC" = "0" ]; then PASS=$((PASS+1)); echo "  ✅ reg-r3-1 exit=0"
+else FAIL=$((FAIL+1)); FAILED="$FAILED|reg-r3-1"; echo "  ❌ reg-r3-1 exit=$RC (ببین: $T/r4/reg-r3-1.log)"; fi
+P_END=$(python3 -c "
+import socket
+out = []
+for p in (8580,4556,8610):
+    s=socket.socket(); s.settimeout(1)
+    out.append('%d:%s' % (p, 'L' if s.connect_ex(('127.0.0.1',p))==0 else 'C')); s.close()
+print(' '.join(out))")
+echo "  ℹ️ پورت‌های شخصی در پایان: $P_END"
+
+echo "════ R4-1/M — وضعیت نهایی محصولات مستقر (+ بازیابی در صورت نیاز)"
+for PP in "r2-tool-passgen|" "r2-api-notes|/api/health"; do
+    PRJ="${PP%%|*}"; HP="${PP#*|}"
+    ST=$(command curl -s -m4 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$(python3 -c "
+import json
+h = [r for r in json.load(open('data/deployments.json')) if r.get('project')=='$PRJ' and r.get('status')=='success']
+print(h[-1]['port'])")$HP" 2>/dev/null)
+    if [ "$ST" != "200" ]; then
+        echo "  ℹ️ $PRJ در جریان رگرسیون سنگین از کار افتاد — استقرار مجدد با موتور:"
+        curl -s -m90 -X POST -d "{\"project\":\"$PRJ\",\"dest\":\"local-prod\",\"confirm\":true}" \
+            -H 'Content-Type: application/json' "$BASE/api/deploy/start" | python3 -c "
+import json,sys
+rec = json.load(sys.stdin).get('record') or {}
+print('    redeploy:', rec.get('status'), rec.get('url'))"
+        ST=$(command curl -s -m4 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$(python3 -c "
+import json
+h = [r for r in json.load(open('data/deployments.json')) if r.get('project')=='$PRJ' and r.get('status')=='success']
+print(h[-1]['port'])")$HP" 2>/dev/null)
+    fi
+    check "R4-1-M محصول مستقر $PRJ در پایان زنده" "200" "$ST"
+done
+
+echo "──────────────────"
+echo "نتیجهٔ R4-1: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#4f46e5">
+<meta name="description" content="اپلیکیشن وب نصب‌شوندهٔ AI Factory">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<title>{{APP_TITLE}}</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="app">
+  <h1>{{APP_TITLE}}</h1>
+  <p class="hint">قالب استاندارد PWA — با Service Worker حتی آفلاین باز می‌شود.</p>
+  <button type="button" id="greetBtn" data-action="greet">سلام بزن</button>
+  <output id="output" role="status" aria-live="polite"></output>
+  <p id="online" class="hint"></p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

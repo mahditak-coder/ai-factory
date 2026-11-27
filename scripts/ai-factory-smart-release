@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""AI Factory — Smart Release tool (AF-24).
+
+This is the REAL tool an agent/model calls when the user asks (in Persian)
+to build, deliver and sync the latest healthy release. It does not print
+advice — it executes the operation through core.smart_release and prints the
+honest report produced by the factory.
+
+Examples (Persian, one request):
+    ai-factory-smart-release --request "پروژه را بررسی کن، نسخه نهایی را بساز،
+        در دانلودها ذخیره کن و Git و GitHub را بهروز کن" --project teacher-android
+    ai-factory-smart-release --request "نسخه نهایی معلم من رو بساز" --confirm
+    ai-factory-smart-release --project apisrv --plan        # dry-run, no changes
+
+Exit code: 0 = موفق/ناقص (تحویل محلی شد), 2 = ناموفق/غیرقابل اجرا, 1 = خطای ابزار.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from core import smart_release as sr  # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        prog="ai-factory-smart-release",
+        description="انتشار هوشمند AI Factory — ساخت، تحویل و همگامسازی واقعی",
+    )
+    ap.add_argument("--request", default="", help="درخواست طبیعی فارسی کاربر")
+    ap.add_argument("--project", default="", help="نام پروژه (اختیاری اگر در متن هست)")
+    ap.add_argument("--confirm", action="store_true", help="تأیید صریح عملیات حساس")
+    ap.add_argument("--plan", action="store_true", help="فقط بررسی و برنامه (بدون تغییر)")
+    ap.add_argument("--detect", action="store_true", help="فقط تشخیص قصد انتشار از متن")
+    ap.add_argument("--json", action="store_true", help="خروجی JSON خام")
+    ap.add_argument("--no-push", action="store_true", help="ارسال به GitHub انجام نشود")
+    ap.add_argument("--version", default="", help="نسخهٔ صریح (AF-12: فقط با --confirm)")
+    ap.add_argument("--downloads-dir", default="", help="پوشهٔ تحویل جایگزین (آزمون)")
+    ap.add_argument("--session", default="", help="شناسهٔ نشست فعال OpenCode (تشخیص پروژه)")
+    ap.add_argument("--confirm-token", default="", help="تأیید یکبارهُ پیشنهاد مخزن")
+    ap.add_argument("--decline", action="store_true", help="رد پیشنهاد ساخت/اتصال مخزن")
+    ap.add_argument("--no-auto-git", action="store_true", help="غیرفعال کردن آمادهسازی خودکار")
+    ap.add_argument("--prepare", action="store_true", help="فقط پیشنهاد مخزن (بدون تغییر)")
+    args = ap.parse_args()
+
+    if args.detect:
+        r = sr.detect_intent(args.request)
+        print(json.dumps(r, ensure_ascii=False, indent=1))
+        return 0
+
+    text = args.request
+    if not args.plan and text and not sr.detect_intent(text)["is_release"]:
+        r = {"ok": False, "executed": False, "note": sr.detect_intent(text)["note"],
+             "hint": "درخواست انتشار نهایی نیست — عملیاتی اجرا نشد"}
+        print(json.dumps(r, ensure_ascii=False, indent=1))
+        return 2
+
+    from core import project_git, confirmations
+    from core.confirmations import ConfirmError
+
+    decision, decline = None, args.decline
+    if args.confirm_token:
+        try:
+            v = confirmations.consume(args.confirm_token)
+        except ConfirmError as exc:
+            print(json.dumps({"ok": False, "status": "ناموفق", "note": exc.message},
+                             ensure_ascii=False, indent=1))
+            return 2
+        project = v["project"]
+        if not args.decline:
+            decision = v["payload"]
+    else:
+        try:
+            project = sr.resolve_project(text, args.project or None)
+        except (ValueError, PermissionError, FileNotFoundError):
+            if args.session:
+                project, note = project_git.active_project(args.session)
+                if not project:
+                    print(json.dumps({"ok": False, "status": "نیاز به پروژه",
+                                      "note": note}, ensure_ascii=False, indent=1))
+                    return 2
+            else:
+                print(json.dumps({"ok": False, "status": "ناموفق",
+                                  "note": "پروژه مشخص نشد"}, ensure_ascii=False, indent=1))
+                return 2
+
+    if args.prepare:
+        st = project_git.repo_state(project)
+        pr = project_git.proposal(project, args.session)
+        print(json.dumps({"project": project, "state": st, "proposal": pr},
+                         ensure_ascii=False, indent=1))
+        return 0
+
+    if args.plan:
+        r = sr.plan(project, text)
+        print(json.dumps(r, ensure_ascii=False, indent=1))
+        return 0
+
+    report = sr.run(
+        project=project, text=text, confirm=args.confirm,
+        version=args.version or None, push=not args.no_push,
+        downloads_dir=args.downloads_dir or None,
+        auto_git=not args.no_auto_git, git_decision=decision,
+        decline_git=decline, session_id=args.session,
+    )
+    if report.get("status") == sr.AWAIT:
+        print(report.get("question_fa") or "تأیید لازم است")
+        print("confirm_token: " + str(report.get("confirm_token")))
+        return 0
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=1, default=str))
+    else:
+        print(report.get("summary_fa") or json.dumps(report, ensure_ascii=False,
+                                                     indent=1, default=str))
+        if report.get("risks"):
+            print("\nهشدارها:")
+            for r in report["risks"][:6]:
+                print(" - " + str(r))
+    return 0 if report.get("status") in (sr.OK, sr.PARTIAL) else 2
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("عملیات توسط کاربر متوقف شد", file=sys.stderr)
+        raise SystemExit(1)

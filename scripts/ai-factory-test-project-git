@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""AF-25 — autonomous project Git/GitHub tests (real where possible).
+
+Fixtures are real directories under projects/ with real local git repos and
+bare remotes. Exactly ONE test creates a real PRIVATE GitHub repository and
+pushes to it; all other GitHub behaviour is exercised with explicit mocks so
+no pre-existing/public repository is ever touched.
+"""
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import time
+import unittest.mock as mock
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import core.config as config  # noqa: E402
+from core import confirmations, git_sync, project_git, smart_release as sr  # noqa: E402
+
+TMP = Path("/data/data/com.termux/files/usr/tmp/opencode")
+TMP.mkdir(parents=True, exist_ok=True)
+RESULTS: list[dict] = []
+FIXTURES: list[Path] = []
+CREATED_REPOS: list[str] = []
+
+
+def git(cwd, *args, check=True):
+    p = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
+                       env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+    if check and p.returncode:
+        raise RuntimeError("git %s: %s" % (" ".join(args), p.stderr.strip()[:220]))
+    return p
+
+
+def fixture(kind="webpage", with_repo=False) -> str:
+    name = "sr25-" + kind.replace("-", "") + "-" + secrets.token_hex(3)
+    d = config.PROJECTS_DIR / name
+    d.mkdir(parents=True)
+    FIXTURES.append(d)
+    (d / "meta.json").write_text(json.dumps(
+        {"name": name, "type": kind, "version": "1.0.0"}, ensure_ascii=False),
+        encoding="utf-8")
+    (d / "index.html").write_text(
+        "<!doctype html><html><head><title>آزمون</title></head>"
+        "<body><h1>خودمختار</h1><button>برو</button></body></html>", encoding="utf-8")
+    (d / "app.js").write_text("document.addEventListener('click',()=>{});", encoding="utf-8")
+    if with_repo:
+        project_git.init_local_repo(name)
+    return name
+
+
+def bare():
+    p = TMP / ("sr25-remote-" + str(int(time.time() * 1000)) + ".git")
+    subprocess.run(["git", "init", "-q", "--bare", str(p)], check=True)
+    return p
+
+
+def check(name, fn, real=True):
+    try:
+        detail = fn()
+        RESULTS.append({"name": name, "passed": True, "real": real,
+                        "detail": str(detail)[:700]})
+        print("PASS  %-48s %s" % (name, str(detail)[:100]))
+    except Exception as exc:  # noqa: BLE001
+        RESULTS.append({"name": name, "passed": False, "real": real,
+                        "detail": "%s: %s" % (type(exc).__name__, exc)[:700]})
+        print("FAIL  %-48s %s: %s" % (name, type(exc).__name__, str(exc)[:130]))
+
+
+# 1) no local repo → proposal (no writes) → confirm → real local repo
+def t_no_repo():
+    p = fixture()
+    st = project_git.repo_state(p)
+    assert st["own_repo"] is False and st["connected"] is False, st
+    prop = project_git.proposal(p)
+    assert prop["status"] == project_git.NEEDS_CONFIRM
+    assert prop["private_default"] is True, prop
+    assert not (config.PROJECTS_DIR / p / ".git").exists(), "پروژه بدون تأیید تغییر کرد"
+    r = project_git.ensure_ready(p, decision={"project": p, "name": prop["proposed_name"],
+                                              "private": True, "create_repo": False})
+    st2 = project_git.repo_state(p)
+    assert st2["own_repo"] and st2["commits"] >= 1, st2
+    gi = config.PROJECTS_DIR / p / ".gitignore"
+    assert gi.is_file() and ".factory/" in gi.read_text(encoding="utf-8")
+    assert st["project_root"] == str(config.PROJECTS_DIR / p)
+    return "پیشنهاد بدون تغییر → مخزن محلی + .gitignore + commit"
+
+
+# 2) repo without remote → proposal → connect (mocked gh) → ready
+def t_no_remote():
+    p = fixture(with_repo=True)
+    st = project_git.repo_state(p)
+    assert st["own_repo"] and not st["connected"], st
+    prop = project_git.proposal(p)
+    assert prop["state"]["own_repo"] is True and prop["state"]["connected"] is False
+    with mock.patch.object(project_git, "connect_remote", return_value={
+            "status": "ok", "created": True, "pushed": True,
+            "repo": "tester/" + prop["proposed_name"], "url": "https://github.com/x",
+            "steps": [], "note": ""}), \
+         mock.patch.object(project_git, "repo_state", return_value=dict(st, connected=True)):
+        out = project_git.ensure_ready(p, decision={"project": p,
+                                                    "name": prop["proposed_name"],
+                                                    "private": True})
+    assert out["status"] == "ok", out
+    return "مخزن محلی بدون remote شناسایی و متصل شد (gh شبیهسازی)"
+
+
+# 3) valid remote (local bare) → connected, no new repo
+def t_valid_remote():
+    p = fixture(with_repo=True)
+    d = config.PROJECTS_DIR / p
+    remote = bare()
+    git(d, "remote", "add", "origin", str(remote))
+    git(d, "push", "-qu", "origin", "main")
+    st = project_git.repo_state(p)
+    assert st["connected"] and st["remote"] == "origin", st
+    before = git(d, "rev-parse", "HEAD").stdout.strip()
+    out = project_git.ensure_ready(p)
+    assert out["status"] == "ok" and out.get("created") is False, out
+    assert git(d, "rev-parse", "HEAD").stdout.strip() == before
+    return "remote معتبر تشخیص و بدون ایجاد مجدد استفاده شد"
+
+
+# 4) public repo + copyrighted file → hard block
+def t_public_block():
+    p = fixture(with_repo=True)
+    d = config.PROJECTS_DIR / p
+    (d / "books.json").write_text('{"book":"درسی"}', encoding="utf-8")
+    with mock.patch.object(git_sync, "_github_visibility",
+                           return_value={"available": True, "public": True}):
+        pre = git_sync.preflight(p)
+    assert pre["blocked"] and any("عمومی" in x for x in pre["reasons"]), pre["reasons"]
+    return "مخزن عمومی + کتاب → ارسال متوقف"
+
+
+# 5) private repo → allowed (same file, visibility PRIVATE)
+def t_private_ok():
+    p = fixture(with_repo=True)
+    d = config.PROJECTS_DIR / p
+    (d / "books.json").write_text('{"book":"درسی"}', encoding="utf-8")
+    with mock.patch.object(git_sync, "_github_visibility",
+                           return_value={"available": True, "public": False}):
+        pre = git_sync.preflight(p)
+    assert not pre["blocked"], pre["reasons"]
+    return "مخزن خصوصی → مجاز (با همان فایل)"
+
+
+# 6) GitHub not logged in → guidance, no token, no repo created
+def t_not_logged_in():
+    p = fixture(with_repo=True)
+    with mock.patch.object(project_git, "github_login", return_value=None), \
+         mock.patch("subprocess.run", side_effect=AssertionError("نباید gh فراخوانی شود")):
+        out = project_git.connect_remote(p, "should-not-exist", True)
+    assert out["status"] == "failed" and "gh auth login" in out["note"], out
+    return "بدون ورود → توقف با راهنمایی، بدون فراخوانی gh"
+
+
+# 7) REAL private repo creation + connection + push + verified head
+def t_real_github():
+    p = fixture()
+    name = "af-autonomous-" + str(int(time.time()))[-6:]
+    CREATED_REPOS.append(name)
+    prop = project_git.proposal(p)
+    r1 = sr.run(p, text="نسخه نهایی رو بساز و Git و GitHub رو بهروز کن",
+                downloads_dir=str(TMP / ("dl25-" + p)))
+    assert r1["status"] == sr.AWAIT and r1.get("confirm_token"), r1
+    assert not (config.PROJECTS_DIR / p / ".git").exists(), "پیش از تأیید مخزن ساخته شد"
+    v = confirmations.consume(r1["confirm_token"])
+    r2 = sr.run(p, text="تأیید میکنم", git_decision=dict(v["payload"], name=name),
+                downloads_dir=str(TMP / ("dl25-" + p)))
+    assert r2["status"] == sr.OK, r2.get("note")
+    assert r2["git"]["commit_count"] >= 0 and r2["github"]["online_match"] is True, r2["github"]
+    d = config.PROJECTS_DIR / p
+    local = git(d, "rev-parse", "HEAD").stdout.strip()
+    remote = git(d, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+    assert local == remote, (local, remote)
+    assert r2["github"].get("url", "").endswith(name)
+    return "مخزن خصوصی واقعی ساخته/متصل/ارسال و head تأیید شد: %s" % name
+
+
+# 8) conflict → blocked without force/pull
+def t_conflict():
+    p = fixture(with_repo=True)
+    d = config.PROJECTS_DIR / p
+    remote = bare()
+    git(d, "remote", "add", "origin", str(remote))
+    git(d, "push", "-qu", "origin", "main")
+    other = TMP / ("sr25-clone-" + p)
+    shutil.rmtree(other, ignore_errors=True)
+    git(TMP, "clone", "-q", str(remote), str(other))
+    git(other, "config", "user.name", "T")
+    git(other, "config", "user.email", "t@e")
+    (other / "r.txt").write_text("remote", encoding="utf-8")
+    git(other, "add", "."); git(other, "commit", "-qm", "r"); git(other, "push", "-q", "origin", "main")
+    (d / "l.txt").write_text("local", encoding="utf-8")
+    git(d, "add", "."); git(d, "commit", "-qm", "l")
+    git(d, "fetch", "origin", "main")
+    st = project_git.repo_state(p)
+    assert st["behind"] >= 1, st
+    out = git_sync.commit_and_push(p)
+    assert out["status"] in ("failed", "unverified"), out
+    return "تعارض تشخیص وpush متوقف (بدون force)"
+
+
+# 9) idempotent second run → no duplicate commit
+def t_idempotent():
+    p = fixture(with_repo=True)
+    d = config.PROJECTS_DIR / p
+    remote = bare()
+    git(d, "remote", "add", "origin", str(remote))
+    git(d, "push", "-qu", "origin", "main")
+    dl = str(TMP / ("dl25-idem-" + p))
+    with mock.patch.object(project_git, "connect_remote", return_value={"status": "ok"}):
+        a = sr.run(p, downloads_dir=dl, auto_git=False)
+        h1 = git(d, "rev-parse", "HEAD").stdout.strip()
+        b = sr.run(p, downloads_dir=dl, auto_git=False)
+        h2 = git(d, "rev-parse", "HEAD").stdout.strip()
+    assert a["status"] in (sr.OK, sr.PARTIAL) and b.get("reused_record") is True, (a["status"], b)
+    assert b["git"]["commit_count"] == 0 and h1 == h2, (h1, h2)
+    return "اجرای دوباره: ثبت تکراری نشد"
+
+
+# 10) secrets never staged
+def t_secret_block():
+    p = fixture(with_repo=True)
+    d = config.PROJECTS_DIR / p
+    (d / ".env").write_text("TOKEN=x", encoding="utf-8")
+    (d / "books.json").write_text('{"x":1}', encoding="utf-8")
+    safe = set(project_git._safe_add_list(p))
+    assert ".env" not in safe and "books.json" not in safe, safe
+    assert "index.html" in safe, safe
+    return "فهرست امن فقط منبع — محرمانه/کتاب خارج"
+
+
+# 11) two projects stay isolated
+def t_isolation():
+    a, b = fixture(), fixture()
+    ra = project_git.ensure_ready(a, decision={"project": a, "name": project_git.suggest_name(a),
+                                               "private": True, "create_repo": False})
+    da = config.PROJECTS_DIR / a
+    files = set(git(da, "ls-files").stdout.split())
+    assert ra["status"] == "ok", ra
+    assert not any(f.startswith("sr25-") and f != a for f in files), files
+    assert git(da, "rev-parse", "--show-toplevel").stdout.strip() == str(da.resolve())
+    return "هر پروژه مخزن مستقل؛ فایل پروژهٔ دیگر وارد نشد"
+
+
+# 12) active project from session, root rejected, token scoped
+def t_active_and_token():
+    a = fixture()
+    da = config.PROJECTS_DIR / a
+    with mock.patch("core.opencode_bridge._session_location", return_value=str(da)):
+        got, note = project_git.active_project("ses_test")
+    assert got == a, (got, note)
+    with mock.patch("core.opencode_bridge._session_location",
+                    return_value=str(config.PROJECT_ROOT)):
+        got2, note2 = project_git.active_project("ses_root")
+    assert got2 is None and "ریشه" in note2, (got2, note2)
+    cf = confirmations.create(a, "test", {"x": 1}, "پرسش")
+    try:
+        confirmations.peek(cf["confirm_token"], project="other-project")
+        raise AssertionError("token should be project-scoped")
+    except confirmations.ConfirmError:
+        pass
+    confirmations.consume(cf["confirm_token"])
+    try:
+        confirmations.consume(cf["confirm_token"])
+        raise AssertionError("token must be single-use")
+    except confirmations.ConfirmError:
+        pass
+    return "نشست→پروژه، ریشه رد،token تکبار و پروژهمحور"
+
+
+def main() -> int:
+    check("1 پروژه بدون Git → پیشنهاد → مخزن محلی", t_no_repo)
+    check("2 مخزن محلی بدون Remote", t_no_remote, real=False)
+    check("3 Remote معتبر", t_valid_remote)
+    check("4 مخزن عمومی + کتاب → توقف", t_public_block, real=False)
+    check("5 مخزن خصوصی → مجاز", t_private_ok, real=False)
+    check("6 بدون ورود GitHub", t_not_logged_in, real=False)
+    check("7 ایجاد واقعی مخزن خصوصی +push+تأیید", t_real_github, real=True)
+    check("8 تعارض محلی/آنلاین", t_conflict)
+    check("9 اجرای دوباره بدون commit تکراری", t_idempotent)
+    check("10 جلوگیری از فایل محرمانه", t_secret_block)
+    check("11 جداسازی دو پروژه مستقل", t_isolation)
+    check("12 تشخیص پروژه فعال +token تکبار", t_active_and_token, real=False)
+
+    out = ROOT / "docs/test-reports/smart-release/project-git-results.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "summary": {"total": len(RESULTS),
+                    "passed": sum(1 for r in RESULTS if r["passed"]),
+                    "failed": sum(1 for r in RESULTS if not r["passed"])},
+        "created_github_repos": CREATED_REPOS,
+        "results": RESULTS,
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+    for d in FIXTURES:
+        shutil.rmtree(d, ignore_errors=True)
+    print("\nRESULTS: %d/%d → %s" %
+          (sum(1 for r in RESULTS if r["passed"]), len(RESULTS), out))
+    return 0 if all(r["passed"] for r in RESULTS) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,16 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# AI Factory v0.4.0 — fullstack acceptance tests (18 real scenarios).
+# Requires the panel running (scripts/ai-factory-start). Uses python + urllib.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export ROOT
+BASE="http://127.0.0.1:8580"
+export BASE
+
+# Make sure the panel is up
+if ! curl -fsS "$BASE/api/health" >/dev/null 2>&1; then
+    bash "$(dirname "$0")/ai-factory-start" >/dev/null 2>&1
+    sleep 2
+fi
+
+python "$(dirname "$0")/fullstack_e2e.py"

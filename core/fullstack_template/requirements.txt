@@ -1,0 +1,2 @@
+// deliberately empty — {{APP_TITLE}} requires no external dependencies.
+// Future deps go here with pinned versions; see docs/FULLSTACK.md.

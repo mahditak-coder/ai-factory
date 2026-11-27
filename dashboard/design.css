@@ -1,0 +1,193 @@
+/* AI Factory Design System v1 — AF-53.
+   One token set, one component language, light + dark, Persian/RTL first.
+   Loaded AFTER legacy styles; every rule here is additive or a deliberate
+   override. No feature is removed — complexity is hidden behind a calm UI. */
+
+:root {
+  color-scheme: dark;
+  --af-bg: #0d131f;
+  --af-bg-2: #111925;
+  --af-surface: rgba(255,255,255,.045);
+  --af-surface-solid: #151c28;
+  --af-surface-hover: rgba(255,255,255,.075);
+  --af-text: #eef2fa;
+  --af-muted: #9aa8c0;
+  --af-line: rgba(255,255,255,.10);
+  --af-brand: #365ca8;
+  --af-brand-2: #2f8f9d;
+  --af-success: #43c98a;
+  --af-warn: #f2b45c;
+  --af-danger: #ef6b73;
+  --af-radius: 16px;
+  --af-radius-sm: 10px;
+  --af-space: .75rem;
+  --af-shadow: 0 1px 2px rgba(8,14,28,.06);
+  --af-glow: 0 0 0 1px rgba(37,75,130,.20);
+  --af-font: Vazirmatn, "Segoe UI", Tahoma, sans-serif;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --af-bg: #faf9f7;
+  --af-bg-2: #f1f0ed;
+  --af-surface: rgba(20,30,55,.035);
+  --af-surface-solid: #ffffff;
+  --af-surface-hover: rgba(20,30,55,.06);
+  --af-text: #172033;
+  --af-muted: #5d6b83;
+  --af-line: rgba(20,30,55,.10);
+  --af-brand: #264f9a;
+  --af-brand-2: #217f8e;
+  --af-success: #199c69;
+  --af-warn: #b97817;
+  --af-danger: #c8414b;
+  --af-shadow: 0 1px 2px rgba(20,30,55,.06);
+  --af-glow: 0 0 0 1px rgba(91,75,214,.18);
+}
+
+/* map legacy variables so existing pages inherit the new palette */
+:root {
+  --bg: var(--af-bg); --card: var(--af-surface-solid);
+  --text: var(--af-text); --muted: var(--af-muted); --border: var(--af-line);
+  --accent: var(--af-brand); --ok: var(--af-success);
+  --warn: var(--af-warn); --bad: var(--af-danger);
+}
+:root[data-theme="light"] .navlink.active { color: var(--af-brand); }
+
+html { scroll-behavior: smooth; }
+body {
+  background: var(--af-bg);
+  color: var(--af-text);
+  font-family: var(--af-font);
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* unified navigation: خانه / Workspace / تحویل */
+.af-nav {
+  display: flex; align-items: center; gap: .35rem; flex-wrap: wrap;
+  background: color-mix(in srgb, var(--af-surface-solid) 82%, transparent);
+  border: 1px solid var(--af-line); border-radius: 999px;
+  padding: .3rem; backdrop-filter: blur(10px);
+}
+.af-nav a {
+  display: inline-flex; align-items: center; gap: .35rem;
+  text-decoration: none; color: var(--af-muted); font-size: .84rem;
+  padding: .4rem .75rem; border-radius: 999px; white-space: nowrap;
+  transition: background .18s ease, color .18s ease, transform .18s ease;
+}
+.af-nav a:hover { background: var(--af-surface-hover); color: var(--af-text); }
+.af-nav a.active {
+  background: var(--af-brand); color: #fff;
+}
+.af-nav .af-theme {
+  margin-inline-start: auto; border: 1px solid var(--af-line); border-radius: 999px;
+  background: var(--af-surface); color: var(--af-text); cursor: pointer;
+  padding: .35rem .6rem; font-size: .8rem;
+}
+.af-brandmark { font-weight: 800; letter-spacing: -.3px; color: var(--af-text); }
+
+.af-card {
+  background: var(--af-surface-solid); border: 1px solid var(--af-line);
+  border-radius: var(--af-radius); padding: 1rem;
+  box-shadow: var(--af-shadow);
+}
+.af-card > h2, .af-card > h3 { margin-top: 0; color: var(--af-text); }
+.af-muted { color: var(--af-muted); }
+.af-btn, button.btn {
+  border: 1px solid var(--af-line); border-radius: var(--af-radius-sm);
+  background: var(--af-surface); color: var(--af-text); cursor: pointer;
+  padding: .55rem .85rem; font: inherit; font-size: .86rem;
+  transition: transform .14s ease, background .18s ease, box-shadow .18s ease;
+}
+.af-btn:hover, button.btn:hover { background: var(--af-surface-hover); transform: translateY(-1px); }
+.af-btn:active, button.btn:active { transform: translateY(0); }
+.af-btn.primary, button.btn.primary {
+  background: var(--af-brand); color: #fff; border-color: transparent;
+}
+.af-input, input:not([type=checkbox]):not([type=radio]), textarea, select {
+  background: var(--af-surface); color: var(--af-text);
+  border: 1px solid var(--af-line); border-radius: var(--af-radius-sm);
+  padding: .55rem .7rem; font: inherit; font-size: .9rem;
+}
+.af-chip {
+  display: inline-flex; align-items: center; gap: .3rem; font-size: .74rem;
+  padding: .2rem .55rem; border-radius: 999px;
+  background: var(--af-surface); border: 1px solid var(--af-line); color: var(--af-muted);
+}
+.af-chip.ok { color: var(--af-success); border-color: color-mix(in srgb, var(--af-success) 40%, transparent); }
+.af-chip.wait { color: var(--af-warn); }
+.af-chip.bad { color: var(--af-danger); }
+.af-empty {
+  display: flex; flex-direction: column; align-items: center; gap: .4rem;
+  padding: 1.4rem; text-align: center; color: var(--af-muted); font-size: .86rem;
+}
+.af-empty .af-emoji { font-size: 1.5rem; }
+.af-skeleton {
+  background: linear-gradient(90deg, var(--af-surface), var(--af-surface-hover), var(--af-surface));
+  background-size: 200% 100%; animation: af-shimmer 1.4s infinite linear;
+  border-radius: var(--af-radius-sm); height: .9rem;
+}
+@keyframes af-shimmer { to { background-position: -200% 0; } }
+@keyframes af-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.af-enter { animation: af-in .22s ease both; }
+:focus-visible { outline: 2px solid var(--af-brand-2); outline-offset: 2px; }
+
+/* home: project grid + one-action creation */
+.af-home { display: grid; gap: 1rem; max-width: 980px; margin: 1rem auto; padding: 0 1rem; }
+.af-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.af-project {
+  display: flex; flex-direction: column; gap: .35rem; text-decoration: none;
+  color: var(--af-text); transition: transform .18s ease, box-shadow .18s ease;
+}
+.af-project:hover { transform: translateY(-2px); box-shadow: var(--af-glow); }
+.af-project .af-name { font-weight: 700; direction: ltr; text-align: right; }
+.af-search { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+.af-search input { flex: 1 1 14rem; }
+
+/* workspace: compact header + focused conversation + side panel */
+body.ws .ws-topbar {
+  background: color-mix(in srgb, var(--af-surface-solid) 78%, transparent);
+  border: 1px solid var(--af-line); border-radius: var(--af-radius);
+  padding: .55rem .8rem; backdrop-filter: blur(10px);
+}
+body.ws .ws-topbar h1 { font-size: 1rem; }
+body.ws .wscard { background: var(--af-surface-solid); border: 1px solid var(--af-line); border-radius: var(--af-radius); box-shadow: var(--af-shadow); }
+body.ws .ws-statuscard { background: color-mix(in srgb, var(--af-surface-solid) 85%, transparent); border: 1px solid var(--af-line); border-radius: var(--af-radius); }
+body.ws .ws-composer {
+  background: color-mix(in srgb, var(--af-surface-solid) 92%, transparent);
+  border: 1px solid var(--af-line); border-radius: 14px;
+}
+body.ws .ws-composer .btn.primary { min-height: 2.9rem; }
+.af-decision {
+  border-inline-start: 3px solid var(--af-warn);
+  background: color-mix(in srgb, var(--af-warn) 8%, transparent);
+  border-radius: var(--af-radius-sm); padding: .7rem;
+}
+.af-decision .af-actions { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .5rem; }
+
+@media (max-width: 720px) {
+  .af-nav a { font-size: .78rem; padding: .35rem .55rem; }
+  .af-nav .af-brandmark { display: none; }
+  body.ws .ws-topbar { position: sticky; top: 0; z-index: 20; }
+  body.ws .ws-pills { gap: .3rem; }
+  body.ws .ws-topbar h1 { display: none; }
+  .af-card { padding: .8rem; border-radius: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* home ordering: project entry first on small screens */
+.af-home > #projectsCard { order: 1; }
+.af-home > section:not(#projectsCard) { order: 2; }
+
+.af-history { margin-top: .5rem; }
+.af-history summary { cursor: pointer; font-size: .8rem; padding: .3rem 0; }
+.af-history .ask-item { margin-top: .4rem; opacity: .8; }
+
+.af-decision input.ask-text { flex: 1 1 8rem; min-width: 0; }
+.af-decision summary { cursor: pointer; }
+
+.af-home { max-width: 100%; }
+.af-home > section { min-width: 0; overflow-wrap: anywhere; }
+.af-home .kv { display: flex; flex-wrap: wrap; gap: .35rem .7rem; }

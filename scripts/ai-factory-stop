@@ -1,0 +1,59 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# AI Factory — stop the management server (only our own PID, safely verified)
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PID_FILE="$ROOT/logs/server.pid"
+
+if [ ! -f "$PID_FILE" ]; then
+    echo "سرور در حال اجرا نیست."
+    exit 0
+fi
+
+PID="$(cat "$PID_FILE")"
+if [ -z "$PID" ] || [ ! -d "/proc/$PID" ]; then
+    echo "فرایند منقضی‌شده؛ پاک‌سازی فایل PID."
+    rm -f "$PID_FILE"
+    exit 0
+fi
+
+# Safety: only kill the process if its cmdline really is our server
+CMDLINE="$(tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null)"
+case "$CMDLINE" in
+    *core/server.py*|*core\/server.py*)
+        kill "$PID" 2>/dev/null
+        for _ in $(seq 1 10); do
+            [ -d "/proc/$PID" ] || break
+            sleep 0.5
+        done
+        kill -9 "$PID" 2>/dev/null
+        echo "🛑 سرور متوقف شد (PID=$PID)."
+        ;;
+    *)
+        echo "هشدار: PID ذخیره‌شده فرایند ما نیست؛ حذف نمی‌شود."
+        rm -f "$PID_FILE"
+        exit 1
+        ;;
+esac
+
+# Stop the OpenCode bridge instance spawned by AI Factory (verified cmdline)
+OC_PID_FILE="$ROOT/logs/opencode.pid"
+if [ -f "$OC_PID_FILE" ]; then
+    OCPID="$(cat "$OC_PID_FILE")"
+    if [ -n "$OCPID" ] && [ -d "/proc/$OCPID" ]; then
+        OC_CMD="$(tr '\0' ' ' < "/proc/$OCPID/cmdline" 2>/dev/null)"
+        case "$OC_CMD" in
+            *opencode*serve*)
+                kill "$OCPID" 2>/dev/null
+                rm -f "$OC_PID_FILE"
+                echo "🛑 OpenCode serve متوقف شد (PID=$OCPID)."
+                ;;
+            *)
+                echo "هشدار: PID OpenCode معتبر نیست؛ دست نزد."
+                ;;
+        esac
+    else
+        rm -f "$OC_PID_FILE"
+    fi
+fi
+echo "پایان."
+exit 0

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Factory — استودیو مرحلهای</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/design.css">
+<link rel="stylesheet" href="/workflow.css">
+</head>
+<body>
+<header class="wf-head">
+  <div class="af-nav" role="navigation" aria-label="ناوبری اصلی">
+    <span class="af-brandmark">AI Factory</span>
+    <a href="/workspace.html">💬 Workspace</a>
+    <a href="/factory.html">📦 تحویل</a>
+    <span class="af-nav-current">🎬 استودیو</span>
+  </div>
+  <h1>استودیوی تخصصی <small>گردش کار تأیید انسانی</small></h1>
+</header>
+
+<main class="wf-shell">
+  <section class="wf-card wf-setup" id="setup">
+    <label>پروژه
+      <select id="projectSel"><option value="">— انتخاب پروژه —</option></select>
+    </label>
+    <label>نوع محصول
+      <select id="typeSel">
+        <option value="webapp">Web / SaaS</option>
+        <option value="android">Android</option>
+        <option value="ai-tool">AI / Agent</option>
+        <option value="webpage">صفحه وب / بازی 2D</option>
+      </select>
+    </label>
+    <label class="wf-wide">هدف محصول
+      <input id="goalInput" placeholder="مثلاً: بازی معمایی 2.5D فارسی با امتیازدهی">
+    </label>
+    <button id="btnStart" type="button" class="wf-primary">شروع گردش کار</button>
+    <span id="err" class="wf-err" role="alert"></span>
+  </section>
+
+  <section class="wf-card wf-stagebar" id="stagebar" hidden>
+    <div class="wf-row">
+      <span class="wf-status" id="statusPill">—</span>
+      <span class="wf-meta" id="stageMeta">—</span>
+    </div>
+    <div id="pauseNote" class="wf-pause" hidden></div>
+  </section>
+
+  <div class="wf-grid">
+    <section class="wf-card wf-timeline" id="timelineCard" hidden>
+      <h2>مراحل</h2>
+      <ol id="timeline"></ol>
+      <div class="wf-deps" id="deps"></div>
+    </section>
+
+    <section class="wf-card wf-detail" id="detailCard" hidden>
+      <h2 id="stageTitle">—</h2>
+      <div id="stageInfo" class="wf-meta"></div>
+      <div id="artifacts"></div>
+      <div id="questionBox" class="wf-question" hidden></div>
+      <div id="historyBox" class="wf-history"></div>
+      <div id="actions" class="wf-actions"></div>
+    </section>
+  </div>
+</main>
+
+<div class="wf-lightbox" id="lightbox" hidden>
+  <button type="button" id="closeLightbox" aria-label="بستن">✕ بستن</button>
+  <img id="lightboxImg" alt="نمایش بزرگ Artifact">
+</div>
+
+<script src="/panel.js"></script>
+<script src="/workflow.js"></script>
+</body>
+</html>

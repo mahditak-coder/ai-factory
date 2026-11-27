@@ -1,0 +1,108 @@
+# ai-factory-test-p1 — stability stage P1 tests
+# (export exclusions of dev/runtime artifacts, wait_done dedupe, zip integrity)
+# Run: bash scripts/ai-factory-test-p1
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
+WORK="$T/p1test-$$"
+PASS=0; FAIL=0
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1"
+    else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi
+}
+
+cd "$ROOT"
+mkdir -p "$WORK/src/ui" "$WORK/src/app" "$WORK/src/tests"
+export PYTHONPATH="$ROOT"
+
+echo "== 1) every junk rule excludes its file from the ZIP =="
+# junk files a project must not ship
+touch "$WORK/src/opencode.json" "$WORK/src/server.out" \
+      "$WORK/src/proc.pid" "$WORK/src/output.out" \
+      "$WORK/src/debug.log" "$WORK/src/module.pyc" \
+      "$WORK/src/data.db" "$WORK/src/data.db-wal" \
+      "$WORK/src/key.token" "$WORK/src/x.pem" "$WORK/src/y.key" "$WORK/src/.env"
+mkdir -p "$WORK/src/.factory" "$WORK/src/.git" "$WORK/src/__pycache__"
+touch "$WORK/src/.factory/history.json" "$WORK/src/.git/config" "$WORK/src/__pycache__/a.cpython.pyc"
+
+# essential app files that MUST survive
+printf 'hello' > "$WORK/src/README.md"
+printf 'print("app")' > "$WORK/src/server.py"
+printf '{}' > "$WORK/src/config.json"
+printf '<html>ui</html>' > "$WORK/src/ui/index.html"
+printf 'import unittest' > "$WORK/src/tests/test_api.py"
+
+SRC="$WORK/src" OUTZIP="$WORK/out.zip" python3 - <<'EOF'
+import os, sys, zipfile, json
+sys.path.insert(0, ".")
+from pathlib import Path
+from core import exporter
+src = Path(os.environ["SRC"]); outzip = Path(os.environ["OUTZIP"])
+bad = exporter._zip_project(src, outzip)
+names = zipfile.ZipFile(outzip).namelist()
+junk = [n for n in names if (
+    n in ("opencode.json","server.out",".env")
+    or n.split("/")[0] in (".factory",".git","__pycache__")
+    or any(n.endswith(s) for s in (".pid",".out",".log",".pyc",".db",".db-wal",".token",".pem",".key")))]
+essential = [n for n in ("README.md","server.py","config.json","ui/index.html","tests/test_api.py")
+             if n in names]
+print(json.dumps({"files": bad["files"], "junk": junk,
+                  "essential": essential, "bad": bad["integrity_bad_file"]}))
+EOF
+OUT=$(SRC="$WORK/src" OUTZIP="$WORK/out2.zip" python3 - <<'EOF'
+import os, sys, zipfile, json
+sys.path.insert(0, ".")
+from pathlib import Path
+from core import exporter
+src = Path(os.environ["SRC"]); outzip = Path(os.environ["OUTZIP"])
+bad = exporter._zip_project(src, outzip)
+names = zipfile.ZipFile(outzip).namelist()
+junk = [n for n in names if (
+    n in ("opencode.json","server.out",".env")
+    or n.split("/")[0] in (".factory",".git","__pycache__")
+    or any(n.endswith(s) for s in (".pid",".out",".log",".pyc",".db",".db-wal",".token",".pem",".key")))]
+essential = [n for n in ("README.md","server.py","config.json","ui/index.html","tests/test_api.py")
+             if n in names]
+print(json.dumps({"files": bad["files"], "junk": junk,
+                  "essential": essential, "bad": bad["integrity_bad_file"]}))
+EOF
+)
+check "all 12 junk rules exclude their file" "[]" "$(echo "$OUT" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["junk"]))')"
+check "all 5 essential files kept" "5" "$(echo "$OUT" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["essential"]))')"
+check "zip integrity (testzip) clean" "None" "$(echo "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bad"])')"
+# the first zip (same rules) must also be clean and contain exactly 5 entries
+check "first zip also clean/deterministic" "5" "$(python3 -c 'import zipfile; print(len(zipfile.ZipFile("'"$WORK"'/out.zip").namelist()))')"
+
+echo "== 2) ZIP is extractable with structure preserved =="
+python3 -c "
+import zipfile, pathlib
+z = zipfile.ZipFile('$WORK/out.zip')
+dst = pathlib.Path('$WORK/extract'); z.extractall(dst)
+assert (dst/'ui/index.html').exists() and (dst/'tests/test_api.py').exists()
+assert not (dst/'opencode.json').exists()
+" && check "extract + structure + junk gone" "ok" "ok" || check "extract + structure" "ok" "fail"
+
+echo "== 3) wait_done dedupe in core/factory.py =="
+python3 -c "
+import ast
+tree = ast.parse(open('core/factory.py').read())
+count = sum(1 for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == 'wait_done')
+assert count == 1, count
+print('count=1')
+" && check "single wait_done definition (AST)" "count=1" "count=1" || check "single wait_done" "count=1" "fail"
+
+echo "== 4) checker skips opencode.json too (dev-time file, not app source) =="
+python3 -c "
+import sys; sys.path.insert(0,'.')
+from core import config
+assert 'opencode.json' in config.EXPORT_EXCLUDE_NAMES
+assert '.pid' in config.EXPORT_EXCLUDE_SUFFIXES
+assert '.out' in config.EXPORT_EXCLUDE_SUFFIXES
+print('rules=3')
+" && check "3 new exclusion rules active" "rules=3" "rules=3" || check "rules" "rules=3" "fail"
+
+echo
+echo "RESULT: PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && rm -rf "$WORK" && exit 0
+rm -rf "$WORK"; exit 1

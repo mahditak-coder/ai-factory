@@ -1,0 +1,77 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-android-install — راستی‌آزمایی و نصب دستی APK موجود (بدون ساخت)
+#
+#   1) salamat APK: python zipfile testzip
+#   2) emza:        apksigner verify --verbose
+#   3) badging:     aapt2 dump badging → package/versionCode/versionName
+#   4) sha256:      مقایسه با رکورد releases.json
+#   5) (اختیاری) termux-open → پاپ‌آپ نصاب سیستم؛ تأیید نهایی دستی کاربر است
+#
+#   Usage:
+#     ai-factory-android-install verify [project]   # فقط راستی‌آزمایی
+#     ai-factory-android-install open   [project]   # verify + باز کردن نصاب
+#     project پیش‌فرض: af02-android-test (APK معتبر موجود)
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PROJ="${2:-af02-android-test}"
+TMPDIR="${TMPDIR:-/data/data/com.termux/files/usr/tmp/opencode}"
+mkdir -p "$TMPDIR"
+REL="$ROOT/projects/$PROJ/.factory/releases.json"
+[ -f "$REL" ] || { echo "❌ releases.json نیست: $REL"; exit 1; }
+
+APK=$(python3 - "$REL" <<'EOF'
+import json, sys
+rels = json.load(open(sys.argv[1]))
+apks = [r for r in rels if r.get("kind") == "apk"]
+print(apks[-1]["artifacts"]["apk"]["path"] if apks else "")
+EOF
+)
+[ -n "$APK" ] && [ -f "$APK" ] || { echo "❌ APK در releases.json ثبت نشده"; exit 1; }
+
+REC_SHA=$(python3 - "$REL" <<'EOF'
+import json, sys
+rels = json.load(open(sys.argv[1]))
+apks = [r for r in rels if r.get("kind") == "apk"]
+print(apks[-1]["artifacts"]["apk"].get("sha256", ""))
+EOF
+)
+
+echo "== 1) سلامت ZIP APK =="
+python3 - "$APK" <<'EOF'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    bad = z.testzip()
+    if bad:
+        print("❌ خراب:", bad); sys.exit(1)
+    print("✅ zip سالم (%d entry)" % len(z.namelist()))
+EOF
+[ $? -eq 0 ] || exit 1
+
+echo "== 2) امضا (apksigner verify) =="
+if apksigner verify --verbose "$APK" > "$TMPDIR/af09-sig.txt" 2>&1; then
+  grep -E "Verified using|Verifies" "$TMPDIR/af09-sig.txt" | head -5
+else
+  echo "❌ امضا نامعتبر"; cat "$TMPDIR/af09-sig.txt"; exit 1
+fi
+
+echo "== 3) badging (aapt2) =="
+BADGE=$(aapt2 dump badging "$APK" 2>/dev/null \
+  | grep -E "^package: " | head -1)
+echo "$BADGE"
+echo "$BADGE" | grep -qE "package: name='[^']+' versionCode='[0-9]+' versionName='[^']+'" \
+  || { echo "❌ badging ناقص"; exit 1; }
+
+echo "== 4) sha256 در برابر releases.json =="
+REAL_SHA=$(sha256sum "$APK" | awk '{print $1}')
+if [ "$REAL_SHA" = "$REC_SHA" ]; then
+  echo "✅ sha256 مطابق رکورد: ${REAL_SHA:0:16}…"
+else
+  echo "❌ sha256 mismatch (record=${REC_SHA:0:16}… real=${REAL_SHA:0:16}…)"; exit 1
+fi
+
+if [ "${1:-verify}" = "open" ]; then
+  echo "== 5) باز کردن نصاب سیستم (termux-open) =="
+  echo "   → پاپ‌آپ Android باز می‌شود؛ تأیید نهایی نصب با شماست."
+  termux-open "$APK" 2>&1 && echo "✅ termux-open اجرا شد (پاپ‌آپ فرستاده شد)" \
+    || echo "❌ termux-open ناموفق (احتمالاً بدون Storage permission یا خارج از ترمکس GUI)"
+fi

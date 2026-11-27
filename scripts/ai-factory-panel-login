@@ -1,0 +1,52 @@
+# ai-factory-panel-login — P6-2 shared auth helper for test suites.
+# Usage (from a suite):
+#   . "$(dirname "$0")/ai-factory-panel-login" "$BASE"
+# Then:
+#   * $PANEL_COOKIES — cookie jar file with the live session
+#   * $CSRF          — current double-submit CSRF token
+#   * pauth [curl args…] — curl pre-loaded with session cookie + CSRF header
+#
+# AF-05.1: the panel credential is NEVER hardcoded. It comes from $PANEL_PASS
+# (env override) or from the secure local file ~/.af-panel/panel-pass.txt
+# (0600, outside this repo). No default, no fallback password: if neither
+# source exists, the helper fails safely with a non-leaking message.
+
+set -u
+PANEL_BASE="${1:-http://127.0.0.1:8580}"
+PANEL_PASS="${PANEL_PASS:-}"
+if [ -z "$PANEL_PASS" ] && [ -r "$HOME/.af-panel/panel-pass.txt" ]; then
+    PANEL_PASS="$(tr -d '\n\r' < "$HOME/.af-panel/panel-pass.txt")"
+fi
+if [ -z "$PANEL_PASS" ]; then
+    echo "panel credential missing — set PANEL_PASS or create ~/.af-panel/panel-pass.txt (0600)" >&2
+    return 1 2>/dev/null || exit 1
+fi
+PANEL_COOKIES="${TMPDIR%/}/panel.cookies.$$"
+
+CSRF=""
+
+pauth() { curl -sS -b "${PANEL_COOKIES:-}" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+_pinit=$(pauth -fsS "$PANEL_BASE/api/panel/state" 2>/dev/null || echo "")
+if [ "$(printf '%s' "$_pinit" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("initialized"))' 2>/dev/null)" != "True" ]; then
+    curl -fsS -c "$PANEL_COOKIES" -X POST \
+        -d '{"password":"'"$PANEL_PASS"'"}' \
+        -H 'Content-Type: application/json' \
+        "$PANEL_BASE/api/panel/init" >/dev/null || {
+        echo "panel init failed" >&2; return 1 2>/dev/null || exit 1; }
+fi
+curl -fsS -c "$PANEL_COOKIES" -X POST \
+    -d '{"password":"'"$PANEL_PASS"'"}' \
+    -H 'Content-Type: application/json' \
+    "$PANEL_BASE/api/panel/login" >/dev/null || {
+    echo "panel login failed" >&2; return 1 2>/dev/null || exit 1; }
+
+CSRF=$(python3 - "$PANEL_COOKIES" <<'PYEOF'
+import sys
+for line in open(sys.argv[1]):
+    parts = line.split()
+    if len(parts) >= 7 and parts[5] == "panel_csrf":
+        print(parts[6]); break
+PYEOF
+)
+unset _pinit PANEL_BASE PANEL_PASS

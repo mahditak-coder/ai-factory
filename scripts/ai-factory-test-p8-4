@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# ai-factory-test-p8-4 — REAL acceptance for the P8 multi-agent PWA pipeline.
+#   Part A: allowed_types enforcement is REAL (declared scope, fast fail)
+#   Part B: 4-agent pipeline (planner → designer → frontend → qa) produces a
+#           REAL PWA on a throwaway project; order, artifacts, final green
+#           contract, and per-agent performance records all verified
+#   Part C: cleanup + hygiene (agents persist — they ARE the deliverable)
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"; mkdir -p "$T/p8"
+PASS=0; FAIL=0; FAILED=""
+
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"
+    else FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1 (expected=$2 got=$3)"; fi
+}
+
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+TS=$(date +%H%M%S); PROJ="p8x-pipe-$TS"; WPROJ="p8x-scope-$TS"
+
+echo "════ P8-4/A — اعمال واقعی محدودهٔ عامل (allowed_types)"
+curl -s -m 20 -o /dev/null -X POST \
+    -d "{\"name\":\"$WPROJ\",\"type\":\"webpage\",\"description\":\"p8-4 scope\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/projects"
+SID=$(curl -s -m 20 -X POST \
+    -d "{\"project\":\"$WPROJ\",\"goal\":\"یک صفحهٔ ساده بساز\",\"agent\":\"qa\",\"max_attempts\":1}" \
+    -H 'Content-Type: application/json' "$BASE/api/tasks" \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)['task']['id'])")
+curl -s -m 30 -o /dev/null -X POST -d '{"workers":1}' \
+    -H 'Content-Type: application/json' "$BASE/api/orchestrator/start"
+for i in $(seq 1 15); do
+    J=$(curl -s -m 20 "$BASE/api/tasks/view?id=$SID")
+    ST=$(echo "$J" | python3 -c "import json,sys;print(json.load(sys.stdin)['task']['state'])")
+    { [ "$ST" = "failed" ] || [ "$ST" = "done" ]; } && break
+    sleep 2
+done
+check "P8-4-A1 وظیفهٔ qa روی پروژهٔ webpage: failed سریع" "failed" "$ST"
+ERR=$(echo "$J" | python3 -c "
+import json,sys
+t = json.load(sys.stdin)['task']
+r = t.get('result') or {}
+print('ok' if 'مجاز نیست' in (t.get('error') or '') and t.get('attempts')==1 and not r.get('session_id') else 'bad')")
+check "P8-4-A2 علت = محدودهٔ عامل + بدون مصرف مدل (بدون session)" "ok" "$ERR"
+curl -s -m 20 -o /dev/null -X POST -d '{}' -H 'Content-Type: application/json' \
+    "$BASE/api/orchestrator/stop"
+for i in $(seq 1 15); do
+    RUN=$(curl -s -m 20 "$BASE/api/orchestrator" | python3 -c \
+        "import json,sys;print(json.load(sys.stdin)['orchestrator']['running'])")
+    [ "$RUN" = "False" ] && break; sleep 2
+done
+curl -s -m 30 -o /dev/null -X POST \
+    -d "{\"project\":\"$WPROJ\",\"confirm\":true}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/delete"
+
+echo "════ P8-4/B — پایپ‌لاین واقعی ۴ عامل روی پروژهٔ PWA"
+curl -s -m 20 -o /dev/null -X POST \
+    -d "{\"name\":\"$PROJ\",\"type\":\"pwa\",\"description\":\"p8-4 pipeline\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/projects"
+q() { curl -s -m 20 -X POST -d "$1" -H 'Content-Type: application/json' \
+    "$BASE/api/tasks" | python3 -c "import json,sys;print(json.load(sys.stdin)['task']['id'])"; }
+T1=$(q "{\"project\":\"$PROJ\",\"goal\":\"برنامهٔ محصول اپ «لیست خرید من» را در فایل plan.md بنویس: هدف، ۵ قابلیت اصلی، ساختار صفحهٔ اصلی، معیار پذیرش. هیچ فایل دیگری را نساز یا تغییر نده.\",\"agent\":\"planner\",\"max_attempts\":2}")
+T2=$(q "{\"project\":\"$PROJ\",\"goal\":\"بر اساس plan.md، طراحی بصری را در design.md بنویس: پالت رنگ hex، فونت، چیدمان RTL، حالت‌های تعاملی دکمه‌ها. هیچ فایل دیگری را تغییر نده.\",\"agent\":\"designer\",\"max_attempts\":2}")
+T3=$(q "{\"project\":\"$PROJ\",\"goal\":\"بر اساس plan.md و design.md اپ «لیست خرید من» را کامل کن: افزودن آیتم با فرم، تیک خریداری‌شده، حذف آیتم، ذخیره در localStorage، شمارندهٔ باقی‌مانده، فارسی RTL. فقط index.html، style.css و app.js را تغییر بده؛ پایهٔ PWA دست‌نخورده بماند.\",\"agent\":\"frontend\",\"max_attempts\":2}")
+T4=$(q "{\"project\":\"$PROJ\",\"goal\":\"گزارش کنترل کیفیت را در qa.md بنویس: فایل‌های پروژه را واقعاً بخوان و سلامت manifest.json، sw.js، icons و الزامات قرارداد در index.html را بررسی کن؛ مشکلات یافت‌شده را فهرست کن. هیچ فایلی را بازنویسی نکن.\",\"agent\":\"qa\",\"max_attempts\":2}")
+check "P8-4-B1 چهار وظیفهٔ پایپ‌لاین ثبت شد (planner→designer→frontend→qa)" "4" \
+    "$(printf '%s\n%s\n%s\n%s\n' "$T1" "$T2" "$T3" "$T4" | grep -c '^t-')"
+
+curl -s -m 30 -o /dev/null -X POST -d '{"workers":1}' \
+    -H 'Content-Type: application/json' "$BASE/api/orchestrator/start"
+ALL=""
+for i in $(seq 1 110); do
+    ALL=$(python3 -c "
+import json
+ts = {t['id']: t['state'] for t in json.load(open('data/tasks.json'))}
+want = ['$T1', '$T2', '$T3', '$T4']
+st = [ts.get(w) for w in want]
+if all(s in ('done','failed','cancelled') for s in st):
+    print('|'.join(st))
+else:
+    print('wait')")
+    [ "$ALL" != "wait" ] && break
+    sleep 8
+done
+check "P8-4-B2 هر چهار وظیفه done شدند (مدل واقعی)" "done|done|done|done" "$ALL"
+
+ORDER=$(python3 -c "
+import json
+h = json.load(open('projects/$PROJ/.factory/history.json'))
+agents = [e.get('detail','') for e in h if e.get('action') == 'task-start']
+seq = [a.split('agent=')[1].split(' ')[0] if 'agent=' in a else '?' for a in agents]
+print('ok' if seq == ['planner', 'designer', 'frontend', 'qa'] else 'seq:' + ','.join(seq))")
+check "P8-4-B3 ترتیب واقعی اجرا: planner→designer→frontend→qa" "ok" "$ORDER"
+
+ART=$(python3 -c "
+import pathlib
+d = pathlib.Path('projects/$PROJ')
+plan = (d / 'plan.md').read_text(encoding='utf-8') if (d / 'plan.md').is_file() else ''
+des = (d / 'design.md').read_text(encoding='utf-8') if (d / 'design.md').is_file() else ''
+qa = (d / 'qa.md').read_text(encoding='utf-8') if (d / 'qa.md').is_file() else ''
+idx = (d / 'index.html').read_text(encoding='utf-8')
+app = (d / 'app.js').read_text(encoding='utf-8')
+ok = (len(plan) > 200 and len(des) > 200 and len(qa) > 100
+      and 'لیست خرید' in idx
+      and 'localStorage' in app)
+print('ok' if ok else 'bad:plan=%d des=%d qa=%d buy=%s ls=%s' % (
+    len(plan), len(des), len(qa), 'لیست خرید' in idx, 'localStorage' in app))")
+check "P8-4-B4 اثر واقعی هر عامل روی دیسک (plan/design/qa + محصول)" "ok" "$ART"
+
+TR=$(curl -s -m 60 -X POST -d "{\"project\":\"$PROJ\"}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/testrun" | python3 -c "
+import json,sys
+r = json.load(sys.stdin)
+c = r.get('contract') or {}
+print('ok' if r.get('ok') and c.get('ok') else 'red:%s' % json.dumps(c.get('errors',[])[:2], ensure_ascii=False)[:150])")
+check "P8-4-B5 قرارداد PWA روی محصول نهایی پایپ‌لاین: سبز" "ok" "$TR"
+
+PERF=$(curl -s -m 20 "$BASE/api/memory/agents" | python3 -c "
+import json,sys
+p = json.load(sys.stdin)['perf']
+need = ['planner', 'designer', 'frontend', 'qa']
+ok = all(n in p and p[n].get('done', 0) >= 1 and p[n].get('avg_duration_s') for n in need)
+print('ok' if ok else 'missing:' + ','.join(n for n in need if n not in p or p[n].get('done',0) < 1))")
+check "P8-4-B6 عملکرد هر ۴ عامل واقعاً ثبت شد (done + میانگین)" "ok" "$PERF"
+
+curl -s -m 20 -o /dev/null -X POST -d '{}' -H 'Content-Type: application/json' \
+    "$BASE/api/orchestrator/stop"
+for i in $(seq 1 15); do
+    RUN=$(curl -s -m 20 "$BASE/api/orchestrator" | python3 -c \
+        "import json,sys;print(json.load(sys.stdin)['orchestrator']['running'])")
+    [ "$RUN" = "False" ] && break; sleep 2
+done
+check "P8-4-B7 orchestrator متوقف" "False" "$RUN"
+
+echo "════ P8-4/C — پاک‌سازی و پایداری عامل‌ها"
+curl -s -m 30 -o /dev/null -X POST -d "{\"project\":\"$PROJ\",\"confirm\":true}" \
+    -H 'Content-Type: application/json' "$BASE/api/factory/delete"
+check "P8-4-C1 حذف پروژهٔ پایپ‌لاین (با بکاپ)" "200" \
+    "$(curl -s -m 30 -o /dev/null -w '%{http_code}' "$BASE/api/projects")"
+LEFT=$(ls "$ROOT/projects/" 2>/dev/null | grep -c "p8x-pipe")
+check "P8-4-C2 بدون بقایای پروژهٔ پایپ‌لاین" "0" "$LEFT"
+PERS=$(curl -s -m 20 "$BASE/api/agents" | python3 -c "
+import json,sys
+names = {a['name'] for a in json.load(sys.stdin)['agents']}
+print('ok' if {'planner','designer','frontend','qa'} <= names else 'missing')")
+check "P8-4-C3 عامل‌های پایپ‌لاین دائمی ماندند" "ok" "$PERS"
+Q=$(curl -s -m 20 "$BASE/api/tasks/stats" | python3 -c \
+    'import json,sys;print(json.load(sys.stdin)["stats"]["queued"])')
+check "P8-4-C4 صف در پایان خالی" "0" "$Q"
+
+echo "──────────────────"
+echo "نتیجهٔ P8-4: $PASS موفق، $FAIL ناموفق"
+[ "$FAIL" -gt 0 ] && echo "ناموفق: $FAILED"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

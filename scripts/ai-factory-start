@@ -1,0 +1,44 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# AI Factory — start the management server (localhost only)
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PID_FILE="$ROOT/logs/server.pid"
+STDOUT_LOG="$ROOT/logs/stdout.log"
+URL="http://127.0.0.1:8580"
+
+if [ -f "$PID_FILE" ]; then
+    PID="$(cat "$PID_FILE")"
+    if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
+        echo "سرور از قبل در حال اجراست (PID=$PID)"
+        echo "$URL"
+        exit 0
+    fi
+    rm -f "$PID_FILE"
+fi
+
+# Simple sanity check: fail early if the port is already used
+if python - <<'EOF' 2>/dev/null
+import socket, sys
+sys.exit(0 if socket.socket().connect_ex(("127.0.0.1", 8580)) == 0 else 1)
+EOF
+then
+    echo "خطا: پورت 8580 در اشغال سرور دیگری است."
+    exit 1
+fi
+
+cd "$ROOT"
+setsid nohup python "$ROOT/core/server.py" >> "$STDOUT_LOG" 2>&1 &
+NEW_PID=$!
+
+# Give it a moment and verify via its health endpoint
+for _ in $(seq 1 20); do
+    if curl -fsS "$URL/api/health" >/dev/null 2>&1; then
+        echo "✅ AI Factory در حال اجراست: $URL"
+        echo "گزارش‌ها: $ROOT/logs/"
+        exit 0
+    fi
+    sleep 0.5
+done
+
+echo "❌ راه‌اندازی ناموفق — لاگ‌ها را ببینید: $STDOUT_LOG"
+exit 1

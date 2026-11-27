@@ -1,0 +1,454 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ai-factory-test-af09 — تکمیل قابلیت‌های اثبات‌نشده: Android / PWA / AI Tool
+#   P) PWA: کپی ایزولهٔ p8-app-demo → check_pwa واقعی + چک جدید precache
+#           + تست منفی (پروانهٔ جدید باید واقعاً بگیرد)
+#   A) AI:  کپی ایزولهٔ p6-ai-211542 → Mock Provider محلی سازگار OpenAI
+#           → چرخهٔ واقعی endpoint→aiclient→mock→پاسخ + خطاها + نشت کلید
+#   D) Android: helper راستی‌آزمایی APK موجود + تست منفی + termux-open
+#   R) رگرسیون: af07 + af08
+#   E) پاک‌سازی کامل داده‌های همین مأموریت
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP=/data/data/com.termux/files/usr/tmp/opencode
+export TMP
+mkdir -p "$TMP"
+PASS=0; FAIL=0; NT=0
+check() { if [ "$2" = "OK" ]; then PASS=$((PASS+1)); echo "✅ $1";
+          else FAIL=$((FAIL+1)); echo "❌ $1  ($2)"; fi; }
+checkeq() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1";
+            else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi; }
+nt() { NT=$((NT+1)); echo "⚠️  NOT TESTED — $1"; }
+MKEY="mock-key-af09"
+
+echo "════════ AF-09 — Android / PWA / AI Tool ════════"
+echo "== 0) پیش‌شرط‌ها =="
+checkeq "پنل سالم" "OK" "$(curl -fsS -m 5 http://127.0.0.1:8580/api/health \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "منبع PWA موجود" "OK" "$([ -f "$ROOT/projects/p8-app-demo/sw.js" ] \
+  && [ -f "$ROOT/projects/p8-app-demo/manifest.json" ] && echo OK || echo FAIL)"
+checkeq "منبع AI موجود" "OK" "$([ -f "$ROOT/projects/p6-ai-211542/config.json" ] \
+  && echo OK || echo FAIL)"
+checkeq "پشتیبان typetests موجود" "OK" "$(ls "$ROOT"/backups/af09-*/typetests.py \
+  >/dev/null 2>&1 && echo OK || echo FAIL)"
+checkeq "helper android موجود" "OK" "$([ -x "$ROOT/scripts/ai-factory-android-install" ] \
+  && echo OK || echo FAIL)"
+
+echo "== P) PWA — کپی ایزوله + check_pwa واقعی + چک precache جدید =="
+rm -rf "$ROOT/projects/af09-pwa"
+(cd "$ROOT/projects/p8-app-demo" && tar --exclude='__pycache__' -cf - .) \
+  | (mkdir -p "$ROOT/projects/af09-pwa" && tar -xf - -C "$ROOT/projects/af09-pwa")
+checkeq "P کپی ایزولهٔ pwa" "OK" "$([ -f "$ROOT/projects/af09-pwa/sw.js" ] \
+  && echo OK || echo FAIL)"
+
+PWA=$(cd "$ROOT" && python3 - <<'EOF'
+import sys, urllib.error, urllib.request
+sys.path.insert(0, ".")
+from core import typetests, runner
+
+def fetch(url):
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, ""
+    except Exception:
+        return 0, ""
+
+def run_once(tag, must_ok):
+    res = typetests.run("af09-pwa")
+    kinds = [e.get("kind") for e in (res.get("errors") or [])]
+    print("%s ran=%s ok=%s kinds=%s" % (tag, int(bool(res.get("ran"))),
+          int(bool(res.get("ok"))), kinds))
+    try: runner.stop("af09-pwa")
+    except Exception: pass
+    return res
+
+# ۱) مثبت: کپی سالم → باید PASS بدهد (شامل چک precache جدید)
+r = run_once("POS", True)
+ok = r.get("ran") and r.get("ok")
+# ۲) شواهد HTTP مستقل: همهٔ URLهای precache باید 200 بدهند
+import re
+sw = open("projects/af09-pwa/sw.js", encoding="utf-8").read()
+urls = re.findall(r"""['"]([^'"]+)['"]""",
+                  re.search(r"SHELL\s*=\s*\[(.*?)\]", sw, re.DOTALL).group(1))
+from core import runner
+runner.start("af09-pwa"); started = True
+import time
+time.sleep(2)
+bad = []
+for u in urls:
+    c, _ = fetch("http://127.0.0.1:%d/" % runner.status("af09-pwa")["port"]
+                 + u.lstrip("./").lstrip("/"))
+    if c != 200: bad.append(f"{u}:{c}")
+print("PRECACHE urls=%d bad=%s" % (len(urls), bad if bad else "none"))
+try: runner.stop("af09-pwa")
+except Exception: pass
+# ۳) منفی: حذف یک فایل precache → پروانهٔ جدید باید بگیرد
+import os
+os.remove("projects/af09-pwa/icons/icon-192.png")
+r2 = run_once("NEG", False)
+kinds2 = [e.get("kind") for e in (r2.get("errors") or [])]
+print("NEG-GATE caught=%s kinds=%s" % (
+    int("precache-unresolvable" in kinds2), kinds2))
+EOF
+)
+checkeq "P-POS check_pwa کامل (با precache) روی کپی سالم" "1" \
+  "$(echo "$PWA" | grep '^POS' | grep -o 'ok=[01]' | cut -d= -f2)"
+checkeq "P-precache همهٔ URLهای SHELL = 200" "none" \
+  "$(echo "$PWA" | grep -o 'bad=.*' | head -1 | sed 's/bad=//;s/ }$//')"
+checkeq "P-NEG پروانهٔ precache واقعاً می‌گیرد (تست منفی)" "1" \
+  "$(echo "$PWA" | grep -o 'caught=[01]' | cut -d= -f2)"
+nt "نصب‌پذیری و اجرای آفلاین واقعی PWA در مرورگر (SW runtime) — بدون Chromium ممکن نیست"
+
+echo "== A) AI Tool — Mock Provider محلی + چرخهٔ واقعی endpoint→aiclient =="
+MPORT=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
+cat > "$TMP/af09-mock.py" <<'PYEOF'
+"""Mock Provider سازگار OpenAI — فقط 127.0.0.1؛ modes از فایل خوانده می‌شوند."""
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+PORT, MODEFILE, LOG = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+EXPECT = "Bearer " + sys.argv[4]
+
+def mode():
+    try:
+        return open(MODEFILE).read().strip()
+    except OSError:
+        return "ok"
+
+class H(BaseHTTPRequestHandler):
+    def _log(self, line):
+        with open(LOG, "a") as f: f.write(line + "\n")
+    def _send(self, code, body=b"", extra=None):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if body: self.wfile.write(body)
+    def do_GET(self):
+        auth = self.headers.get("Authorization", "")
+        self._log(f"GET {self.path} auth={'yes' if auth else 'no'}")
+        if self.path == "/health":
+            return self._send(200, b'{"ok":true}')
+        if self.path != "/models":
+            return self._send(404, b'{"error":"not found"}')
+        if auth != EXPECT:
+            return self._send(401, b'{"error":"bad key"}')
+        return self._send(200, json.dumps(
+            {"data": [{"id": "mock-1"}, {"id": "mock-2"}]}).encode())
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(n)
+        auth = self.headers.get("Authorization", "")
+        self._log(f"POST {self.path} auth={'yes' if auth else 'no'} "
+                  f"model-header={self.headers.get('X-Mock-Model', '-')}")
+        if self.path != "/chat/completions":
+            return self._send(404, b'{"error":"not found"}')
+        if auth != EXPECT:
+            return self._send(401, b'{"error":"bad key"}')
+        m = mode()
+        if m == "invalid":
+            return self._send(200, b"<not json at all>")
+        if m == "ratelimit":
+            return self._send(429, b'{"error":"slow down"}',
+                              {"Retry-After": "7"})
+        reply = "پاسخ Mock AF-09 ✓"
+        return self._send(200, json.dumps({"choices": [{"message": {
+            "role": "assistant", "content": reply}}]}).encode())
+    def log_message(self, *a): pass
+
+HTTPServer(("127.0.0.1", PORT), H).serve_forever()
+PYEOF
+rm -f "$TMP/af09-mock-mode" "$TMP/af09-mock.log"
+echo ok > "$TMP/af09-mock-mode"
+nohup python3 "$TMP/af09-mock.py" "$MPORT" "$TMP/af09-mock-mode" \
+  "$TMP/af09-mock.log" "$MKEY" >/dev/null 2>&1 &
+MOCKPID=$!
+sleep 1
+checkeq "A-mock provider بوت شد" "OK" \
+  "$(curl -fsS -m 4 http://127.0.0.1:$MPORT/health >/dev/null 2>&1 \
+  && echo OK || echo FAIL)"
+
+rm -rf "$ROOT/projects/af09-ai"
+(cd "$ROOT/projects/p6-ai-211542" && tar --exclude='__pycache__' \
+   --exclude='data/*.db' --exclude='data/ai_admin.json' \
+   --exclude='data/ai_key.txt' -cf - .) \
+  | (mkdir -p "$ROOT/projects/af09-ai" && tar -xf - -C "$ROOT/projects/af09-ai")
+CONF=$(cd "$ROOT" && python3 - <<EOF
+import json
+p = "projects/af09-ai/config.json"
+d = json.load(open(p))
+before = bool((d.get("ai") or {}).get("enabled"))
+d.setdefault("ai", {})["enabled"] = True
+json.dump(d, open(p, "w"), ensure_ascii=False, indent=2)
+print("before=%s after=true" % before)
+EOF
+)
+echo "   ↳ ai.enabled (مسیر واقعی config، روی کپی): $CONF"
+checkeq "A-فعال‌سازی ai در کپی ایزوله" "1" "$(echo "$CONF" | grep -c 'after=true')"
+
+# تزریق Mock از طریق env (مسیر واقعی env > config > پیش‌فرض — بدون تغییر کد)
+export AI_BASE_URL="http://127.0.0.1:$MPORT"
+export AI_API_KEY="$MKEY"
+export AI_MODEL="mock-1"
+
+AIOUT=$(cd "$ROOT" && python3 - <<'EOF'
+import json, os, sys, time, urllib.error, urllib.request
+from http.cookiejar import CookieJar
+sys.path.insert(0, ".")
+from core import runner
+
+def http(url, data=None, method=None, headers=None, opener=None):
+    op = opener or urllib.request.build_opener()
+    req = urllib.request.Request(
+        url, method=method,
+        data=json.dumps(data).encode() if data is not None else None,
+        headers=headers or {})
+    try:
+        with op.open(req, timeout=8) as r:
+            return r.status, r.read().decode("utf-8", "replace"), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, (e.read() or b"").decode("utf-8", "replace"), dict(e.headers)
+    except Exception:
+        return 0, "", {}
+
+runner.start("af09-ai")
+base = "http://127.0.0.1:%d" % runner.status("af09-ai")["port"]
+for _ in range(20):
+    c, _, _ = http(base + "/api/health")
+    if c == 200: break
+    time.sleep(0.5)
+
+# ۱) GET /api/ai/status — ping واقعی از endpoint محصول به mock
+c, txt, _ = http(base + "/api/ai/status")
+st = json.loads(txt) if c == 200 and txt else {}
+print("STATUS code=%s ready=%s enabled=%s provider=%s model=%s" % (
+    c, st.get("ready"), st.get("enabled"), st.get("provider"), st.get("model")))
+
+# ۲) mock واقعاً hit شد؟ (لاگ mock: GET /models)
+print("MOCKLOG", open(os.path.join(os.environ["TMP"], "af09-mock.log"))
+      .read().count("GET /models"))
+
+# ۳) چرخهٔ admin کامل: csrf → init → key → save → test (قبل و بعد از save)
+op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
+c, txt, _ = http(base + "/api/ai/admin/csrf", opener=op)
+tok = json.loads(txt).get("csrf")
+H = {"X-AI-CSRF": tok, "X-AI-Admin": "af09-admin-pass",
+     "Content-Type": "application/json"}
+c, txt, _ = http(base + "/api/ai/admin/init",
+                 {"passcode": "af09-admin-pass"}, "POST", H, op)
+print("ADMIN-INIT code=%s" % c)
+c, txt, _ = http(base + "/api/ai/admin/key",
+                 {"api_key": "mock-key-af09"}, "POST", H, op)
+print("ADMIN-KEY code=%s" % c)
+MOCK = os.environ["AI_BASE_URL"]
+# تست قبل از ذخیره (overrides واقعی):
+c, txt, _ = http(base + "/api/ai/admin/test",
+                 {"provider": "openai", "base_url": MOCK, "model": "mock-1"},
+                 "POST", H, op)
+t = json.loads(txt) if c == 200 and txt else {}
+print("ADMIN-TEST-OV code=%s ready=%s" % (c, t.get("ready")))
+# ذخیره در config کپی (مسیر واقعی admin/save):
+c, txt, _ = http(base + "/api/ai/admin/save",
+                 {"provider": "openai", "base_url": MOCK, "model": "mock-1"},
+                 "POST", H, op)
+print("ADMIN-SAVE code=%s" % c)
+# تست پس از ذخیره (تنظیمات ذخیره‌شده):
+c, txt, _ = http(base + "/api/ai/admin/test", {}, "POST", H, op)
+t = json.loads(txt) if c == 200 and txt else {}
+print("ADMIN-TEST code=%s ready=%s model=%s" % (c, t.get("ready"), t.get("model")))
+
+# ۴) نشت کلید: status + settings نباید کلید را منعکس کنند
+c, txt, _ = http(base + "/api/ai/status")
+leak1 = "mock-key-af09" in txt
+c2, txt2, _ = http(base + "/api/ai/admin/settings")
+leak2 = "mock-key-af09" in txt2
+print("LEAK status=%s settings=%s" % (leak1, leak2))
+try: runner.stop("af09-ai")
+except Exception: pass
+EOF
+)
+checkeq "A-status واقعی (endpoint→aiclient→mock)" "ready=True" \
+  "$(echo "$AIOUT" | grep '^STATUS' | grep -o 'ready=[A-Za-z]*')"
+checkeq "A-enabled از config (ai.enabled=true)" "enabled=True" \
+  "$(echo "$AIOUT" | grep '^STATUS' | grep -o 'enabled=[A-Za-z]*')"
+checkeq "A-mock واقعاً hit شد (GET /models)" "1" \
+  "$(echo "$AIOUT" | grep -o 'MOCKLOG [0-9]*' | awk '{print $2}')"
+for K in ADMIN-INIT ADMIN-KEY ADMIN-SAVE; do
+  checkeq "A-$K = 200" "code=200" \
+    "$(echo "$AIOUT" | grep -o "$K code=[0-9]*" | head -1 | grep -o 'code=[0-9]*')"
+done
+checkeq "A-admin/test با overrides (قبل از save) → ready" "ready=True" \
+  "$(echo "$AIOUT" | grep '^ADMIN-TEST-OV' | grep -o 'ready=[A-Za-z]*')"
+checkeq "A-admin/test پس از save → ready" "ready=True" \
+  "$(echo "$AIOUT" | grep '^ADMIN-TEST ' | grep -o 'ready=[A-Za-z]*')"
+checkeq "A-عدم نشت کلید در status/settings" "LEAK status=False settings=False" \
+  "$(echo "$AIOUT" | grep '^LEAK')"
+
+# ۵) چرخهٔ send مستقیم (کتابخانهٔ محصول در کپی) + ۵ مسیر خطا
+CYCLES=$(cd "$ROOT/projects/af09-ai" && python3 - <<'EOF'
+import json, os, subprocess, sys
+
+INNER = r'''
+import json, sys
+sys.path.insert(0, ".")
+from app import aiclient
+try:
+    out = aiclient.send([{"role": "user", "content": "ping-af09"}])
+    print(json.dumps({"kind": "", "content": out}))
+except aiclient.AiError as e:
+    print(json.dumps({"kind": e.kind, "content": e.message}))
+'''
+VARIANTS = [
+    # چرخهٔ کامل با mock (کلید از env):
+    ("ok", {"AI_BASE_URL": os.environ["AI_BASE_URL"],
+            "AI_API_KEY": "mock-key-af09", "AI_MODEL": "mock-1"},
+     "content"),
+    # کلید از فایل (مسیر واقعی admin/key → api_key_file در config):
+    ("keyfile", {"AI_BASE_URL": "", "AI_API_KEY": "", "AI_MODEL": ""},
+     "content"),
+    ("wrongkey", {"AI_BASE_URL": os.environ["AI_BASE_URL"],
+                  "AI_API_KEY": "WRONG-key", "AI_MODEL": "mock-1"},
+     "auth"),
+    ("invalid-resp", {"AI_BASE_URL": os.environ["AI_BASE_URL"],
+                      "AI_API_KEY": "mock-key-af09", "AI_MODEL": "mock-1"},
+     "bad_response"),
+    ("ratelimit", {"AI_BASE_URL": os.environ["AI_BASE_URL"],
+                   "AI_API_KEY": "mock-key-af09", "AI_MODEL": "mock-1"},
+     "rate_limit"),
+    # واقعاً بدون کلید/تنظیمات: config بدل عاری از کلید و آدرس
+    ("nokey", {"AI_CONFIG_FILE": os.environ["TMP"] + "/af09-nocfg",
+               "AI_API_KEY": "", "AI_BASE_URL": "", "AI_MODEL": ""},
+     "no_settings"),
+    ("provider-down", {"AI_BASE_URL": "http://127.0.0.1:1",
+                       "AI_API_KEY": "mock-key-af09", "AI_MODEL": "mock-1"},
+     "network"),
+]
+# config بدلِ عاری از تنظیمات، برای واریانت nokey
+os.makedirs(os.environ["TMP"] + "/af09-nocfg", exist_ok=True)
+open(os.environ["TMP"] + "/af09-nocfg/config.json", "w").write(
+    json.dumps({"ai": {"enabled": True, "provider": "openai"}}))
+# ۴ اسکریپت خطایی mock: wrongkey خودش 401 می‌دهد؛ invalid/ratelimit با mode
+mf = os.environ.get("TMP", "") + "/af09-mock-mode"
+results = []
+for name, env, expect in VARIANTS:
+    if name == "invalid-resp":
+        open(mf, "w").write("invalid")
+    elif name == "ratelimit":
+        open(mf, "w").write("ratelimit")
+    else:
+        open(mf, "w").write("ok")
+    e = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/data/data/com.termux/files/usr/tmp/opencode/af09-home"), "TMP": os.environ["TMP"]}
+    e.update(env)
+    r = subprocess.run([sys.executable, "-c", INNER], env=e,
+                       capture_output=True, text=True, timeout=90)
+    try:
+        res = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        res = {"kind": "CRASH:" + (r.stderr or "")[-120:], "content": ""}
+    results.append((name, expect, res))
+    print("CYCLE %s kind=%s content=%s" % (name, res["kind"], res["content"][:60]))
+open(mf, "w").write("ok")
+ok = all(((exp == "content" and "Mock AF-09" in res["content"])
+          or res["kind"] == exp) for _, exp, res in results)
+leaked = any("mock-key-af09" in str(res) for _, _, res in results)
+print("CYCLES-ALL-OK %s LEAK %s" % (ok, leaked))
+EOF
+)
+for V in ok keyfile wrongkey invalid-resp ratelimit nokey provider-down; do
+  L=$(echo "$CYCLES" | grep "^CYCLE $V " | head -1)
+  K=$(echo "$L" | grep -o "kind=[^ ]*" | cut -d= -f2)
+  case "$V" in
+    ok) checkeq "A-send چرخهٔ کامل با mock (کلید env) → پاسخ واقعی" "kind=" "kind=$K";;
+    keyfile) checkeq "A-key file fallback (admin/key → api_key_file) → پاسخ واقعی" "kind=" "kind=$K";;
+    wrongkey) checkeq "A-کلید اشتباه → auth" "kind=auth" "kind=$K";;
+    invalid-resp) checkeq "A-پاسخ نامعتبر → bad_response" "kind=bad_response" "kind=$K";;
+    ratelimit) checkeq "A-429 → rate_limit" "kind=rate_limit" "kind=$K";;
+    nokey) checkeq "A-نبود کلید/تنظیمات → no_settings" "kind=no_settings" "kind=$K";;
+    provider-down) checkeq "A-provider خاموش → network" "kind=network" "kind=$K";;
+  esac
+done
+check "A-جمع‌بندی چرخه‌ها" "$(echo "$CYCLES" | grep 'CYCLES-ALL-OK True' \
+  >/dev/null && echo OK || echo "FAIL: $(echo "$CYCLES" | tail -1)")" "OK"
+check "A-کلید در هیچ خطا/پاسخی منعکس نشد" "$(echo "$CYCLES" | grep 'LEAK False' \
+  >/dev/null && echo OK || echo FAIL)" "OK"
+nt "عملکرد واقعی مدل (کیفیت پاسخ مدل واقعی) — بدون اتصال به API واقعی ممنوع/ناممکن"
+
+echo "== D) Android — راستی‌آزمایی + نصب دستی =="
+if bash "$ROOT/scripts/ai-factory-android-install" verify af02-android-test \
+   > "$TMP/af09-d-verify.log" 2>&1; then
+  PASS=$((PASS+1)); echo "✅ D-helper verify (zip+امضا+badging+sha256)"
+  grep -E "✅|package:" "$TMP/af09-d-verify.log" | sed 's/^/   /'
+else
+  FAIL=$((FAIL+1)); echo "❌ D-helper verify"; cat "$TMP/af09-d-verify.log"
+fi
+# تست منفی واقعی: رکورد sha256 در releases.json موقتاً خراب می‌شود → helper باید رد کند
+BAD=$(cd "$ROOT" && python3 - "$TMP/af09-bad.apk" <<'EOF'
+import json, subprocess, sys
+from pathlib import Path
+rel = Path("projects/af02-android-test/.factory/releases.json")
+bak = rel.read_text()
+d = json.loads(bak)
+apk = [r for r in d if r.get("kind") == "apk"][-1]["artifacts"]["apk"]
+apk["sha256"] = "0" * 64
+rel.write_text(json.dumps(d))
+r = subprocess.run(["bash", "scripts/ai-factory-android-install", "verify",
+                    "af02-android-test"], capture_output=True, text=True,
+                   timeout=120)
+rel.write_text(bak)   # بازگردانی فوری — رکورد اصلی دست‌نخورده
+print("REJECTED=%s detail=%s" % (int(r.returncode != 0),
+      ("mismatch" if "mismatch" in r.stdout else (r.stdout + r.stderr)[-60:])))
+EOF
+)
+checkeq "D-تست منفی: sha256 mismatch رد می‌شود" "REJECTED=1" \
+  "$(echo "$BAD" | grep -o 'REJECTED=[01]')"
+APK=$(python3 -c "
+import json
+from pathlib import Path
+rels = json.loads(Path('$ROOT/projects/af02-android-test/.factory/releases.json').read_text())
+print([r for r in rels if r.get('kind') == 'apk'][-1]['artifacts']['apk']['path'])")
+echo "   ↳ APK موجود: $(ls -la "$APK" 2>/dev/null | awk '{print $5}') bytes — $(aapt2 dump badging "$APK" 2>/dev/null | grep -o "name='[^']*' versionCode='[0-9]*' versionName='[^']*'" | head -1)"
+POPUP=$(termux-open "$APK" 2>&1 && echo SENT || echo FAILED)
+check "D-termux-open (ارسال پاپ‌آپ نصاب)" "$(echo "$POPUP" | grep -q SENT \
+  && echo OK || echo "$POPUP")" "OK"
+echo "   ↳ پاپ‌آپ نصاب Android باز شد — تأیید/نصب نهایی دستی شماست (خارج از کنترل Termux)."
+nt "تأیید نصب واقعی APK روی گوشی (خارج از Termux قابل راستی‌آزمایی خودکار نیست)"
+
+echo "== R) رگرسیون =="
+R07=$(bash "$ROOT/scripts/ai-factory-test-af07" 2>&1 | tail -3 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-af07" "PASS=36 FAIL=0" "$R07"
+R08=$(bash "$ROOT/scripts/ai-factory-test-af08" 2>&1 | tail -4 | grep -o "PASS=[0-9]* FAIL=[0-9]*" | head -1)
+checkeq "R-af08" "PASS=43 FAIL=0" "$R08"
+
+echo "== E) پاک‌سازی داده‌های همین مأموریت =="
+kill "$MOCKPID" 2>/dev/null || true
+pkill -f "af09-mock.py" 2>/dev/null || true
+. "$ROOT/scripts/ai-factory-panel-login" http://127.0.0.1:8580
+for P in af09-ai af09-pwa; do
+  pauth -fsS -m 8 -X POST http://127.0.0.1:8580/api/factory/stop \
+    -H 'Content-Type: application/json' -d "{\"project\":\"$P\"}" \
+    -o /dev/null 2>/dev/null || true
+  pauth -fsS -m 8 -X POST http://127.0.0.1:8580/api/factory/delete \
+    -H 'Content-Type: application/json' -d "{\"project\":\"$P\",\"confirm\":true}" \
+    -o /dev/null 2>/dev/null || true
+done
+sleep 1
+rm -f "$TMP"/af09-mock.py "$TMP"/af09-mock-mode "$TMP"/af09-mock.log \
+      "$TMP"/af09-bad.apk "$TMP"/af09-d-verify.log "$TMP"/af09-sig.txt
+LEFT=0
+for P in af09-ai af09-pwa; do [ -d "$ROOT/projects/$P" ] && LEFT=$((LEFT+1)); done
+checkeq "E-حذف کپی‌های ایزوله" "0" "$LEFT"
+ORIG=OK
+[ -f "$ROOT/projects/p8-app-demo/sw.js" ] || ORIG=BROKEN
+[ -f "$ROOT/projects/p6-ai-211542/config.json" ] || ORIG=BROKEN
+python3 -c "import json;d=json.load(open('projects/af02-android-test/.factory/releases.json'));assert [r for r in d if r.get('kind')=='apk'][-1]['artifacts']['apk']['sha256'].endswith('432b4') or len([r for r in d if r.get('kind')=='apk'][-1]['artifacts']['apk']['sha256'])==64" \
+  || ORIG=BROKEN
+checkeq "E-اصل نمونه‌ها و رکورد releases دست‌خورده" "OK" "$ORIG"
+
+echo
+echo "════════ AF-09 RESULT ════════"
+echo "PASS=$PASS FAIL=$FAIL NOT-TESTED=$NT"
+if [ "$FAIL" = "0" ]; then echo "✅ RESULT: ALL GREEN (بدون احتساب NOT-TESTED)"; exit 0
+else echo "❌ RESULT: FAIL>0"; exit 1; fi

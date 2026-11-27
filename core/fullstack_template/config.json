@@ -1,0 +1,9 @@
+{
+  "app": "{{APP_TITLE}}",
+  "port_env": "AI_FACTORY_PORT",
+  "db": "data/app.db",
+  "session_ttl_hours": 24,
+  "password_iterations": 100000,
+  "cookie": {"name": "af_session", "httponly": true, "samesite": "Lax"},
+  "note": "این فایل تنظیمات نمونه است — هیچ رمزی در کد یا تنظیمات ذخیره نمی‌شود."
+}

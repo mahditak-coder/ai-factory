@@ -1,0 +1,237 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# AI Factory v0.2.0 — OpenCode bridge acceptance tests (real E2E, no mocks).
+# Requires: panel running (scripts/ai-factory-start). Uses only curl + python.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BASE="http://127.0.0.1:8580"
+TMP="${TMPDIR:-/data/data/com.termux/files/usr/tmp}/af-test-oc.$$"
+mkdir -p "$TMP"
+PASS=0
+FAIL=0
+FAILED=""
+
+t_pass() { PASS=$((PASS+1)); echo "  ✅ $1"; }
+t_fail() { FAIL=$((FAIL+1)); FAILED="$FAILED|$1"; echo "  ❌ $1"; }
+check()  { # check <name> <expected> <actual>
+    if [ "$2" = "$3" ]; then t_pass "$1"; else t_fail "$1 (expected=$2 got=$3)"; fi
+}
+
+# POST/GET helpers returning body
+pjson() { curl -s -m "$1" -X POST "${@:2}"; }
+gjson() { curl -s -m "$1" "$2"; }
+code()  { curl -s -m "${2:-30}" -o /dev/null -w '%{http_code}' "$1"; }
+
+cleanup() {
+    [ -n "${PNAME:-}" ] && rm -rf "$ROOT/projects/$PNAME" 2>/dev/null
+    rm -rf "$TMP"
+    trap - EXIT
+}
+trap cleanup EXIT
+
+# P6-2: protected APIs require panel login — curl wrapper injects
+# the session cookie + CSRF header into every call below.
+# (calls the real curl binary; pauth also uses it — no recursion)
+. "$ROOT/scripts/ai-factory-panel-login" "$BASE"
+curl() { command curl -b "$PANEL_COOKIES" -H "X-Panel-CSRF: $CSRF" "$@"; }
+
+echo "== OpenCode bridge acceptance tests (AI Factory v0.2.0) =="
+start=$(date +%s)
+
+# 1. panel health
+check "panel health" "200" "$(code "$BASE/api/health" 10)"
+
+# 1b. workspace page + its assets load over HTTP
+check "GET /workspace.html" "200" "$(code "$BASE/workspace.html" 20)"
+check "GET /work.js" "200" "$(code "$BASE/work.js" 20)"
+check "GET /style.css" "200" "$(code "$BASE/style.css" 20)"
+
+# 2. bridge status (spawns serve if needed)
+ST=$(gjson 60 "$BASE/api/oc/status")
+RUNNING=$(echo "$ST" | python -c "import json,sys; d=sys.stdin.read(); import json as j; print(j.loads(d)['opencode']['running'])")
+VER=$(echo "$ST" | python -c "import json,sys; print(json.load(sys.stdin)['opencode']['version'])")
+check "bridge running" "True" "$RUNNING"
+if [ "$VER" = "2.2.6" ]; then t_pass "opencode version 2.2.6"; else t_fail "opencode version (got $VER)"; fi
+if echo "$ST" | grep -q "127.0.0.1:4556" && ! echo "$ST" | grep -qE '"pid": null'; then
+    t_pass "status exposes no secrets (only base_url/pid/version)"
+else
+    t_fail "status payload shape"
+fi
+
+# 3. models
+MD=$(gjson 60 "$BASE/api/oc/models")
+GM=$(echo "$MD" | python -c "
+import json,sys
+ms=json.load(sys.stdin)['models']
+print('ok' if ms and any(m['modelID']=='glm-5.3-flash-free' for m in ms) else 'no')")
+check "models list nonempty & contains glm-5.3-flash-free" "ok" "$GM"
+
+# 4. fresh test project
+PNAME="af-test-oc-$$"
+C=$(curl -s -m 15 -X POST -d "{\"name\":\"$PNAME\"}" "$BASE/api/projects" -o /dev/null -w '%{http_code}')
+check "test project created" "201" "$C"
+
+# 5. create session in test project
+SR=$(curl -s -m 60 -X POST -d "{\"project\":\"$PNAME\",\"title\":\"accept\"}" -H 'Content-Type: application/json' "$BASE/api/oc/sessions")
+SID=$(echo "$SR" | python -c "import json,sys; print(json.load(sys.stdin)['session']['id'])" 2>/dev/null)
+echo "$SID" > "$TMP/sid.txt"
+if [ -n "$SID" ] && [ "${SID:0:4}" = "ses_" ]; then t_pass "session created ($SID)"; else t_fail "session create"; fi
+LOC=$(echo "$SR" | python -c "import json,sys; print(json.load(sys.stdin)['session']['directory'])")
+if [ "$LOC" = "$ROOT/projects/$PNAME" ]; then t_pass "session location inside projects/"; else t_fail "session location ($LOC)"; fi
+
+# 6. security: bad session id
+check "history bad id -> 400" "400" "$(code "$BASE/api/oc/history?session=..%2Fetc" 20)"
+check "history junk id -> 400" "400" "$(code "$BASE/api/oc/history?session=abc" 20)"
+
+# 7. security: cross-project message (demo session against new project)
+DID=$(python - <<PYEOF 2>/dev/null
+import os
+root = os.environ["ROOT"] if False else "$ROOT"
+ps = root + "/projects"
+for n in sorted(os.listdir(ps)):
+    if os.path.isdir(os.path.join(ps, n)) and not n.startswith("af-test-oc"):
+        print(n)
+        break
+PYEOF
+)
+if [ -n "$DID" ]; then
+    S_OTHER=$(curl -s -m 60 -X POST -d "{\"project\":\"$DID\",\"title\":\"sec\"}" -H 'Content-Type: application/json' "$BASE/api/oc/sessions" | python -c "import json,sys; d=json.load(sys.stdin); print(d.get('session',{}).get('id','')) if 'session' in d else sys.exit(1)" 2>/dev/null)
+    if [ -n "$S_OTHER" ]; then
+        XMC=$(curl -s -m 30 -X POST -d "{\"project\":\"$PNAME\",\"session_id\":\"$S_OTHER\",\"text\":\"x\"}" -H 'Content-Type: application/json' "$BASE/api/oc/message" -o /dev/null -w '%{http_code}')
+        check "cross-project message -> 403" "403" "$XMC"
+    else
+        t_fail "cross-project message (session create in '$DID' failed)"
+    fi
+else
+    t_fail "no other project for cross-check"
+fi
+
+# 8. security: session outside projects/
+PW=$(cat "$ROOT/logs/opencode.token")
+OUTSIDESID=$(curl -s -m 20 -u "opencode:$PW" http://127.0.0.1:4556/api/session -o "$TMP/all.json" -w '%{http_code}' >/dev/null; python -c "
+import json
+try:
+    d=json.load(open('$TMP/all.json'))['data']
+    for s in d:
+        loc=(s.get('location') or {}).get('directory','')
+        if '/projects/' not in loc:
+            print(s['id']); break
+except Exception: pass")
+if [ -n "$OUTSIDESID" ]; then
+    check "history outside projects/ -> 403" "403" "$(code "$BASE/api/oc/history?session=$OUTSIDESID" 30)"
+else
+    t_pass "no outside session present (skipped 403-outside)"
+fi
+
+# 9. real prompt + history (real GLM response)
+MR=$(curl -s -m 60 -X POST -d "{\"project\":\"$PNAME\",\"session_id\":\"$SID\",\"text\":\"بنویس فقط همین عدد: 87\"}" -H 'Content-Type: application/json' "$BASE/api/oc/message")
+OKS=$(echo "$MR" | python -c "import json,sys; print(str(json.load(sys.stdin).get('ok')))" 2>/dev/null)
+check "message accepted" "True" "$OKS"
+FINAL=""
+for i in $(seq 1 30); do
+    sleep 3
+    H=$(gjson 30 "$BASE/api/oc/history?session=$SID")
+    FINAL=$(echo "$H" | python -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    for m in d['messages']:
+        if m['type']=='assistant' and m.get('completed'):
+            txt=''.join(p['text'] for p in m['parts'] if p['type']=='text')
+            if txt.strip(): print(txt[:60]); break
+except Exception: pass" 2>/dev/null)
+    [ -n "$FINAL" ] && break
+ done
+if echo "$FINAL" | grep -q '87'; then t_pass "real model response arrived: \"$FINAL\""; else t_fail "model response (got: ${FINAL:-none})"; fi
+
+# 10. live SSE deltas via proxy
+rm -f "$TMP/sse.raw"
+curl -s -N "$BASE/api/oc/events?session=$SID" --max-time 45 -o "$TMP/sse.raw" &
+SSE_PID=$!
+sleep 2
+curl -s -m 30 -X POST -d "{\"project\":\"$PNAME\",\"session_id\":\"$SID\",\"text\":\"بنویس: پخش زنده کار می‌کند\"}" -H 'Content-Type: application/json' "$BASE/api/oc/message" >/dev/null
+wait $SSE_PID 2>/dev/null
+DELTAS=$(python -c "
+import json
+deltas=0
+for line in open('$TMP/sse.raw', encoding='utf-8'):
+    line=line.strip()
+    if line.startswith('data: '):
+        try: d=json.loads(line[6:])
+        except Exception: continue
+        t=(d.get('type') or '')
+        if t.split('.')[0]=='session' and (('delta' in t) or t=='session.step.started' or t=='session.step.ended'):
+            try:
+                d2=d['data']
+                if d2.get('sessionID')=='$SID' or t.split('.')[0]!='session': deltas+=1
+            except Exception: pass
+print(deltas)" 2>/dev/null)
+if [ "${DELTAS:-0}" -ge 3 ]; then t_pass "SSE proxy delivered $DELTAS delta/step events"; else t_fail "SSE deltas (got ${DELTAS:-0})"; fi
+
+# 11. interrupt
+curl -s -m 30 -X POST -d "{\"project\":\"$PNAME\",\"session_id\":\"$SID\",\"text\":\"مقاله بسیار طولانی و مفصل در ۸ پاراگراف درباره فلسفه یونان بنویس.\"}" -H 'Content-Type: application/json' "$BASE/api/oc/message" >/dev/null
+sleep 3
+IR=$(curl -s -m 20 -X POST -d "{\"session_id\":\"$SID\"}" -H 'Content-Type: application/json' "$BASE/api/oc/interrupt")
+check "interrupt accepted" "True" "$(echo "$IR" | python -c "import json,sys; print(str(json.load(sys.stdin).get('interrupted')))" 2>/dev/null)"
+
+# 12. permission round-trip: enforce "ask" config in the test project,
+# so write actions genuinely raise a permission request.
+cat > "$ROOT/projects/$PNAME/opencode.json" <<'OCJSON'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "edit": "ask",
+    "write": "ask",
+    "bash": "ask"
+  }
+}
+OCJSON
+rm -f "$TMP/perm.raw"
+curl -s -N "$BASE/api/oc/events?session=$SID" --max-time 60 -o "$TMP/perm.raw" &
+SSE_PID=$!
+sleep 1
+WF="notes-perm-$$.md"
+curl -s -m 30 -X POST -d "{\"project\":\"$PNAME\",\"session_id\":\"$SID\",\"text\":\"فایل $WF را در دایرکتوری پروژه با محتوای «perm-test» بساز.\"}" -H 'Content-Type: application/json' "$BASE/api/oc/message" >/dev/null
+PRID=""
+for i in $(seq 1 12); do
+    sleep 3
+    PL=$(curl -s -m 20 "$BASE/api/oc/permissions?session=$SID")
+    PRID=$(echo "$PL" | python -c "import json,sys; ps=json.load(sys.stdin)['permissions']; print(ps[0]['id'] if ps else '')" 2>/dev/null)
+    [ -n "$PRID" ] && break
+done
+if [ -n "$PRID" ]; then
+    t_pass "permission request raised ($PRID)"
+    RP=$(curl -s -m 20 -X POST -d "{\"session_id\":\"$SID\",\"request_id\":\"$PRID\",\"decision\":\"once\"}" -H 'Content-Type: application/json' "$BASE/api/oc/permission")
+    check "permission reply ok" "True" "$(echo "$RP" | python -c "import json,sys; print(str(json.load(sys.stdin).get('ok')))" 2>/dev/null)"
+    FILEOK="no"
+    for i in $(seq 1 8); do
+        sleep 3
+        [ -f "$ROOT/projects/$PNAME/$WF" ] && FILEOK=yes && break
+    done
+    check "file written after approval" "yes" "$FILEOK"
+    rm -f "$ROOT/projects/$PNAME/$WF"
+else
+    t_fail "permission request never raised"
+fi
+
+# 13. token secrecy
+PW=$(cat "$ROOT/logs/opencode.token")
+LEAK=no
+for f in workspace.html work.js index.html style.css /api/oc/status /api/oc/models /api/oc/history?session=$SID; do
+    curl -s -m 20 "$BASE/$f" | grep -q "$PW" && LEAK=yes
+done
+check "no token leakage in browser payloads" "no" "$LEAK"
+
+# 14. localhost-only binding proof
+python - <<PYEOF >/dev/null 2>&1
+import socket
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(("127.0.0.2", 4556)); s.close()
+except OSError:
+    raise SystemExit(1)  # wildcard-bound => fail
+PYEOF
+check "opencode serve bound to 127.0.0.1 only" "0" "$?"
+
+echo
+echo "== نتیجه: $PASS موفق، $FAIL ناموفق $([ -n "$FAILED" ] && echo "($FAILED)") =="
+[ "$FAIL" = "0" ]

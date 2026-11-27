@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{APP_TITLE}} — داشبورد کاربر</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>📋 داشبورد کاربر</h1>
+  <span id="who" class="muted"></span>
+  <button id="btnLogout" class="btn small">خروج</button>
+</header>
+<main>
+  <section class="card">
+    <h2>مشتری‌های من</h2>
+    <form id="fAdd" class="row">
+      <input id="cName" placeholder="نام مشتری" required>
+      <input id="cPhone" placeholder="تلفن (اختیاری)">
+      <input id="cNote" placeholder="یادداشت (اختیاری)">
+      <button type="submit">+ افزودن</button>
+    </form>
+    <div id="addMsg" class="msg"></div>
+    <table id="tbl">
+      <thead><tr><th>#</th><th>نام</th><th>تلفن</th><th>یادداشت</th><th>عمل</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+<footer>{{APP_TITLE}} v0.1 — فقط localhost</footer>
+<script src="/app.js"></script>
+<script>pageUser();</script>
+</body>
+</html>

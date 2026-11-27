@@ -1,0 +1,100 @@
+# ai-factory-test-zipfix — regression tests for the ZIP download fix
+# (latin-1 header crash on Persian project names)
+# Run: bash scripts/ai-factory-test-zipfix
+set -u
+BASE="http://127.0.0.1:8580"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
+BODY="$T/zi.body"
+PASS=0; FAIL=0
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1"
+    else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi
+}
+
+# isolated scratch projects for this run only
+RND="$$"
+FA="زیپ-آزمون-$RND"
+EN="zip-ascii-test-$RND"
+
+# P6-2: protected APIs need panel login first
+. "$(dirname "$0")/ai-factory-panel-login" "$BASE"
+
+api() { pauth -X "$1" -H 'Content-Type: application/json' -d "$3" "$BASE$2"; }
+dl() { # project path -> prints  status|bytes|PKMagic|CD
+    local st bn hd
+    hd="$T/zi.hdr"
+    st=$(pauth -o "$BODY" -D "$hd" -w '%{http_code} %{size_download}' \
+         --get "$BASE/api/factory/export" \
+         --data-urlencode "project=$1" --data-urlencode "path=$2" --data-urlencode "download=1")
+    st="${st/ /|}"
+    bn=$(grep -i '^Content-Disposition' "$hd" | tail -1 | tr -d '\r\n' | cut -d' ' -f2-)
+    printf "%s|%s" "$st" "$(python3 -c 'print(open("'"$BODY"'","rb").read()[:2]==b"PK")')"
+    printf "|%s" "$bn"
+}
+
+echo "== setup scratch projects (isolated) =="
+api POST /api/projects "{\"name\":\"$FA\"}" >/dev/null
+api POST /api/factory/projects "{\"name\":\"$EN\",\"type\":\"fullstack\"}" >/dev/null
+api PUT /api/file "{\"project\":\"$FA\",\"path\":\"README.md\",\"content\":\"سلام آزمون زیپ\"}" >/dev/null
+
+echo "== ZIP download with Persian name =="
+PEXP=$(api POST /api/factory/export "{\"project\":\"$FA\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])')
+OUT=$(dl "$FA" "$PEXP")
+check "persian download status=200" "200" "$(echo "$OUT" | cut -d'|' -f1)"
+check "persian download PK magic" "True" "$(echo "$OUT" | cut -d'|' -f3)"
+CD=$(echo "$OUT" | cut -d'|' -f4)
+case "$CD" in *filename*=*UTF-8*) PASS=$((PASS+1)); echo "✅ RFC5987 filename* present";;
+                   *) FAIL=$((FAIL+1)); echo "❌ RFC5987 filename* missing: $CD";;
+esac
+case "$CD" in *[![:print:]]*) FAIL=$((FAIL+1)); echo "❌ non-ASCII byte in header: $CD";;
+                   *) PASS=$((PASS+1)); echo "✅ header fully ASCII-safe: $CD";;
+esac
+python3 -c "import zipfile; z=zipfile.ZipFile('$BODY'); assert z.testzip() is None; assert 'README.md' in z.namelist()" \
+  && { PASS=$((PASS+1)); echo "✅ persian zip opens, content present"; } \
+  || { FAIL=$((FAIL+1)); echo "❌ persian zip corrupt"; }
+python3 -c "
+import zipfile
+z = zipfile.ZipFile('$BODY')
+c = z.read('README.md').decode()
+assert 'سلام' in c" \
+  && { PASS=$((PASS+1)); echo "✅ UTF-8 content intact inside zip"; } \
+  || { FAIL=$((FAIL+1)); echo "❌ utf-8 content broken"; }
+
+echo "== ZIP download with English name =="
+EEXP=$(api POST /api/factory/export "{\"project\":\"$EN\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])')
+OUT2=$(dl "$EN" "$EEXP")
+check "english download status=200" "200" "$(echo "$OUT2" | cut -d'|' -f1)"
+check "english download PK magic" "True" "$(echo "$OUT2" | cut -d'|' -f3)"
+CD2=$(echo "$OUT2" | cut -d'|' -f4)
+case "$CD2" in *"$EN-20"*) PASS=$((PASS+1)); echo "✅ english name kept verbatim";;
+               *) FAIL=$((FAIL+1)); echo "❌ english name mangled: $CD2";;
+esac
+
+echo "== security of the download endpoint =="
+for bad in "../../logs/server.log" "/etc/passwd"; do
+    S=$(pauth -o /dev/null -w '%{http_code}' --get "$BASE/api/factory/export" \
+        --data-urlencode "project=$EN" --data-urlencode "path=$bad" --data-urlencode "download=1")
+    check "traversal ($bad) -> 403" "403" "$S"
+done
+S=$(pauth -o /dev/null -w '%{http_code}' --get "$BASE/api/factory/export" \
+    --data-urlencode "project=nonexistent_project_zz" --data-urlencode "path=$PEXP" --data-urlencode "download=1")
+check "project/filename mismatch -> 403" "403" "$S"
+
+echo "== no secrets inside zips =="
+python3 -c "
+import zipfile
+z = zipfile.ZipFile('$BODY')
+assert not any(('token' in n or 'logs/' in n) for n in z.namelist())" \
+  && { PASS=$((PASS+1)); echo "✅ no secrets inside exports"; } \
+  || { FAIL=$((FAIL+1)); echo "❌ secrets leaked into zip"; }
+
+echo "== cleanup scratch projects =="
+api POST /api/factory/delete "{\"project\":\"$FA\",\"confirm\":true}" >/dev/null
+api POST /api/factory/delete "{\"project\":\"$EN\",\"confirm\":true}" >/dev/null
+rm -f "$BODY" "$T/zi.hdr"
+PASS=$((PASS+1)); echo "✅ scratch cleaned"
+
+echo
+echo "RESULT: PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" -eq 0 ] && echo "ALL GREEN" && exit 0
+exit 1

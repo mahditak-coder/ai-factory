@@ -1,0 +1,645 @@
+# ai-factory-test-e2e — MISSION: integration test of "generated-software
+# independence" after P1+P2+P3. TEST-ONLY: builds a brand-new unique ai-tool
+# sample OUTSIDE projects/ ($TMPDIR), verifies auto-install, exercises real
+# functional flows via a local OpenAI-compatible mock, then ZIPs the sample,
+# STOPS the AI Factory panel + OpenCode serve, and runs the EXTRACTED copy
+# in a truly isolated environment. No existing project or factory-source
+# file is modified (this script itself is new and test-only).
+# Run: bash scripts/ai-factory-test-e2e        (~2 minutes)
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+T="${TMPDIR:-/data/data/com.termux/files/usr/tmp}"
+SAMPLE="$T/ai-independence-e2e-$$"
+ZIPF="$T/ai-e2e-zip-$$.zip"
+EXT="$T/ai-independence-e2e-EXT-$$"
+PASS=0; FAIL=0
+check() {
+    if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1"
+    else FAIL=$((FAIL+1)); echo "❌ $1  (expected=$2 got=$3)"; fi
+}
+cd "$ROOT"
+trap 'rm -rf "$SAMPLE" "$EXT" "$ZIPF"' EXIT
+
+echo "═══ فاز ۱+۲) ساخت نمونهٔ یکتای بیرونی (نوع ai-tool، مسیر نصب واقعی) ═══"
+BUILT=$(SAMPLE="$SAMPLE" ROOT="$ROOT" python3 - <<'PYEOF'
+import os, sys, json
+from pathlib import Path
+sys.path.insert(0, os.environ["ROOT"])
+from core import scaffold
+SAMPLE = Path(os.environ["SAMPLE"])
+for d in ("app", "web", "ui", "data"):
+    (SAMPLE / d).mkdir(parents=True, exist_ok=True)
+# «نصب خودکار» — دقیقاً همان مسیری که factory.create_project برای ai-tool می‌رود
+res = scaffold.scaffold_ai_module("ai-independence-e2e", dir_path=SAMPLE)
+files = set(res["files"])
+need = {"app/aiclient.py", "app/ai_admin.py", "ui/ai.html", "ui/ai.js",
+        "ui/ai.css", "README-ai.md", "ai.example.json", "tests/test_aiclient.py"}
+assert not (need - files), "scaffold incomplete: %s" % sorted(need - files)
+
+web = SAMPLE / "web"
+(web / "index.html").write_text(
+    '<!DOCTYPE html>\n<html lang="fa" dir="rtl"><head><meta charset="utf-8">\n'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    '<title>دستیار آزمایشی</title><link rel="stylesheet" href="/app.css"></head>\n'
+    '<body><main class="page"><h1>🤖 دستیار آزمایشی</h1>\n'
+    '<div id="state" class="strip">در حال دریافت وضعیت…</div>\n'
+    '<form id="chat"><label for="msg">پیام شما</label>\n'
+    '<textarea id="msg" rows="3" placeholder="سلام!"></textarea>\n'
+    '<button type="submit">ارسال به هوش مصنوعی</button></form>\n'
+    '<div id="reply" class="reply" hidden></div>\n'
+    '<div id="err" class="err" hidden></div>\n'
+    '<p><a href="/ai.html">⚙️ صفحه تنظیمات هوش مصنوعی</a></p>\n'
+    '</main><script src="/app.js"></script></body></html>\n', encoding="utf-8")
+(web / "app.css").write_text(
+    ':root{--bg:#101623;--card:#1a2234;--txt:#dfe6f5}\n'
+    'body{background:var(--bg);color:var(--txt);font:15px/1.9 Tahoma,sans-serif;margin:0}\n'
+    '.page{max-width:680px;margin:0 auto;padding:18px}\n'
+    'h1{font-size:19px}\n'
+    '.strip{background:var(--card);border-radius:10px;padding:8px 12px;font-size:13px;margin:10px 0}\n'
+    'textarea{width:100%;box-sizing:border-box;background:var(--card);color:var(--txt);border:1px solid #31405f;border-radius:9px;padding:9px;font:inherit}\n'
+    'button{background:#4f8cfa;color:#fff;border:0;border-radius:9px;padding:9px 18px;cursor:pointer;margin-top:8px;font:inherit}\n'
+    '.reply{background:var(--card);border-radius:10px;padding:10px 12px;margin-top:10px}\n'
+    '.err{background:#3a1b22;color:#ffb3bc;border-radius:10px;padding:10px 12px;margin-top:10px}\n',
+    encoding="utf-8")
+(web / "app.js").write_text(
+    '"use strict";\n'
+    'var $ = function (id) { return document.getElementById(id); };\n'
+    'function showState(s){$("state").textContent=(s.enabled?"اتصال فعال":"قابلیت AI غیرفعال")+" — "+(s.ready?"متصل و آماده":"آماده نیست")+" — "+(s.detail||"");}\n'
+    'function loadState(){fetch("/app/ai/state",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(j){if(j.ok)showState(j);});}\n'
+    '$("chat").addEventListener("submit",function(ev){ev.preventDefault();$("err").hidden=true;$("reply").hidden=false;$("reply").textContent="… در حال ارسال";\n'
+    'fetch("/app/ai/send",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},\n'
+    'body:JSON.stringify({messages:[{role:"user",content:$("msg").value.trim()}]})}).then(function(r){return r.json().then(function(j){return {code:r.status,json:j};});})\n'
+    '.then(function(r){if(r.code===200&&r.json.ok){$("reply").textContent="پاسخ: "+r.json.reply;}\n'
+    'else{$("reply").hidden=true;$("err").hidden=false;$("err").textContent=r.json.error||("خطا (کد "+r.code+")");}})\n'
+    '.catch(function(){$("err").hidden=false;$("err").textContent="خطای شبکه";});});\n'
+    'loadState();\n', encoding="utf-8")
+
+SERVER = r'''
+"""نرم‌افزار تولیدشده: دستیار آزمایشی — فقط کتابخانه استاندارد؛ بدون OpenCode."""
+import json, logging, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+# --- Mock سرویس OpenAI-سازگار (درون-فرایند؛ جانشین هر سرویس واقعی)
+MOCK = {"mode": "ok", "key": None}
+class MockH(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _emit(self, code, payload):
+        b = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def do_GET(self):
+        if self.path.endswith("/v1/models"):
+            if MOCK["mode"] == "badkey" or \
+               (self.headers.get("Authorization") or "") != "Bearer " + MOCK["key"]:
+                return self._emit(401, {"error": "bad key"})
+            return self._emit(200, {"data": [{"id": "mock"}]})
+        self._emit(404, {"error": "nf"})
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0); self.rfile.read(n)
+        if self.path.endswith("/v1/chat/completions"):
+            if MOCK["mode"] == "badkey" or \
+               (self.headers.get("Authorization") or "") != "Bearer " + MOCK["key"]:
+                return self._emit(401, {"error": "bad key"})
+            import time
+            if MOCK["mode"] == "slow": time.sleep(7)
+            if MOCK["mode"] == "limited":
+                self.send_response(429)
+                self.send_header("Retry-After", "2")
+                b = b'{"error":"rate limited"}'
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                return self.wfile.write(b)
+            return self._emit(200, {"choices": [{"message":
+                {"content": "پاسخ واقعی سرویس: سلام! چطور کمک کنم؟"}}]})
+        self._emit(404, {"error": "nf"})
+mh = ThreadingHTTPServer(("127.0.0.1", 0), MockH)
+MOCK_PORT = mh.server_address[1]
+threading.Thread(target=mh.serve_forever, daemon=True).start()
+
+logging.basicConfig(level=logging.INFO, filename=str(ROOT / "server.log"),
+                    format="%(asctime)s %(message)s")
+
+def ai_enabled():
+    """سیاست سطح برنامه: وقتی مدیر AI را غیرفعال کرده، بک‌اند مسدود می‌شود."""
+    try:
+        ai = (json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+              .get("ai") or {})
+        return bool(ai.get("enabled"))
+    except (OSError, ValueError):
+        return False
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _log(self):
+        logging.info("%s %s", self.command, self.path.split("?")[0])
+    def _json(self, code, payload):
+        b = json.dumps(payload, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def _file(self, rel, ctype):
+        try:
+            raw = (ROOT / rel).read_bytes()
+        except OSError:
+            self.send_response(404); self.end_headers(); return
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+    def do_GET(self):
+        self._log()
+        p = self.path.split("?")[0]
+        if p in ("/", "/index.html"):
+            return self._file("web/index.html", "text/html; charset=utf-8")
+        if p == "/app.js":
+            return self._file("web/app.js", "application/javascript; charset=utf-8")
+        if p == "/app.css":
+            return self._file("web/app.css", "text/css; charset=utf-8")
+        if p == "/api/health":
+            return self._json(200, {"ok": True, "app": "دستیار آزمایشی"})
+        if p == "/app/ai/state":
+            from app.aiclient import status
+            if not ai_enabled():
+                return self._json(200, {"ok": True, "enabled": False,
+                                        "ready": False,
+                                        "detail": "قابلیت AI در تنظیمات غیرفعال است"})
+            st = status(fresh_ping=True)
+            return self._json(200, {"ok": True, "enabled": True,
+                                    "ready": st.get("ready"),
+                                    "detail": st.get("detail") or ""})
+        if p.startswith("/api/ai/") or p in ("/ai.html", "/ai.js", "/ai.css"):
+            from app import ai_admin            # ← ۳ خط هوک (همان README)
+            return ai_admin.handle(self)
+        self.send_response(404); self.end_headers()
+    def do_POST(self):
+        self._log()
+        p = self.path.split("?")[0]
+        if p == "/__mock/setmode":              # کنترل آزمایشی mock — فقط محلی
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n).decode() or "{}")
+            for k in ("mode", "key"):
+                if k in body:
+                    MOCK[k] = body[k]
+            self.send_response(204); self.end_headers(); return
+        if p == "/app/ai/send":
+            if not ai_enabled():                # مسدودسازی سمت سرور
+                return self._json(503, {"ok": False, "kind": "disabled",
+                                        "error": "قابلیت هوش مصنوعی غیرفعال است — از صفحه تنظیمات فعال کنید"})
+            from app.aiclient import send, AiError
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                data = json.loads(self.rfile.read(n).decode() or "{}")
+            except ValueError:
+                return self._json(400, {"ok": False, "kind": "bad_request",
+                                        "error": "بدنه نامعتبر است"})
+            try:
+                reply = send(data.get("messages") or [])
+                return self._json(200, {"ok": True, "reply": reply})
+            except AiError as e:
+                return self._json(503, {"ok": False, "kind": e.kind,
+                                        "error": e.message})
+        if p.startswith("/api/ai/") or p in ("/ai.html", "/ai.js", "/ai.css"):
+            from app import ai_admin
+            return ai_admin.handle(self)
+        self.send_response(404); self.end_headers()
+
+srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+print("PORT=%d" % srv.server_address[1], flush=True)
+print("MOCKPORT=%d" % MOCK_PORT, flush=True)
+srv.serve_forever()
+'''
+(SAMPLE / "server.py").write_text(SERVER, encoding="utf-8")
+json.dump({"app": "دستیار آزمایشی", "kept": "فیلد-حفظ‌شدنی",
+           "ai": {"openai": {"timeout": 4}}},   # فقط timeout بذر؛ بدون هیچ کلید
+          open(SAMPLE / "config.json", "w", encoding="utf-8"),
+          ensure_ascii=False, indent=2)
+print("BUILT %d" % len(files))
+PYEOF
+)
+check "فاز۱: نمونه با مسیر نصب واقعی ماژول AI ساخته شد (۸ فایل قالب)" "BUILT 8" "${BUILT:-}"
+
+echo "═══ فاز ۲) بررسی نصب خودکار و استقلال کد (بدون اجرا) ═══"
+[ -f "$SAMPLE/app/aiclient.py" ] && [ -f "$SAMPLE/app/ai_admin.py" ] \
+  && [ -f "$SAMPLE/ui/ai.html" ] && [ -f "$SAMPLE/web/index.html" ] && \
+  check "فاز۲: ماژول AI + صفحهٔ تنظیمات + صفحهٔ اصلی نصب/ساخته شده" yes yes || \
+  check "فاز۲: ماژول AI + صفحهٔ تنظیمات + صفحهٔ اصلی" yes no
+IND=$(SAMPLE="$SAMPLE" python3 - <<'PYEOF'
+import os, re, sys
+from pathlib import Path
+sample = Path(os.environ["SAMPLE"])
+# توکن‌های «اتصال فعال»: وجودشان در هر فایل ارسالی (غیر از خودآزمون ماژول که
+# عمداً همین توکن‌ها را در allowlist سنجش خودش دارد) یعنی وابستگی به محیط ساخت.
+ACTIVE = re.compile(r"4556|8580|opencode\.token|OPENCODE_SERVER_PASSWORD|"
+                    r"OPENCODE_TOKEN|com\.termux|/data/data|/home/|AI-Factory")
+bad = []
+scanned = 0
+for f in sorted(sample.rglob("*")):
+    if not f.is_file():
+        continue
+    rel = f.relative_to(sample).as_posix()
+    if rel.startswith("tests/"):
+        continue                      # خودآزمون تدفاهی — نه اتصال است نه وابستگی
+    try:
+        text = f.read_text(encoding="utf-8", errors="strict")
+    except (OSError, ValueError):
+        continue                      # باینری (نباید داشته باشیم)
+    scanned += 1
+    if ACTIVE.search(text):
+        bad.append(rel)
+if bad:
+    print("IND-BAD %s" % ",".join(sorted(bad)))
+else:
+    print("IND-OK scanned=%d" % scanned)
+PYEOF
+)
+check "فاز۲: هیچ توکن اتصال فعال به محیط ساخت در کد (خودآزمون مستثنی؛ مستندات مجاز)" \
+  "IND-OK" "$(echo "$IND" | cut -d" " -f1 | head -1)"
+
+echo "═══ فاز ۳) آزمون عملکرد روی نمونهٔ زنده (Mock محلی OpenAI-compatible) ═══"
+SAMPLE="$SAMPLE" python3 - <<'PYEOF'
+import json, os, stat, subprocess, sys, time, urllib.request, urllib.error
+from pathlib import Path
+
+SAMPLE = Path(os.environ["SAMPLE"])
+proc = subprocess.Popen([sys.executable, str(SAMPLE / "server.py")],
+                        cwd=str(SAMPLE), stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True)
+port = None; mockport = None
+deadline = time.time() + 15
+while time.time() < deadline and (port is None or mockport is None):
+    line = proc.stdout.readline() if proc.stdout else ""
+    if line.startswith("PORT="):
+        port = int(line.split("=", 1)[1].strip())
+    elif line.startswith("MOCKPORT="):
+        mockport = int(line.split("=", 1)[1].strip())
+assert port and mockport, "boot failed: %s" % (proc.stderr.read()[:300]
+                                               if proc.stderr else "")
+BASE = "http://127.0.0.1:%d" % port
+PASSCODE = "e2e-admin-pw-"
+KEY = "e2e-mock-key-do-not-trust"
+ALL_TEXT = []
+
+def req(method, path, body=None, admin=None, csrf=None, raw_cookie=None):
+    data = json.dumps(body).encode() if body is not None else None
+    r = urllib.request.Request(BASE + path, data=data, method=method)
+    if data:
+        r.add_header("Content-Type", "application/json")
+    if admin is not None: r.add_header("X-AI-Admin", admin)
+    if csrf is not None: r.add_header("X-AI-CSRF", csrf)
+    if raw_cookie: r.add_header("Cookie", raw_cookie)
+    try:
+        with urllib.request.urlopen(r, timeout=25) as resp:
+            txt = resp.read().decode()
+            ALL_TEXT.append(txt)
+            ct = resp.headers.get("Content-Type") or ""
+            return resp.status, (json.loads(txt) if "json" in ct
+                                 else {"_raw": txt}), \
+                   resp.headers.get_all("Set-Cookie") or []
+    except urllib.error.HTTPError as e:
+        txt = e.read().decode() or "{}"
+        ALL_TEXT.append(txt)
+        try:
+            payload = json.loads(txt) if txt.strip() else {}
+        except ValueError:
+            payload = {"_raw": txt}
+        return e.code, payload, e.headers.get_all("Set-Cookie") or []
+    except Exception as e:
+        return 0, {"ok": False, "error": "CONN-LOST %s" % e}, []
+
+fails = []
+def ck(name, cond, extra=""):
+    if cond: print("E2E ok  -", name)
+    else:
+        fails.append(name); print("E2E FAIL -", name, extra)
+def cookie_of(setc):
+    for c in setc:
+        if c.startswith("ai_csrf="):
+            return c.split(";")[0]
+    return ""
+def setmock(mode):
+    req("POST", "/__mock/setmode", {"mode": mode, "key": KEY})
+
+# --- ۳-الف: صفحات
+c, j, _ = req("GET", "/")
+ck("صفحهٔ اصلی فارسی RTL سرو شد", c == 200 and "دستیار آزمایشی" in j.get("_raw", "")
+   and 'dir="rtl"' in j.get("_raw", ""))
+c, j, _ = req("GET", "/app.js"); ck("app.js روشن است", c == 200
+                                   and "app/ai/send" in j.get("_raw", ""))
+c, j, _ = req("GET", "/ai.html")
+ck("صفحهٔ تنظیمات /ai.html از ماژول نصب‌شده در دسترس است",
+   c == 200 and "تنظیمات هوش مصنوعی" in j.get("_raw", ""))
+c, j, _ = req("GET", "/api/health"); ck("health OK", c == 200 and j.get("ok"))
+
+# --- ۳-ب: حالت غیرفعالِ اولیه (پروژهٔ بدون تنظیم AI)
+c, j, _ = req("GET", "/app/ai/state")
+ck("حالت اول: AI غیرفعال و آماده نیست", j.get("enabled") is False
+   and j.get("ready") is False)
+c, j, _ = req("POST", "/app/ai/send", {"messages": [{"role": "user",
+                                                     "content": "سلام"}]})
+ck("ارسال مستقیم وقتی AI خاموش است → ۵۰۳ مسدود سمت سرور",
+   c == 503 and j.get("kind") == "disabled", str(j)[:140])
+
+# --- ۳-ج: bootstrap مدیر + تنظیمات از جریانِ واقعی صفحهٔ تنظیمات
+c, j, setc = req("GET", "/api/ai/admin/csrf")
+TOKEN = j["csrf"]; COOKIE = cookie_of(setc)
+c, j, _ = req("POST", "/api/ai/admin/init", {"passcode": PASSCODE},
+              csrf=TOKEN, raw_cookie=COOKIE)
+ck("رمز مدیر bootstrap شد", c == 200 and j.get("initialized"))
+ad = lambda h: req("POST", h[0], h[1], admin=PASSCODE, csrf=TOKEN,
+                   raw_cookie=COOKIE)
+c, j, _ = ad(("/api/ai/admin/init", {"passcode": "other-pw-2"}))
+ck("init دوم → ۴۰۹", c == 409)
+c, j, _ = ad(("/api/ai/admin/save",
+              {"provider": "openai", "base_url": "http://127.0.0.1:%d/v1" % mockport,
+               "model": "mock", "enabled": True}))
+ck("ارائه‌دهنده/سرویس/مدل/فعال ذخیره شد", c == 200 and j.get("ok")
+   and j.get("enabled") is True and j.get("model") == "mock", str(j)[:160])
+cfg = json.loads((SAMPLE / "config.json").read_text(encoding="utf-8"))
+ck("فیلد قبلی config.json حفظ شد (ذخیرهٔ ادغامی)",
+   cfg.get("kept") == "فیلد-حفظ‌شدنی" and cfg["ai"]["openai"]["timeout"] == 4,
+   str(cfg)[:160])
+
+# --- ۳-د: کلید + اتصال واقعی
+c, j, _ = ad(("/api/ai/admin/key", {"api_key": KEY}))
+ck("کلید ذخیره شد (بدون بازگشت مقدار)", c == 200 and j.get("key") == "set")
+req("POST", "/__mock/setmode", {"mode": "ok", "key": KEY})
+c, j, _ = req("GET", "/app/ai/state")
+ck("وضعیت: متصل و آماده", j.get("enabled") and j.get("ready") is True,
+   str(j)[:160])
+c, j, _ = ad(("/api/ai/admin/test", {}))
+ck("دکمهٔ تست اتصال: نتیجهٔ واقعی = برقرار", c == 200 and j.get("ready")
+   is True, str(j)[:180])
+
+# --- ۳-ه: پیام از صفحهٔ اصلی → پاسخ واقعی Mock
+c, j, _ = req("POST", "/app/ai/send", {"messages": [{"role": "user",
+                                                     "content": "سلام"}]})
+ck("پیام صفحهٔ اصلی → پاسخ واقعی mock", c == 200 and j.get("ok")
+   and "پاسخ واقعی سرویس" in j.get("reply", ""), str(j)[:200])
+
+# --- ۳-و: کلید نامعتبر
+setmock("badkey")
+c, j, _ = req("POST", "/app/ai/send", {"messages": [{"role": "user",
+                                                     "content": "x"}]})
+ck("کلید نامعتبر → خطا از سمت سرور kind=auth", c == 503
+   and j.get("kind") == "auth" and "کلید پذیرفته نشد" in j.get("error", ""),
+   str(j)[:160])
+c, j, _ = ad(("/api/ai/admin/test", {}))
+ck("تست اتصال با کلید نامعتبر → ready=False", c == 200
+   and j.get("ready") is False and str(j.get("detail", "")).strip())
+setmock("ok")
+
+# --- ۳-ز: timeout و 429 (سات ذخیره‌شده timeout=4 در config — ادغامی حفظ شد)
+setmock("slow")
+c, j, _ = req("POST", "/app/ai/send", {"messages": [{"role": "user",
+                                                     "content": "x"}]})
+ck("timeout (mock کند) → kind=timeout", c == 503 and j.get("kind") == "timeout",
+   str(j)[:140])
+setmock("limited")
+c, j, _ = req("POST", "/app/ai/send", {"messages": [{"role": "user",
+                                                     "content": "x"}]})
+ck("429 → kind=rate_limit + پیشنهاد تلاش مجدد", c == 503
+   and j.get("kind") == "rate_limit" and "429" in j.get("error", ""),
+   str(j)[:180])
+setmock("ok")
+
+# --- ۳-ح: حالت غیرفعال بعد از کانفیگ کامل
+c, j, _ = ad(("/api/ai/admin/save", {"enabled": False}))
+ck("غیرفعال‌سازی از صفحهٔ تنظیمات", c == 200 and j.get("enabled") is False)
+c, j, _ = req("POST", "/app/ai/send", {"messages": [{"role": "user",
+                                                     "content": "سلام"}]})
+ck("ارسال مستقیم در حالت غیرفعال → ۵۰۳ سمت سرور", c == 503
+   and j.get("kind") == "disabled", str(j)[:140])
+c, j, _ = req("GET", "/app/ai/state")
+ck("صفحهٔ اصلی وضعیت غیرفعال را نشان می‌دهد", j.get("enabled") is False)
+c, j, _ = ad(("/api/ai/admin/save", {"enabled": True}))
+ck("بازفعال‌سازی", c == 200 and j.get("enabled") is True)
+
+# --- ایمنی و بسته‌بندی روی نمونهٔ زنده
+blob = "\n".join(ALL_TEXT) + (SAMPLE / "config.json").read_text(encoding="utf-8")
+blob += (SAMPLE / "server.log").read_text(encoding="utf-8")
+ck("هیچ کلیدی/رمزی در پاسخ‌ها، HTML، JS، config و لاگ", KEY not in blob
+   and PASSCODE not in blob)
+for fn in ("data/ai_key.txt", "data/ai_admin.json"):
+    p = SAMPLE / fn
+    ck("مجوز 0600 برای %s" % fn, p.is_file()
+       and (p.stat().st_mode & 0o777) == 0o600)
+proc.terminate(); proc.wait(timeout=10)
+if fails:
+    print("E2E-FAILURES:", fails)
+    sys.exit(1)
+print("E2E-OK")
+PYEOF
+RC=$?
+check "فاز۳: هر ۲۵ چک عملکردی زنده سبز" "$RC" "0"
+
+echo "═══ فاز ۴) ZIP بسته‌بندی + استخراج در مسیر کاملاً جدا ═══"
+RES4=$(SAMPLE="$SAMPLE" ZIPF="$ZIPF" EXT="$EXT" python3 - <<'PYEOF'
+import os, re, sys, zipfile
+from pathlib import Path
+sys.path.insert(0, os.getcwd())
+from core import exporter
+ACTIVE = re.compile(r"4556|8580|opencode\.token|OPENCODE_SERVER_PASSWORD|"
+                    r"OPENCODE_TOKEN|com\.termux|/data/data|/home/|AI-Factory")
+KEY_TOKENS = ("e2e-mock-key-do-not-trust", "iso-key-do-not-trust",
+              "e2e-admin-pw-", "iso-admin-pw-99")
+SAMPLE, ZIPF, EXT = (Path(p) for p in (os.environ["SAMPLE"],
+                     os.environ["ZIPF"], os.environ["EXT"]))
+res = exporter._zip_project(SAMPLE, ZIPF)
+zf = zipfile.ZipFile(ZIPF)
+names = zf.namelist()
+need = {"server.py", "web/index.html", "web/app.js", "web/app.css",
+        "app/aiclient.py", "app/ai_admin.py", "ui/ai.html", "ui/ai.js",
+        "ui/ai.css", "config.json", "README-ai.md", "ai.example.json",
+        "tests/test_aiclient.py"}
+missing = {n for n in need if n not in names}
+assert not missing, "ZIP missing: %s" % sorted(missing)
+banned_prefixes = ("data/ai_key.txt", "data/ai_admin.json")
+priv = [n for n in names if n.startswith(banned_prefixes)]
+junk = [n for n in names if n.endswith((".log", ".err", ".out", ".pid",
+                                        ".token", ".key", ".pem"))]
+assert not priv and not junk, "priv=%s junk=%s" % (priv, junk)
+# هیچ فایل داخل ZIP نه کلید/رمز در محتوا دارد؛ توکن اتصال فابریک هم فقط در
+# خودآزمون ماژول (tests/test_aiclient.py — بلوک‌لیست سنجش خودش) مجاز است.
+for n in names:
+    blob = zf.read(n).decode("utf-8", "replace")
+    if n.startswith("tests/"):
+        assert not any(t in blob for t in (KEY_TOKENS)), "real key leak in %s" % n
+        continue
+    assert not any(t in blob for t in (KEY_TOKENS)), "key leak in %s" % n
+    assert not ACTIVE.search(blob), "active factory env tokens in %s" % n
+zf.extractall(EXT)
+print("ZIP-OK count=%d extracted=%d" % (len(names),
+      sum(1 for _ in EXT.rglob("*") if _.is_file())))
+PYEOF
+)
+check "فاز۴: ZIP کامل (۱۳ فایل) + بدون کلید/فایل خصوصی/توکن اتصال + استخراج جدا" \
+  "ZIP-OK count=13 extracted=13" "$(echo "$RES4" | tail -1)"
+
+echo "═══ فاز ۵) آزمون استقلال واقعی: توقف AI Factory + OpenCode، اجرای نمونهٔ استخراج‌شده ═══"
+bash scripts/ai-factory-stop >/dev/null 2>&1
+sleep 1
+# اثبات بیرونی: هر دو سرویس پنل (8580) و OpenCode (4556) باید دست‌نیافتنی باشند
+if curl -s --max-time 2 http://127.0.0.1:8580/api/health >/dev/null 2>&1; then
+    check "پنل AI Factory واقعاً متوقف شد" down up
+else
+    check "پنل AI Factory واقعاً متوقف شد" down down
+fi
+if curl -s --max-time 2 http://127.0.0.1:4556/ >/dev/null 2>&1; then
+    check "سرویس OpenCode واقعاً دست‌نیافتنی شد" down up
+else
+    check "سرویس OpenCode واقعاً دست‌نیافتنی شد" down down
+fi
+
+ISO_LOG="$T/ai-e2e-iso-$$.log"
+MOCKPASS="iso-admin-pw-99"
+MOCKKEY="iso-key-do-not-trust"
+ISO_DIR="$EXT" ISO_PASSCODE="$MOCKPASS" ISO_KEY="$MOCKKEY" \
+python3 - > "$ISO_LOG" 2>&1 <<'PYEOF'
+import json, os, socket, subprocess, sys, time, urllib.request, urllib.error
+from pathlib import Path
+
+EXT = Path(os.environ["ISO_DIR"])
+PASSENT = os.environ["ISO_PASSCODE"]
+KEYP = os.environ["ISO_KEY"]
+fails = []
+def ck(name, cond, extra=""):
+    if cond: print("ISO ok  -", name)
+    else:
+        fails.append(name); print("ISO FAIL -", name, extra)
+
+# --- استقلال شبکه: هر دو سرویس فابریک باید واقعاً بسته باشند
+for name, port_no in (("پنل AI Factory", 8580), ("OpenCode serve", 4556)):
+    s = socket.socket(); s.settimeout(2)
+    try:
+        s.connect(("127.0.0.1", port_no)); s.close()
+        ck("اتصال واقعی به %s مسدود است" % name, False, "پورت باز بود!")
+    except OSError:
+        ck("اتصال واقعی به %s مسدود است" % name, True)
+
+# --- اجرا فقط با نیازمندی‌های خود پروژه (env خالی از همه‌چیز جز PATH)
+proc = subprocess.Popen([sys.executable, str(EXT / "server.py")],
+                        cwd=str(EXT), stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True,
+                        env={"PATH": os.environ.get("PATH", "")})
+port = None; mockport = None
+deadline = time.time() + 15
+while time.time() < deadline and (port is None or mockport is None):
+    line = proc.stdout.readline() if proc.stdout else ""
+    if line.startswith("PORT="):
+        port = int(line.split("=", 1)[1].strip())
+    elif line.startswith("MOCKPORT="):
+        mockport = int(line.split("=", 1)[1].strip())
+
+base = "http://127.0.0.1:%d" % port
+def req(method, path, body=None, admin=None, csrf=None, raw_cookie=None):
+    data = json.dumps(body).encode() if body is not None else None
+    r = urllib.request.Request(base + path, data=data, method=method)
+    if data: r.add_header("Content-Type", "application/json")
+    if admin is not None: r.add_header("X-AI-Admin", admin)
+    if csrf is not None: r.add_header("X-AI-CSRF", csrf)
+    if raw_cookie: r.add_header("Cookie", raw_cookie)
+    try:
+        with urllib.request.urlopen(r, timeout=25) as resp:
+            txt = resp.read().decode()
+            ct = resp.headers.get("Content-Type") or ""
+            return resp.status, (json.loads(txt) if "json" in ct
+                                 else {"_raw": txt}), \
+                   resp.headers.get_all("Set-Cookie") or []
+    except urllib.error.HTTPError as e:
+        txt = e.read().decode() or "{}"
+        try:
+            payload = json.loads(txt) if txt.strip() else {}
+        except ValueError:
+            payload = {"_raw": txt}
+        return e.code, payload, e.headers.get_all("Set-Cookie") or []
+    except Exception as e:
+        return 0, {"ok": False, "error": "CONN-LOST %s" % e}, []
+
+ALL_TEXT = []
+def ad(path, body, csrf, cookie):
+    code, j, _ = req("POST", path, body, admin=PASSENT, csrf=csrf,
+                     raw_cookie=cookie)
+    ALL_TEXT.append(json.dumps(j, ensure_ascii=False))
+    return code, j
+
+c, j, _ = req("GET", "/")
+ck("صفحهٔ اصلی محیط جدیده باز شد", c == 200
+   and "دستیار آزمایشی" in j.get("_raw", ""))
+c, j, setc = req("GET", "/api/ai/admin/csrf")
+ALL_TEXT.append(json.dumps(j))
+ck("صفحهٔ تنظیمات /ai.html در محیط جدا پاسخ دارد", c == 200)
+TOKEN = j["csrf"]; COOKIE = ""
+for sc in setc:
+    if sc.startswith("ai_csrf="): COOKIE = sc.split(";")[0]
+c, j = ad("/api/ai/admin/init", {"passcode": PASSENT}, TOKEN, COOKIE)
+ck("bootstrap مدیر بومی (بدون هیچ پشتیبانی از فابریک)", c == 200)
+c, j = ad("/api/ai/admin/save",
+          {"provider": "openai",
+           "base_url": "http://127.0.0.1:%d/v1" % mockport,
+           "model": "mock", "enabled": True}, TOKEN, COOKIE)
+ck("تنظیمات در محیط isolated ذخیره شد", c == 200 and j.get("ok"))
+req("POST", "/__mock/setmode", {"mode": "ok", "key": KEYP})
+c, j = ad("/api/ai/admin/key", {"api_key": KEYP}, TOKEN, COOKIE)
+ck("کلید ذخیره شد (سمت سرور محیط isol)", c == 200 and j.get("key") == "set")
+c, j = ad("/api/ai/admin/test", {}, TOKEN, COOKIE)
+ck("تست اتصال محیط isol = برقرار", c == 200 and j.get("ready") is True,
+   str(j)[:180])
+c, j, _ = req("POST", "/app/ai/send", {"messages": [{"role": "user",
+                                                     "content": "سلام"}]})
+ALL_TEXT.append(json.dumps(j, ensure_ascii=False))
+ck("پیام AI در محیط isolated جواب واقعی گرفت", c == 200 and j.get("ok")
+   and "پاسخ واقعی سرویس" in j.get("reply", ""), str(j)[:200])
+c, j = ad("/api/ai/admin/save", {"enabled": False}, TOKEN, COOKIE)
+c, j, _ = req("POST", "/app/ai/send", {"messages": [{"role": "user",
+                                                     "content": "x"}]})
+ALL_TEXT.append(json.dumps(j, ensure_ascii=False))
+ck("مسدودسازی غیرفعال هم در محیط isol برقرار است", c == 503
+   and j.get("kind") == "disabled")
+# اطمینان: هیچ ارجاعی به پورت فابریک در پاسخ‌های این نمونه نیامده
+blob = "\n".join(ALL_TEXT) + \
+       (EXT / "config.json").read_text(encoding="utf-8") + \
+       ((EXT / "server.log").read_text(encoding="utf-8")
+        if (EXT / "server.log").exists() else "")
+ck("در محیط isol: کلید/رمز/پورت فابریک در پاسخ/log نبوده",
+   all(s not in blob for s in (KEYP, PASSENT, "8580", "4556")))
+proc.terminate(); proc.wait(timeout=10)
+if fails:
+    print("ISO-FAILURES:", fails)
+    sys.exit(1)
+print("ISO-OK")
+PYEOF
+RC=$?
+if [ "$RC" -ne 0 ]; then
+    cat "$ISO_LOG"
+else
+    tail -15 "$ISO_LOG"
+fi
+check "فاز۵: محیط isolated تمام چک‌های استقلال را سبز کرد" "$RC" "0"
+
+echo "═══ فاز ۶) برگرداندن فابریک + جمع‌بندی ═══"
+bash scripts/ai-factory-start >/dev/null 2>&1
+sleep 2
+HEALTH=$(curl -s --max-time 5 http://127.0.0.1:8580/api/health || echo "")
+if echo "$HEALTH" | grep -q '"version": "0.36.0"'; then
+    check "فاز۶: AI Factory بعد از آزمون دوباره بالا آمد (v0.36.0)" up up
+else
+    check "فاز۶: AI Factory بعد از آزمون دوباره بالا آمد" up "$HEALTH"
+fi
+
+echo
+echo "═══════ جمع‌بندی E2E استقلال ═══════"
+echo "RESULT-suites: PASS=$PASS FAIL=$FAIL"
+if [ "$FAIL" -eq 0 ]; then
+    echo "ALL GREEN — نرم‌افزار AI‌دارِ نمونه کاملاً مستقل است: نصب خودکار، عملکرد کامل با Mock، مسدودسازی سرور-side، بسته‌بندی امن، کارکرد بدون فابریک."
+    exit 0
+fi
+echo "SOME RED —cases listed above"
+exit 1
