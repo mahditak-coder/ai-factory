@@ -30,7 +30,7 @@ from core.model_gateway import OcError, gateway
 
 def oc_state(session_id: str) -> dict:
     """Stable Core seam → ModelGateway.state (real OpenCode adapter)."""
-    return oc_state(session_id)
+    return gateway().state(session_id)
 from core import paths, tasks, factory
 
 log = logging.getLogger("ai-factory.orchestrator")

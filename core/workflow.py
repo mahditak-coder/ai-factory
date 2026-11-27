@@ -7,6 +7,7 @@ artifact version. Questions and revision history survive refresh/reconnect.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 import threading
@@ -19,6 +20,7 @@ from core import opstatus, paths, workflow_roles
 _STORE = config.PROJECT_ROOT / "data" / "workflow_state.json"
 _LOCK = threading.RLock()
 _ACTIVE: set[str] = set()
+SCHEMA_VERSION = "af-workflow-1.0"
 
 RUNNING = "RUNNING"
 AWAIT_REVIEW = "AWAITING_USER_REVIEW"
@@ -33,8 +35,20 @@ REVISION = "REVISION"
 
 def _load() -> dict:
     try:
-        d = __import__("json").loads(_STORE.read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
+        d = json.loads(_STORE.read_text(encoding="utf-8"))
+        if not isinstance(d, dict):
+            return {}
+        # Reversible schema enrichment: older records gain defaults in memory
+        # and are persisted only on the next legitimate mutation. No data loss.
+        for rec in d.values():
+            if not isinstance(rec, dict):
+                continue
+            rec.setdefault("schema_version", SCHEMA_VERSION)
+            for st in rec.get("stages") or []:
+                st.setdefault("execution_tokens", [])
+                st.setdefault("run_pid", None)
+                st.setdefault("run_token", "")
+        return d
     except (OSError, ValueError):
         return {}
 
@@ -60,6 +74,62 @@ def _history(rec: dict, action: str, stage: str = "", detail: str = "") -> None:
     rec["history"].append({"at": _now(), "action": action, "stage": stage,
                            "detail": str(detail)[:300]})
     rec["history"] = rec["history"][-200:]
+
+
+def _pid_alive(pid: object) -> bool:
+    """True only when the recorded stage worker still exists on this host."""
+    try:
+        value = int(pid or 0)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    if value == os.getpid():
+        return True
+    try:
+        os.kill(value, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def recover_stale(project: str = "") -> list[str]:
+    """Recover RUNNING stages whose worker is gone (e.g. after a crash).
+
+    No artifact or version is removed; only the run lease is cleared and the
+    stage is reopened for an explicitly retried execution.
+    """
+    recovered: list[str] = []
+    with _LOCK:
+        items = _load()
+        changed = False
+        for wid, rec in items.items():
+            if project and rec.get("project") != project:
+                continue
+            if wid in _ACTIVE:
+                continue
+            for st in rec.get("stages") or []:
+                if st.get("status") != RUNNING:
+                    continue
+                if _pid_alive(st.get("run_pid")):
+                    continue
+                token = str(st.get("run_token") or "stale")
+                st["status"] = REVISION
+                st["run_pid"] = None
+                st["run_token"] = ""
+                st.pop("finished_at", None)
+                rec["status"] = RUNNING
+                rec["current_stage"] = st["id"]
+                _history(rec, "stale-run-recovered", st["id"], token)
+                recovered.append(st["id"])
+                changed = True
+        if changed:
+            _save(items)
+    return recovered
 
 
 def create(project: str, product_type: str = "", goal: str = "",
@@ -180,6 +250,7 @@ def verify_integrity(project: str, persist: bool = True) -> dict | None:
 
 def guard(project: str, stage_id: str, token: str = "") -> dict:
     """The ONLY way to attempt a stage — fail closed on every pause reason."""
+    recover_stale(project)
     rec = by_project(project)
     if rec is None:
         return {"status": opstatus.BLOCKED, "error": "no-workflow"}
@@ -230,8 +301,10 @@ def run_stage(project: str, stage_id: str, token: str = "", executor=None,
         st["status"] = RUNNING
         st["started_at"] = _now()
         st["error"] = ""
+        st["run_pid"] = os.getpid()
+        st["run_token"] = str(token or secrets.token_hex(8))
         r["status"] = RUNNING
-        _history(r, "stage-started", stage_id, token or "")
+        _history(r, "stage-started", stage_id, st["run_token"])
         return {"status": "ok"}
     _mutate(wid, begin)
     try:
@@ -249,6 +322,8 @@ def run_stage(project: str, stage_id: str, token: str = "", executor=None,
                 st["status"] = FAILED
                 st["error"] = str(result.get("error") or "no-real-artifact")[:400]
                 st["finished_at"] = _now()
+                st["run_pid"] = None
+                st["run_token"] = ""
                 r["status"] = FAILED
                 _history(r, "stage-failed", stage_id, st["error"])
                 return {"status": opstatus.FAIL, "error": st["error"]}
@@ -274,6 +349,8 @@ def run_stage(project: str, stage_id: str, token: str = "", executor=None,
                                    "note": str(result.get("note") or "")[:300]})
             st["status"] = AWAIT_REVIEW
             st["finished_at"] = _now()
+            st["run_pid"] = None
+            st["run_token"] = ""
             st["last_result"] = {"status": rg, "version": version, "artifacts": art}
             if token and token not in st["execution_tokens"]:
                 st["execution_tokens"].append(token)
@@ -287,6 +364,8 @@ def run_stage(project: str, stage_id: str, token: str = "", executor=None,
             st = _stage(r, stage_id)
             st["status"] = FAILED
             st["error"] = str(exc)[:400]
+            st["run_pid"] = None
+            st["run_token"] = ""
             r["status"] = FAILED
             _history(r, "stage-exception", stage_id, str(exc)[:200])
             return {"status": opstatus.FAIL, "error": str(exc)[:400]}
@@ -481,6 +560,7 @@ def answer(project: str, stage_id: str, value: str, question_id: str) -> dict:
 
 
 def state(project: str) -> dict | None:
+    recover_stale(project)
     rec = by_project(project)
     if rec is None:
         return None

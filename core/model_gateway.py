@@ -164,8 +164,23 @@ def gateway() -> ModelGateway:
         return _gateway
 
 
-def set_gateway(adapter: ModelGateway | None) -> None:
-    """Replace the adapter (tests / future providers). None restores default."""
+def validate_gateway(adapter: object) -> list[str]:
+    """Return missing protocol methods (opt-in strict conformance check)."""
+    required = tuple(name for name in dir(ModelGateway)
+                     if not name.startswith("_"))
+    return [name for name in required if not callable(getattr(adapter, name, None))]
+
+
+def set_gateway(adapter: ModelGateway | None, *, strict: bool = False) -> None:
+    """Replace the adapter (tests / future providers). None restores default.
+
+    ``strict=True`` validates the full ModelGateway protocol without ever
+    changing the permissive default used by existing tests.
+    """
     global _gateway
+    if adapter is not None and strict:
+        missing = validate_gateway(adapter)
+        if missing:
+            raise TypeError("incomplete ModelGateway adapter: " + ",".join(missing))
     with _gate_lock:
         _gateway = adapter

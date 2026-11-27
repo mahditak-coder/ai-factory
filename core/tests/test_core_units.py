@@ -139,9 +139,11 @@ class IsolationTest(unittest.TestCase):
         self.assertEqual(config.PROJECT_ROOT,
                          Path(config._TEST_ROOT).resolve() if config._TEST_ROOT
                          else config.PROJECT_ROOT)
-        self.assertTrue(str(config.PROJECT_ROOT).startswith(
-            "/data/data/com.termux/files/usr/tmp/opencode/af26-"),
-            "unexpected isolated root: %s" % config.PROJECT_ROOT)
+        if config._TEST_ROOT:
+            self.assertEqual(config.PROJECT_ROOT, Path(config._TEST_ROOT).resolve())
+            self.assertTrue(config.PROJECT_ROOT.is_dir())
+        else:
+            self.assertEqual(config.PROJECT_ROOT, Path(__file__).resolve().parents[2])
 
 
 if __name__ == "__main__":

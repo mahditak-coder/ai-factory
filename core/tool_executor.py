@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from core import opstatus
+from core import opstatus, tool_events
 from core.tool_events import record as record_event
 from core.tool_registry import ToolSpec, registry
 
@@ -84,6 +84,12 @@ _seen_calls: set[str] = set()
 _running: dict[str, threading.Event] = {}
 
 
+def _signature(req: ToolRequest) -> str:
+    return hashlib.sha256((req.tool_id + "|" + req.project + "|" +
+        str(sorted(req.inputs.items(), key=lambda kv: str(kv[0]))))
+        .encode("utf-8")).hexdigest()[:16]
+
+
 def execute(req: ToolRequest) -> ToolResult:
     call_id = req.call_id or ("tc-" + secrets.token_hex(8))
     started = time.time()
@@ -96,14 +102,17 @@ def execute(req: ToolRequest) -> ToolResult:
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
             error="tool-disabled", duration_ms=0), started)
+    sig = _signature(req)
+    receipt = tool_events.find(call_id)
+    if receipt is not None or call_id in _seen_calls:
+        same = receipt is not None and receipt.get("request_id") == sig
+        return _record(req, call_id, ToolResult(
+            status=opstatus.BLOCKED, decision="none", call_id=call_id,
+            error="duplicate-call" if same else "duplicate-call-signature-mismatch",
+            duration_ms=0,
+            evidence={"replayed": True, "durable": receipt is not None}), started)
     with _seen_lock:
-        if call_id in _seen_calls:
-            return _record(req, call_id, ToolResult(
-                status=opstatus.BLOCKED, decision="none", call_id=call_id,
-                error="duplicate-call", duration_ms=0), started)
         _seen_calls.add(call_id)
-        if len(_seen_calls) > 2000:
-            _seen_calls.clear()
 
     problem = spec.validate_inputs(req.inputs)
     if problem:
@@ -141,13 +150,15 @@ def execute(req: ToolRequest) -> ToolResult:
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision=decision, call_id=call_id,
             error="tool-timeout", duration_ms=int((time.time()-started)*1000),
-            evidence={"timeout_s": timeout}), started)
+            evidence={"timeout_s": timeout, "cancel_requested": True,
+                      "cancel_acknowledged": False}), started)
     with _seen_lock:
         _running.pop(call_id, None)
     if cancel.is_set():
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision=decision, call_id=call_id,
-            error="tool-cancelled", duration_ms=int((time.time()-started)*1000)), started)
+            error="tool-cancelled", duration_ms=int((time.time()-started)*1000),
+            evidence={"cancel_requested": True, "cancel_acknowledged": True}), started)
     if "err" in box:
         return _record(req, call_id, ToolResult(
             status=opstatus.FAIL, decision=decision, call_id=call_id,
@@ -163,28 +174,38 @@ def execute(req: ToolRequest) -> ToolResult:
 
 
 def cancel(call_id: str) -> bool:
-    """Signal a RUNNING call, then record the real cancellation."""
-    from core import tool_events
+    """Signal a RUNNING call and record an observable cancellation request."""
     with _seen_lock:
         evt = _running.get(call_id)
     if evt is None:
         return False
+    tool_events.record({
+        "call_id": "cancel-" + call_id, "tool": "tool.cancel",
+        "status": opstatus.BLOCKED, "decision": "cancel",
+        "error": "cancel-requested", "finished": time.time(),
+        "evidence": {"target_call_id": call_id}})
     evt.set()
-    ev = next((e for e in tool_events.events(limit=600)
-               if e.get("call_id") == call_id), None)
-    if ev is None:
-        return True
-    tool_events.record({**ev, "status": opstatus.BLOCKED,
-                        "error": "tool-cancelled", "finished": time.time()})
     return True
+
+
+def state(call_id: str) -> dict:
+    """Return observable execution/cancellation state for *call_id*."""
+    with _seen_lock:
+        evt = _running.get(call_id)
+    running = evt is not None
+    request = tool_events.find("cancel-" + call_id)
+    result = tool_events.find(call_id)
+    return {"call_id": call_id, "running": running,
+            "cancel_requested": bool(request or (evt and evt.is_set())),
+            "cancel_acknowledged": bool(result and result.get("error") ==
+                                        "tool-cancelled"),
+            "status": (result or {}).get("status", "NOT TESTED")}
 
 
 def _record(req: ToolRequest, call_id: str, result: ToolResult,
             started: float) -> ToolResult:
     finished = time.time()
-    sig = hashlib.sha256((req.tool_id + "|" + req.project + "|" +
-                          str(sorted(req.inputs.items(), key=lambda kv: str(kv[0]))))
-                         .encode("utf-8")).hexdigest()[:16]
+    sig = _signature(req)
     record_event({"call_id": call_id,
                   "request_id": sig, "tool": req.tool_id,
                   "project": req.project, "task_id": req.task_id,

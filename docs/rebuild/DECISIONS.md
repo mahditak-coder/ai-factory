@@ -16,3 +16,8 @@ Numbered decisions for the rebuild. Status may be ACCEPTED, PROPOSED or UNRESOLV
 - **ADR-012 — Paid image/audio providers** — UNRESOLVED. Options: remain free-model-first, or add verified paid providers with explicit cost approval. Must not be assumed.
 - **ADR-013 — Browser screenshot tool policy** — UNRESOLVED. Options: add narrowly scoped approved screenshot tool, or accept visual QA NOT TESTED. SecurityPolicy must not be bypassed.
 - **ADR-014 — Checksum repair ownership** — PROPOSED. Repair as separate audit-maintenance change, never silently inside product phase.
+- **ADR-015 — Canonical event envelope** — ACCEPTED (Phase 01). ToolEvent and AgentEvent use one schema-versioned envelope with event_uid and seq; legacy keys preserved for SSE/Workspace compatibility.
+- **ADR-016 — Durable replay receipts** — ACCEPTED (Phase 01). A repeated `call_id` is rejected and never re-executes; the in-memory ledger no longer clears itself. Rationale: idempotency must survive restarts.
+- **ADR-017 — Lease-based stale RUNNING recovery** — ACCEPTED (Phase 01). A RUNNING stage with a dead run_pid is reopened as REVISION with history; no artifact, version or approval is deleted. Rationale: crash recovery without data loss.
+- **ADR-018 — Observable cancellation** — ACCEPTED (Phase 01). Cancellation requests are durably recorded and queryable; cooperative adapters may acknowledge, but a non-cooperative worker is never assumed stopped. Force-killing threads is out of scope.
+- **ADR-019 — Test isolation assertion generalized** — ACCEPTED (Phase 01). Removed a hardcoded temp path prefix that made `test_root_isolated_when_env_set` fail in valid isolated roots; no product behavior changed.

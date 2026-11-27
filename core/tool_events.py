@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import core.config as config
+from core import event_envelope
 
 _STORE = config.PROJECT_ROOT / "data" / "tool_events.json"
 _LOCK = threading.RLock()
@@ -54,6 +55,7 @@ def record(event: dict) -> dict:
         "error": str(event.get("error") or "")[:1000],
         "evidence": event.get("evidence") or {},
     }
+    rec = event_envelope.envelope(rec, kind="tool")
     with _LOCK:
         items = _load()
         idx = next((i for i, e in enumerate(items)
@@ -61,9 +63,31 @@ def record(event: dict) -> dict:
         if idx is None:
             items.append(rec)
         else:
+            old = items[idx]
+            # First terminal result wins. A later replay/cancel must never
+            # overwrite a real PASS/FAIL with BLOCKED.
+            if event_envelope.is_terminal(old.get("status")) and \
+                    event_envelope.is_terminal(rec.get("status")):
+                merged = dict(old)
+                evidence = dict(old.get("evidence") or {})
+                evidence.update(rec.get("evidence") or {})
+                merged["evidence"] = evidence
+                rec = merged
+            else:
+                rec["seq"] = max(int(old.get("seq") or 0), int(rec["seq"]))
             items[idx] = rec
         _save(items)
     return rec
+
+
+def find(call_id: str) -> dict | None:
+    """Return a durable receipt for *call_id*, if one exists."""
+    if not call_id:
+        return None
+    for item in reversed(_load()):
+        if item.get("call_id") == call_id:
+            return item
+    return None
 
 
 def events(project: str = "", tool: str = "", limit: int = 50) -> list[dict]:

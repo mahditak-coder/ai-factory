@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import core.config as config
-from core import errreason, opstatus
+from core import errreason, event_envelope, opstatus
 
 _STORE = config.PROJECT_ROOT / "data" / "agent_events.json"
 _LOCK = threading.RLock()
@@ -196,6 +196,7 @@ def record(evt: dict, project: str = "", session: str = "",
     else:
         rec["detail"] = _text(data.get("error") or data.get("title") or etype, 300)
 
+    rec = event_envelope.envelope(rec, kind=rec.get("kind") or "event")
     with _LOCK:
         events = _load()
         # Same real event may arrive from SSE and from the backend recorder.
