@@ -8,7 +8,7 @@
 - Rebuild status: **IN PROGRESS**
 - Last accepted phase: **01 — Core Foundation and Unified Orchestration**
 - Active phase: **NONE**
-- Phase 01 commit: 9ab8c05125fdedf9d565bfc385f415a4d4c4527f
+- Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
 - Next allowed action: wait for explicit user authorization to start Phase 02 only.
 
 ## Audit status and limitations
