@@ -39,6 +39,30 @@ All commands ran from the isolated clone with a fresh `AI_FACTORY_TEST_ROOT`; no
 
 Test coverage includes all 50 mission cases: model roundtrip/invalid schema/stable identity/revision-history/legacy preservation; Persian and mixed-language intent; create/modify/debug/explain; explicit vs inferred; uncertainty; conflicts; game-Android, game-Web, education-Android, website-Desktop/Web, unknown platform, domain/platform independence; essential clarification, no over-asking, no repeated questions, revision update, persistence; destructive/paid/private risk, complex-but-safe, simple-destructive-not-safe, unknown estimates; bounded/dependency-valid/acceptance-condition/duplicate-free/non-executing plans; approval need, high-risk gating, request-hash/plan-hash binding, invalidation on request/plan change, one-shot replay rejection, expiry/mismatch, untrusted text cannot override policy; idempotent legacy migration, preserved legacy fields, duplicate submission, Phase 01 receipt regression, API state exposure, invalid transitions, reload persistence; plus corrupt/missing store fail-closed, rollback compat mode, anonymous approval rejection and token hiding in API views.
 
+## Critical corrections after independent review (same branch)
+
+| Defect | Fix | Evidence |
+|---|---|---|
+| Clarification answers did not mutate the canonical request | `resolve_answer()` validates/maps answers; `apply_answers()` recomputes intent/domain/platform, requirements, constraints, assumptions, conflicts, risk, complexity, autonomy and clarification from original text + answers; `raw_text` preserved, answers stored separately with `question_id`, timestamp, revision, provenance and resolved flag; unresolved answers never clear a question; stale plan/approval invalidated; hash recomputed last | `core/tests/test_phase02_corrections.py` (`test_answer_*`, `test_invalid_answers_*`, `test_request_hash_*`, `test_material_answer_*`) |
+| `build_plan()` fabricated `APPROVED` by `system:low-risk-autonomy` | Low/medium-risk plans stay `PLANNED` with `approval.status=NOT_REQUIRED`, empty actor, no `APPROVED` transition; approval enforced separately by `can_execute()` at the execution boundary | `test_low_risk_planning_never_approves`, `test_no_fabricated_human_approval_*` |
+| Orchestrator swallowed canonical failures and executed anyway | `canonical_execution_gate()` fails closed on intake/corruption/unavailability and on `BLOCKED`/`REJECTED`/`NEEDS_CLARIFICATION`/`AWAITING_APPROVAL`; legacy mode only via explicit switch; retries revalidate via deterministic task-scoped request IDs | `test_intake_failure_prevents_model_execution`, `test_corrupt_or_missing_store_*`, `test_non_ready_statuses_*`, `test_legacy_mode_is_explicit_*` |
+| Approval races / misleading expiry / unauthenticated actor | Proposal and consume run under one `_request_lock()`; exact binding to ID/revision/hash/plan/scope; authoritative absolute expiry from confirmation store; trusted panel session required when supplied; actor otherwise recorded but explicitly not claimed authenticated; token stripped from API views | `test_concurrent_approval_one_winner`, `test_concurrent_answer_and_approval_*`, `test_token_never_exposed_*`, `test_replayed_stale_*` |
+| Risk classifier typo / nine dimensions | Fixed `external_release` pattern (`عمومی|public`), corrected `api key` spacing, added vague high-impact guard; nine dimensions verified, no level lowered | `test_all_nine_risk_dimensions_honest`, `test_unknown_high_impact_is_not_low` |
+
+### Correction verification commands
+1. `python3 -m unittest core.tests.test_phase02_corrections -v` — exit `0`, `Ran 21 tests ... OK`; log `/data/data/com.termux/files/usr/tmp/opencode/p2fix-t4.log`.
+2. `python3 -m unittest core.tests.test_phase02_request_intelligence core.tests.test_phase02_corrections` — exit `0`, `Ran 79 tests in 0.391s — OK`; log `/data/data/com.termux/files/usr/tmp/opencode/p2fix-target.log`.
+3. `python3 -m unittest discover -s core/tests -p 'test_*.py'` — exit `0`, `Ran 326 tests in 49.636s — OK` (326 PASS / 0 FAIL / 0 ERROR); log `/data/data/com.termux/files/usr/tmp/opencode/p2fix-full2.log`.
+4. All runs used a fresh isolated `AI_FACTORY_TEST_ROOT`. Existing Phase 01/Phase 02 tests were preserved; the one outdated expectation (low-risk `APPROVED`) was corrected to the newly required `PLANNED`/`NOT_REQUIRED` behavior, not hidden.
+
+### Honest limitations after corrections
+- Actor identity is **self-declared unless a trusted panel session is supplied**; the code records `actor_trusted` and does not claim authenticated identity otherwise.
+- Phase 02 still executes no bounded action; `can_execute()` is the authoritative boundary check, and approval permits only an explicitly implemented bounded action.
+- CI/GitHub Actions: **NOT TESTED** — no actual workflow run was performed.
+- Browser/mobile visual inspection: **NOT TESTED** — no real viewport/visual review was available.
+- Model-assisted classification, live providers, paid actions, specialist execution and product generation remain out of scope / NOT TESTED.
+- ADR-011..014 remain untouched and unresolved.
+
 ## Accurate guarantee and limitations
 
 - **PASS (local, deterministic):** one canonical structured request per intake, versioned and persisted; intent/requirements/domain/platform/risk/complexity/clarification/plan/approval behave as specified; high-risk work cannot be approved without an exact bound one-shot approval; Phase 01 idempotency suite remains green.

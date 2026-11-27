@@ -9,7 +9,7 @@
 - Last accepted phase: **01 — Core Foundation and Unified Orchestration** — ACCEPTED by independent review dated 2026-11-27 (prior provisional status recorded historically below was superseded by that decision).
 - Phase 01 status: **ACCEPTED**. Basis: final code commit `43bf30818e77b47b4ce23e70bd35738a0eb1db71`, documentation/remote HEAD commit `3dcae0703bee408bc34fdfd83e81807a25c6a2a7`, independent review 2026-11-27.
 - Active phase: **02 — Request Intelligence & Planning** (implementation complete; awaiting independent review).
-- Phase 02 status: **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW**.
+- Phase 02 status: **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW** (critical corrections applied after independent review findings; see below).
 - Phase 03 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 02 acceptance.
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
 - Phase 01 acceptance-fix commit: 8e292a70d20bc11450f41a03de175b81ef149356
@@ -57,6 +57,14 @@
 - Idempotent non-destructive legacy migration with preserved unknown fields and `legacy` rollback mode that does not delete canonical records.
 - API: `/api/requests`, `/api/requests/view`, `/api/requests/intake`, `/api/requests/answer`, `/api/requests/plan`, `/api/requests/approval-token`, `/api/requests/approve`; responses strip approval tokens. Workspace gained a small read-only summary card; visual inspection NOT TESTED.
 - Tests: baseline `Ran 247 tests ... OK`; targeted Phase 02 `Ran 58 tests in 0.237s — OK` (exit 0); full suite `Ran 305 tests in 47.713s — OK` (305 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`. Details: `docs/rebuild/evidence/PHASE-02-REQUEST-INTELLIGENCE.md`.
+
+## Phase 02 critical corrections (after independent review findings, on the same branch)
+- Answer handling: `answer()` now validates each answer (`resolve_answer`), stores it separately with `question_id`, answer text, timestamp, new revision, provenance `user-clarification`, resolved flag and canonical value; preserves `raw_text`; recomputes intent/domain/platform, requirements, constraints, assumptions, conflicts, risk, complexity, autonomy eligibility and clarification from the effective original text + answers; unresolved/invalid answers never clear a question; a material answer invalidates the stale plan and approval; the request hash is recomputed after all mutations.
+- No automatic approval: `build_plan()` leaves a low-risk plan at `PLANNED` with `approval.status = NOT_REQUIRED`, no actor and no `APPROVED` state; no system actor impersonates user consent. A separate `can_execute()` boundary check enforces approvals at execution time.
+- Real execution boundary: `orchestrator.canonical_execution_gate()` requires successful canonical intake in canonical mode; intake/corruption/unavailability failures, `BLOCKED`, `REJECTED`, `NEEDS_CLARIFICATION` and `AWAITING_APPROVAL` all stop the task before any model/specialist execution. Legacy mode is an explicit documented switch and never activates after a canonical failure. Deterministic task IDs prevent duplicate canonical records and revalidate approval on every retry.
+- Approval integrity: proposal and consume run inside one flock-guarded critical section; token binding checks request ID, revision, request hash, plan hash and scope; expiry uses the authoritative confirmation-store timestamp; a trusted panel session is required when a session is supplied, otherwise the actor string is recorded but explicitly NOT claimed as authenticated; API views never expose the token.
+- Risk correction: fixed the malformed public-release pattern and added honest public release/publish/deploy, paid, credentials, private data, network, destructive and migration cases; no risk level was lowered to pass tests; vague high-impact operations are not treated as low risk.
+- Tests: targeted Phase 02 suites `Ran 79 tests ... OK` (exit 0); full suite `Ran 326 tests in 49.636s — OK` (326 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`. Details: `docs/rebuild/evidence/PHASE-02-REQUEST-INTELLIGENCE.md`.
 
 ## Open blockers
 1. Checksum mismatch and stale test-status contradiction remain recorded until a separate audit-maintenance change.

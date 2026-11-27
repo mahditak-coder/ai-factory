@@ -273,8 +273,10 @@ class RequestIntelligenceTest(unittest.TestCase):
     # --------------------------------------------------------- approval/security
     def test_35_low_risk_no_unnecessary_approval(self):
         rec = self._plan("ساخت صفحه وب ساده")
-        self.assertEqual(rec["status"], "APPROVED")
-        self.assertEqual(rec["approval"]["actor"], "system:low-risk-autonomy")
+        self.assertEqual(rec["status"], "PLANNED")
+        self.assertEqual(rec["approval"]["status"], "NOT_REQUIRED")
+        self.assertFalse(rec["approval"].get("actor"))
+        self.assertTrue(ri.can_execute(rec["request_id"])["allowed"])
 
     def test_36_high_risk_cannot_proceed_without_approval(self):
         rec = self._plan("ساخت سیستم پرداخت آنلاین وب")

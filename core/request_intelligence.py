@@ -227,10 +227,10 @@ _PLATFORM_PATTERNS = {
 
 _RISK_PATTERNS = {
     "destructive": r"rm\s+-rf|wipe|format\s+c|حذف\s*(?:همه|تمام)|پاک\s*کن\s*(?:همه|تمام)|پاکسازی\s*کامل|delete\s+all|همه\s*(?:فایل|داده)|پاکسازی",
-    "external_release": r"استقرار|انتشار| pubblic|deploy|release|publish|push\s+to|ارسال\s*به\s*git",
+    "external_release": r"استقرار|انتشار\s*(?:عمومی|public)?|عمومی|public(?:\s+release)?|deploy|release|publish|push\s+to|ارسال\s*به\s*git|عملیات\s*خارجی|external\s+operation|کاری\s*ناشناخته",
     "financial": r"پرداخت|خرید|پول|هزینه|paid|billing|payment|credit\s*card|تومان",
     "security_sensitive": r"احراز\s*هویت|رمز|پسورد|توکن|secret|credential|auth|دسترسی\s*مطلق|گریز\s*از\s*محدودیت",
-    "credentials": r"api[_-]?key|توکن[ی]?\s*خودت|\.env|private\s*key| کلید\s*خصوصی",
+    "credentials": r"api[\s_-]*key|توکن[ی]?\s*خودت|\.env|private\s*key| کلید\s*خصوصی",
     "private_data": r"اطلاعات\s*خصوصی|داده\s*های\s*شخصی|personal\s+data|حریم\s*خصوصی|patient|medical",
     "scope_expansion": r"دسترسی\s*مطلق|بالارفتن\s*از|بدون\s*محدودیت\s*صلاحیت|باز\s*کردن\s*تمام\s*فایل|sudo|chmod\s+777",
     "network": r"http[s]?://|curl\b|wget\b|api\s*call|درخواست\s*شبکه",
@@ -406,7 +406,8 @@ def essential_missing(text: str, intent: dict, domain: dict, platform: dict,
                       answers: list[dict], product_type: str = "") -> list[dict]:
     norm = normalize(text)
     answered = " ".join(str(a.get("answer") or "") for a in answers)
-    answered_keys = {str(a.get("question_id") or "") for a in answers}
+    answered_keys = {str(a.get("question_id") or "") for a in answers
+                     if a.get("resolved") is not False}
     missing = []
 
     def need(key, why, options, essential=True):
@@ -571,6 +572,192 @@ def validate_record(rec: dict) -> list[str]:
     return errors
 
 
+_PLATFORM_ANSWERS = (("Android", r"android|اندروید"),
+                     ("Web", r"\bweb\b|وب"),
+                     ("Desktop", r"desktop|دسکتاپ|windows"),
+                     ("Cross-platform", r"cross|چند\s*پلتفرم|همه\s*پلتفرم"))
+_DOMAIN_ANSWERS = (("game", r"game|بازی"),
+                   ("education", r"education|آموزش"),
+                   ("business", r"business|کسب\s*و\s*کار|فروشگاه"),
+                   ("automation", r"automation|اتوماسیون"),
+                   ("content", r"content|محتوا"))
+_INTENT_ANSWERS = (("create", r"create|بساز|ساخت"),
+                   ("modify", r"modify|تغییر|ویرایش"),
+                   ("debug", r"debug|fix|رفع\s*(?:مشکل|خطا)"),
+                   ("explain", r"explain|توضیح"),
+                   ("analyze", r"analy|تحلیل|بررسی"),
+                   ("plan", r"plan|برنامه"))
+
+
+def resolve_answer(question_id: str, answer_text: str) -> dict:
+    """Validate an answer and map it to a canonical value when possible.
+
+    Answers are untrusted user data: a non-resolving answer never clears a
+    question and never grants permission.
+    """
+    qid = str(question_id or "")
+    raw = str(answer_text or "").strip()
+    low = raw.lower()
+    if not raw or re.fullmatch(r"(?i)(unknown|نمیدانم|نمیدونم|نامشخص|none|n/?a|-+)", low):
+        return {"resolved": False, "value": "", "reason": "empty-or-unknown-answer"}
+    if qid == "platform":
+        for value, pat in _PLATFORM_ANSWERS:
+            if re.search(pat, low):
+                return {"resolved": True, "value": value, "reason": "platform-answer"}
+        return {"resolved": False, "value": "", "reason": "unrecognized-platform"}
+    if qid == "domain":
+        for value, pat in _DOMAIN_ANSWERS:
+            if re.search(pat, low):
+                return {"resolved": True, "value": value, "reason": "domain-answer"}
+        return {"resolved": False, "value": "", "reason": "unrecognized-domain"}
+    if qid == "intent":
+        for value, pat in _INTENT_ANSWERS:
+            if re.search(pat, low):
+                return {"resolved": True, "value": value, "reason": "intent-answer"}
+        return {"resolved": False, "value": "", "reason": "unrecognized-intent"}
+    return {"resolved": True, "value": raw[:400], "reason": "free-text-answer"}
+
+
+def apply_answers(rec: dict, answers: list[dict]) -> dict:
+    """Recompute every dependent field from the original text plus answers."""
+    original = str(rec.get("normalized_text") or "")
+    pieces = [original] + [str(a.get("value") or a.get("answer") or "")
+                           for a in answers if a.get("resolved")]
+    effective = normalize(" ".join(pieces))
+    ptype = str((rec.get("intent") or {}).get("product_type") or "")
+
+    intent = classify_intent(effective)
+    domain = classify_domain(effective, ptype)
+    platform = classify_platform(effective)
+    for a in answers:
+        if not a.get("resolved"):
+            continue
+        qid, value = a.get("question_id"), a.get("value")
+        if qid == "platform" and value:
+            platform = {"value": value, "platforms": [value], "confidence": 0.95,
+                        "evidence": ["clarification-answer:platform"], "unknown": False}
+        elif qid == "domain" and value:
+            domain = {"value": value, "confidence": 0.95,
+                      "evidence": ["clarification-answer:domain"], "unknown": False}
+        elif qid == "intent" and value:
+            intent = {"primary": value, "secondary": intent.get("secondary", ""),
+                      "confidence": 0.95, "evidence": ["clarification-answer:intent"],
+                      "uncertain": False}
+
+    cls = rec.setdefault("classification", {})
+    cls["intent"], cls["domain"], cls["platform"] = intent, domain, platform
+    top_intent = rec.setdefault("intent", {})
+    top_intent["primary"] = intent["primary"]
+    top_intent["secondary"] = intent.get("secondary", "")
+    top_intent["confidence"] = intent["confidence"]
+    top_intent["evidence"] = intent["evidence"]
+    cls["risk"] = classify_risk(effective)
+    cls["complexity"] = classify_complexity(effective)
+    cls["autonomy_eligible"] = (cls["risk"]["level"] == "low" and
+                                rec.get("status") != "BLOCKED")
+    cls["confidence"] = round(min(domain["confidence"], platform["confidence"],
+                                  intent["confidence"]), 2)
+    cls["reasons"] = intent["evidence"]
+
+    # Preserve the user's original explicit requirements; refresh the rest.
+    old_explicit = [dict(r) for r in rec.get("requirements", [])
+                    if r.get("source") == "explicit"]
+    fresh = extract_requirements(effective, ptype)
+    refreshed = old_explicit + [dict(r) for r in fresh
+                                if r.get("source") != "explicit"]
+    for idx, req in enumerate(refreshed, 1):
+        req["id"] = "req-%02d" % idx
+    rec["requirements"] = refreshed
+    cls["conflicts"] = detect_conflicts(refreshed, effective)
+
+    rec["constraints"] = rec.get("constraints") or {}
+    rec["assumptions"] = [a for a in rec.get("assumptions", [])
+                          if a.get("source") != "clarification"]
+    for a in answers:
+        if a.get("resolved") and a.get("question_id") in ("domain", "platform", "intent"):
+            rec["assumptions"].append({
+                "description": "پاسخ کاربر: %s = %s" % (a["question_id"], a["value"]),
+                "reason": a.get("reason", "clarification-answer"), "confidence": 0.95,
+                "source": "clarification", "revision": a.get("revision")})
+
+    state = clarification_state(effective, intent, domain, platform,
+                                [a for a in answers if a.get("resolved")], ptype)
+    clar = rec.setdefault("clarification", {})
+    for ans in answers:
+        qid = ans.get("question_id")
+        if not ans.get("resolved") and qid in ("intent", "domain", "platform"):
+            if qid not in [m["id"] for m in state["missing"]]:
+                state["missing"].append({"id": qid, "essential": True,
+                                          "why": "پاسخ نامعتبر بود؛ اطلاعات ضروری هنوز نامشخص است",
+                                          "options": []})
+    state["essential"] = [m for m in state["missing"] if m["essential"]]
+    state["can_proceed"] = not state["essential"]
+    clar["missing"] = state["missing"]
+    clar["can_proceed"] = state["can_proceed"]
+    rec["normalized_text"] = effective[:8000]
+    return state
+
+
+def _route_after_answer(rec: dict, can_proceed: bool, reason: str) -> None:
+    """Move back through legal transitions; answers never grant execution."""
+    if rec.get("status") in ("REJECTED", "BLOCKED"):
+        return
+    if rec["status"] == "RECEIVED":
+        _transition(rec, "CLASSIFIED", reason)
+    if can_proceed:
+        if rec["status"] == "NEEDS_CLARIFICATION":
+            _transition(rec, "CLASSIFIED", reason)
+        if rec["status"] in ("CLASSIFIED", "PLANNED", "AWAITING_APPROVAL"):
+            _transition(rec, "READY_FOR_PLAN", reason)
+    else:
+        if rec["status"] in ("PLANNED", "AWAITING_APPROVAL"):
+            _transition(rec, "READY_FOR_PLAN", reason)
+        if rec["status"] in ("CLASSIFIED", "READY_FOR_PLAN"):
+            _transition(rec, "NEEDS_CLARIFICATION", reason)
+
+
+def can_execute(request_id: str) -> dict:
+    """Authoritative execution-boundary check read from the canonical store.
+
+    A caller-supplied status string is never trusted; a generated plan is not
+    permission, and an answer is not approval.
+    """
+    rec = get(request_id)
+    if rec is None:
+        return {"allowed": False, "reason": "request-not-found",
+                "request_id": request_id}
+    status = rec.get("status")
+    if status in ("BLOCKED", "REJECTED", "NEEDS_CLARIFICATION", "AWAITING_APPROVAL"):
+        return {"allowed": False, "reason": "status:" + status, "status": status,
+                "request_id": request_id}
+    ap = rec.get("approval") or {}
+    if status == "APPROVED":
+        if ap.get("invalidated") or ap.get("status") != "APPROVED" or not ap.get("actor"):
+            return {"allowed": False, "reason": "approval-invalid", "status": status,
+                    "request_id": request_id}
+        if ap.get("request_hash") != rec.get("request_hash") or \
+                ap.get("plan_hash") != (rec.get("plan") or {}).get("hash"):
+            return {"allowed": False, "reason": "approval-bindings-stale",
+                    "status": status, "request_id": request_id}
+        if ap.get("expires") and float(ap["expires"]) < time.time():
+            return {"allowed": False, "reason": "approval-expired",
+                    "status": status, "request_id": request_id}
+        return {"allowed": True, "reason": "explicit-approval", "status": status,
+                "scope": ap.get("scope", ""), "actor": ap.get("actor"),
+                "request_id": request_id}
+    # Controlled autonomy: a low/medium-risk request with no approval
+    # requirement may proceed from a classified state; a generated plan is
+    # NOT itself permission, it simply adds no new approval obligation.
+    if status in ("CLASSIFIED", "READY_FOR_PLAN", "PLANNED") and \
+            not ap.get("required") and \
+            (rec.get("classification") or {}).get("risk", {}).get("level") in \
+            ("low", "medium"):
+        return {"allowed": True, "reason": "controlled-autonomy-no-approval-required",
+                "status": status, "request_id": request_id}
+    return {"allowed": False, "reason": "status:" + str(status), "status": status,
+            "request_id": request_id}
+
+
 def _transition(rec: dict, to: str, reason: str) -> None:
     if to == rec["status"]:
         return
@@ -653,38 +840,57 @@ def save_view(rec: dict) -> dict:
 
 
 def answer(request_id: str, answer_text: str, question_id: str = "") -> dict:
-    """Record a clarification answer; always creates a new revision."""
-    if not str(answer_text or "").strip():
+    """Apply a clarification answer to the canonical request, traceably.
+
+    The answer is stored separately (never merged into ``raw_text``), validated,
+    mapped to a canonical value, and used to recompute every dependent field.
+    An unresolved answer never clears a question and never grants permission.
+    """
+    raw = str(answer_text or "").strip()
+    if not raw:
         raise RequestError("empty-answer")
 
     def fn(rec):
         if rec is None:
             return None
-        if rec.get("status") in ("REJECTED", "APPROVED"):
+        if rec.get("status") in ("REJECTED", "BLOCKED"):
             raise RequestError("request-terminal:" + rec["status"])
-        _revise(rec, "clarification-answer")
         clar = rec.setdefault("clarification", {})
         qid = str(question_id or (clar.get("missing") or [{}])[0].get("id", "general"))
-        clar.setdefault("answers", []).append({
-            "question_id": qid, "answer": str(answer_text)[:2000],
-            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "revision": rec["revision"]})
-        text = rec.get("normalized_text", "")
-        intent = classify_intent(text)
-        domain = classify_domain(text)
-        platform = classify_platform(text)
-        state = clarification_state(text, intent, domain, platform,
-                                    clar["answers"])
-        clar["missing"] = state["missing"]
-        clar["can_proceed"] = state["can_proceed"]
-        rec["classification"]["intent"] = intent
-        rec["classification"]["domain"] = domain
-        rec["classification"]["platform"] = platform
-        if rec["status"] in ("RECEIVED", "CLASSIFIED", "NEEDS_CLARIFICATION"):
-            _transition(rec, "CLASSIFIED" if state["can_proceed"] else
-                        "NEEDS_CLARIFICATION", "answer-recorded")
-            if state["can_proceed"]:
-                _transition(rec, "READY_FOR_PLAN", "clarification-complete")
+        if any(a.get("question_id") == qid and a.get("resolved")
+               for a in clar.get("answers", [])):
+            raise RequestError("question-already-resolved:" + qid)
+        resolved = resolve_answer(qid, raw)
+        new_rev = int(rec.get("revision") or 1) + 1
+        entry = {"question_id": qid, "answer": raw[:2000],
+                 "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                 "revision": new_rev, "provenance": "user-clarification",
+                 "resolved": bool(resolved["resolved"]),
+                 "value": resolved["value"], "reason": resolved["reason"]}
+        clar.setdefault("answers", []).append(entry)
+
+        state = apply_answers(rec, clar["answers"])
+        if resolved["resolved"]:
+            plan = rec.get("plan") or {}
+            if plan:
+                plan["invalidated"], plan["stale"] = True, True
+            ap = rec.setdefault("approval", {})
+            if ap.get("status") in ("APPROVED", "PENDING"):
+                ap["status"] = "INVALIDATED"
+            ap["invalidated"] = True
+            ap["token"] = ""
+        _route_after_answer(rec, state["can_proceed"],
+                            "answer-" + qid + ("-resolved" if resolved["resolved"]
+                                               else "-unresolved"))
+
+        # Finalise the revision AFTER every mutation so the hash covers it all.
+        rec["revision"] = new_rev
+        rec["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        rec.setdefault("history", []).append({
+            "from": rec.get("status", ""), "to": rec.get("status", ""),
+            "at": rec["updated"],
+            "reason": "revision:answer:" + qid + ":" + resolved["reason"]})
+        rec["request_hash"] = request_hash(rec)
         return rec
 
     return _mutate(request_id, fn)
@@ -780,107 +986,123 @@ def build_plan(request_id: str) -> dict:
                 not rec["classification"]["autonomy_eligible"]):
             _transition(rec, "AWAITING_APPROVAL", "approval-required")
         else:
+            # Planning is NEVER approval. A low-risk plan simply does not
+            # require a human approval in this phase; no system actor may
+            # impersonate explicit user consent.
             ap = rec["approval"]
-            ap.update({"status": "APPROVED", "actor": "system:low-risk-autonomy",
+            ap.update({"status": "NOT_REQUIRED", "actor": "", "actor_trusted": False,
                        "request_revision": rec["revision"],
                        "request_hash": rec["request_hash"],
-                       "plan_hash": plan["hash"],
-                       "scope": "bounded low-risk plan only",
+                       "plan_hash": plan["hash"], "scope": "",
                        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
                        "invalidated": False})
-            _transition(rec, "APPROVED", "controlled-autonomy")
         return rec
 
     return _mutate(request_id, fn)
 
 
 def approval_proposal(request_id: str, session_id: str = "") -> dict:
-    """Create a one-shot approval token bound to exact request/plan identity."""
-    rec = get(request_id)
-    if rec is None:
-        raise RequestError("request-not-found:" + request_id)
-    if rec["status"] != "AWAITING_APPROVAL":
-        raise RequestError("approval-not-required:" + rec["status"])
+    """Create a one-shot approval token bound to the exact current record.
+
+    The whole read/create/bind/save sequence holds the cross-process lock so a
+    concurrent mutation cannot bind a token to a stale revision.
+    """
     from core import confirmations
-    payload = {"request_id": rec["request_id"], "revision": rec["revision"],
-               "request_hash": rec["request_hash"],
-               "plan_hash": rec["plan"].get("hash", ""),
-               "scope": "execute-bounded-plan"}
-    cf = confirmations.create(rec.get("project", ""), "phase02-plan-approval",
-                              payload,
-                              "تأیید صریح مورد نیاز است: " + rec["request_id"][:40],
-                              session_id=session_id)
-    def bind(r):
-        if r is None:
-            return None
-        a = r["approval"]
+    with _request_lock():
+        items = _load_unlocked()
+        rec = items.get(str(request_id or ""))
+        if rec is None:
+            raise RequestError("request-not-found:" + request_id)
+        if rec["status"] != "AWAITING_APPROVAL":
+            raise RequestError("approval-not-required:" + rec["status"])
+        project = rec.get("project", "")
+        payload = {"request_id": rec["request_id"], "revision": rec["revision"],
+                   "request_hash": rec["request_hash"],
+                   "plan_hash": (rec.get("plan") or {}).get("hash", ""),
+                   "scope": "execute-bounded-plan"}
+        cf = confirmations.create(project, "phase02-plan-approval", payload,
+                                  "تأیید صریح مورد نیاز است: " + rec["request_id"][:40],
+                                  session_id=session_id)
+        # Authoritative absolute expiry comes from the confirmation store.
+        v = confirmations.peek(cf["confirm_token"], project, session_id=session_id)
+        a = rec["approval"]
         a.update({"token": cf["confirm_token"], "status": "PENDING",
-                  "request_revision": r["revision"],
-                  "request_hash": r["request_hash"],
-                  "plan_hash": r["plan"].get("hash", ""),
+                  "request_revision": rec["revision"],
+                  "request_hash": rec["request_hash"],
+                  "plan_hash": (rec.get("plan") or {}).get("hash", ""),
                   "scope": "execute-bounded-plan",
                   "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                  "expires": cf.get("expires_in_s", 0), "invalidated": False})
-        return r
-
-    rec = _mutate(request_id, bind)
-    return {"request_id": request_id, "confirm_token": cf["confirm_token"],
-            "question": cf["question"], "expires_in_s": cf["expires_in_s"],
-            "request_hash": rec["request_hash"],
-            "plan_hash": rec["plan"].get("hash", "")}
+                  "expires": float(v.get("expires") or 0),
+                  "expires_in_s": cf.get("expires_in_s", 0),
+                  "invalidated": False})
+        items[rec["request_id"]] = rec
+        _save_unlocked(items)
+        return {"request_id": rec["request_id"],
+                "confirm_token": cf["confirm_token"], "question": cf["question"],
+                "expires_in_s": cf["expires_in_s"],
+                "request_hash": rec["request_hash"],
+                "plan_hash": (rec.get("plan") or {}).get("hash", "")}
 
 
 def approve(request_id: str, token: str, actor: str,
             project: str = "", session_id: str = "") -> dict:
-    """Validate and consume a bound one-shot approval; fail closed on mismatch."""
+    """Validate and consume a bound one-shot approval; fail closed on mismatch.
+
+    Validation, authoritative expiry checking, token consumption and the
+    terminal mutation are performed inside ONE cross-process critical section.
+    A caller-supplied actor string is recorded but is NOT claimed as an
+    authenticated identity unless a trusted panel session is also supplied.
+    """
     actor = str(actor or "").strip()
     if not actor:
         raise RequestError("approval-actor-required")
-    rec = get(request_id)
-    if rec is None:
-        raise RequestError("request-not-found:" + request_id)
-    ap = rec.get("approval") or {}
-    if ap.get("invalidated"):
-        raise RequestError("approval-invalidated")
-    if rec["status"] != "AWAITING_APPROVAL":
-        raise RequestError("approval-not-pending:" + rec["status"])
-    if not ap.get("token") or ap["token"] != str(token or ""):
-        raise RequestError("approval-token-mismatch")
+    token = str(token or "")
     from core import confirmations
-    try:
-        v = confirmations.peek(str(token), project or rec.get("project", ""),
-                               session_id=session_id)
-    except confirmations.ConfirmError as exc:
-        raise RequestError("approval-not-valid:" + exc.message) from exc
-    payload = v.get("payload") or {}
-    expected = {"request_id": rec["request_id"], "revision": rec["revision"],
-                "request_hash": rec["request_hash"],
-                "plan_hash": rec["plan"].get("hash", ""),
-                "scope": "execute-bounded-plan"}
-    for key, value in expected.items():
-        if payload.get(key) != value:
-            raise RequestError("approval-binding-mismatch:" + key)
-    if (v.get("expires") or 0) < time.time():
-        raise RequestError("approval-expired")
-    # Consume only after every binding check passes; replay then fails closed.
-    confirmations.consume(str(token), project or rec.get("project", ""),
-                          session_id=session_id)
 
-    def fn(r):
-        if r is None:
-            return None
-        if r["revision"] != rec["revision"] or r["request_hash"] != rec["request_hash"]:
-            raise RequestError("approval-stale-request")
-        if r["plan"].get("hash") != rec["plan"].get("hash"):
-            raise RequestError("approval-stale-plan")
-        a = r["approval"]
-        a.update({"status": "APPROVED", "actor": actor,
-                  "approved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                  "token": "", "invalidated": False})
-        _transition(r, "APPROVED", "explicit-approval")
-        return r
+    with _request_lock():
+        items = _load_unlocked()
+        rec = items.get(str(request_id or ""))
+        if rec is None:
+            raise RequestError("request-not-found:" + request_id)
+        ap = rec.get("approval") or {}
+        if ap.get("invalidated"):
+            raise RequestError("approval-invalidated")
+        if rec["status"] != "AWAITING_APPROVAL":
+            raise RequestError("approval-not-pending:" + rec["status"])
+        if not ap.get("token") or ap["token"] != token:
+            raise RequestError("approval-token-mismatch")
+        use_project = project or rec.get("project", "")
+        try:
+            v = confirmations.peek(token, use_project, session_id=session_id)
+        except confirmations.ConfirmError as exc:
+            raise RequestError("approval-not-valid:" + exc.message) from exc
+        payload = v.get("payload") or {}
+        expected = {"request_id": rec["request_id"], "revision": rec["revision"],
+                    "request_hash": rec["request_hash"],
+                    "plan_hash": (rec.get("plan") or {}).get("hash", ""),
+                    "scope": "execute-bounded-plan"}
+        for key, value in expected.items():
+            if payload.get(key) != value:
+                raise RequestError("approval-binding-mismatch:" + key)
+        if float(v.get("expires") or 0) < time.time():
+            raise RequestError("approval-expired")
 
-    return _mutate(request_id, fn)
+        trusted = False
+        if session_id:
+            from core import panelauth
+            trusted = bool(panelauth.session_token_valid(session_id))
+            if not trusted:
+                raise RequestError("approval-session-invalid")
+        # Consume only after every binding check passes; replay then fails closed.
+        confirmations.consume(token, use_project, session_id=session_id)
+        ap.update({"status": "APPROVED", "actor": actor,
+                   "actor_trusted": trusted,
+                   "approved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                   "token": "", "invalidated": False})
+        _transition(rec, "APPROVED", "explicit-approval")
+        items[rec["request_id"]] = rec
+        _save_unlocked(items)
+        return rec
 
 
 def reject(request_id: str, actor: str, reason: str = "") -> dict:

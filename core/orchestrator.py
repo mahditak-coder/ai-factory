@@ -337,6 +337,34 @@ def _park_ask(tid: str, project: str, question: str, options: list,
     return cf["confirm_token"]
 
 
+def canonical_execution_gate(task_id: str, project: str, goal: str) -> dict:
+    """Authoritative Phase 02 boundary gate. Never trusts a caller status.
+
+    Canonical mode requires successful intake and an authoritative execution
+    authorization before any model/specialist work. A canonical failure never
+    silently falls back to the legacy path; legacy mode is an explicit switch.
+    """
+    from core import request_intelligence as ri
+    if ri.compat_mode() == "legacy":
+        return {"allowed": True, "mode": "legacy",
+                "reason": "explicit-legacy-mode"}
+    try:
+        rec = ri.intake(goal, project=project, source_channel="orchestrator",
+                        request_id="req-task-" + str(task_id))
+    except Exception as exc:  # noqa: BLE001 — any intake failure fails closed
+        return {"allowed": False, "mode": "canonical",
+                "reason": "canonical-intake-failed:%s:%s" %
+                          (type(exc).__name__, str(exc)[:120])}
+    auth = ri.can_execute(rec["request_id"])
+    if not auth["allowed"]:
+        return {"allowed": False, "mode": "canonical",
+                "reason": auth["reason"], "status": rec.get("status"),
+                "request_id": rec["request_id"]}
+    return {"allowed": True, "mode": "canonical", "reason": auth["reason"],
+            "status": rec.get("status"), "request_id": rec["request_id"],
+            "plan_hash": (rec.get("plan") or {}).get("hash", "")}
+
+
 def _execute(task: dict, worker_id: str) -> None:
     from core import agents as agentsmod, requestcheck
     from core import memory as memorymod
@@ -401,21 +429,19 @@ def _execute(task: dict, worker_id: str) -> None:
         _fail("درخواست خطرناک رد شد: " + rc["note"], retry=False)
         return
 
-    # AF NEXT Phase 02 — every user request receives one canonical, versioned
-    # request record before specialist/model work. The adapter is optional and
-    # non-breaking: a failure here never stops the proven Phase 01 path, and
-    # legacy compat mode skips canonical intake without deleting any record.
-    try:
-        from core import request_intelligence as ri
-        if ri.compat_mode() == "canonical":
-            cr = ri.intake(goal, project=project,
-                           source_channel="orchestrator",
-                           request_id="req-task-" + tid)
-            factory.append_history(
-                project, "canonical-request",
-                "%s %s" % (cr["request_id"], cr["status"]))
-    except Exception as exc:  # noqa: BLE001 — compatibility adapter, never fatal
-        log.warning("canonical request intake failed for task %s: %s", tid, exc)
+    # AF NEXT Phase 02 — canonical intake and execution authorization are a
+    # hard gate. A canonical failure NEVER falls back to legacy execution.
+    gate = canonical_execution_gate(tid, project, goal)
+    if not gate["allowed"]:
+        factory.append_history(project, "canonical-gate-blocked",
+                               str(gate["reason"])[:300])
+        _fail("دروازهٔcanonical اجرا را مسدود کرد: " + str(gate["reason"])[:200],
+              retry=False)
+        return
+    if gate["mode"] == "canonical":
+        factory.append_history(
+            project, "canonical-request",
+            "%s %s" % (gate.get("request_id", ""), gate.get("status", "")))
 
     factory.append_history(project, "task-start",
                            f"agent={agent_name} goal={goal[:150]}")
