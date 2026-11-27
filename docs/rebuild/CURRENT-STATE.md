@@ -9,7 +9,7 @@
 - Last accepted phase: **01 — Core Foundation and Unified Orchestration**
 - Active phase: **NONE**
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
-- Phase 01 acceptance-fix commit: ACCEPTANCE_FIX_COMMIT_PLACEHOLDER
+- Phase 01 acceptance-fix commit: 8e292a70d20bc11450f41a03de175b81ef149356
 - Next allowed action: independent re-review of this targeted fix; Phase 02 is NOT authorized to start.
 
 ## Audit status and limitations
