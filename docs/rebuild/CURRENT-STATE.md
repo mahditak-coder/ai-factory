@@ -1,6 +1,6 @@
 # Current State
 
-> خلاصه فارسی: فاز ۰۱real اجرا و پذیرفته شد؛ بازسازی در جریان است، مرحله بعدی هنوز آغاز نشده و منتظر تأیید صریح شماست.
+> خلاصه فارسی: فاز ۰۱real اجرا شد و دو ایراد پذیرش آنreal اصلاح و آزمایش شد؛ اکنون منتظر بازبینی مستقل هستیم و مرحله بعدی آغاز نشده است.
 
 - Audit snapshot: `2bf75e834d0444ac5cfef767261757324cbefee8` on `audit/full-source-review`
 - Documentation branch: `rebuild/blueprint-v1` created from the exact audit commit
@@ -9,7 +9,8 @@
 - Last accepted phase: **01 — Core Foundation and Unified Orchestration**
 - Active phase: **NONE**
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
-- Next allowed action: wait for explicit user authorization to start Phase 02 only.
+- Phase 01 acceptance-fix commit: ACCEPTANCE_FIX_COMMIT_PLACEHOLDER
+- Next allowed action: independent re-review of this targeted fix; Phase 02 is NOT authorized to start.
 
 ## Audit status and limitations
 - Audit source state: local `~/AI-Factory` HEAD `3878db271313415656328ec57595d1fe87c5fa3a`, branch `main`, 151 uncommitted items, zero remotes, version `0.47.0`.
@@ -27,7 +28,8 @@
 - Workflow stages persist a run lease (`run_pid`, `run_token`); stale RUNNING stages after a crash are reopened as REVISION with recorded history, no artifact/version loss.
 - Cancellation requests are durably observable via `tool_executor.state()` and `tool_events.find("cancel-"+call_id)`.
 - ModelGateway boundary has opt-in strict conformance validation; existing permissive `set_gateway` behavior is preserved.
-- Tests: `Ran 227 tests in 48.398s — OK` (227 PASS, 0 FAIL, 0 ERROR) with `AI_FACTORY_TEST_ROOT` isolated. See `docs/rebuild/evidence/PHASE-01-TESTS.md`.
+- Targeted acceptance fixes: atomic call-id claim under `_seen_lock`; durable idempotency receipts in `data/tool_receipts.json` separated from bounded display history. No destructive migration and no data loss.
+- Tests after fixes: `Ran 231 tests in 45.527s — OK` (231 PASS, 0 FAIL, 0 ERROR) with `AI_FACTORY_TEST_ROOT` isolated. Concurrency used `threading.Barrier`/`Event`, no sleeps. See `docs/rebuild/evidence/PHASE-01-TESTS.md`.
 - The historical `test_root_isolated_when_env_set` hardcoded-path failure was within Phase 01 state-isolation scope and was corrected in the isolated rebuild clone; it is not hidden.
 
 ## Open blockers
@@ -36,6 +38,7 @@
 3. No authenticated live provider capability verification (Phase 06/09).
 4. Public onboarding lacks license/CI/setup verification (Phase 10).
 5. ADR-011..014 remain UNRESOLVED; no later phase may silently decide them.
+6. Receipts for call_ids already evicted from the old 600-event history before this fix cannot be reconstructed; no destructive migration was performed. This is a historical audit limitation, not a regression of the new mechanism.
 
 ## Next action
-Only after explicit user approval: execute `prompts/PHASE-02.md` on this rebuild branch, preserving the original local source and all 151 uncommitted items.
+This targeted fix is ready for independent review. Do NOT start Phase 02 automatically. Phase 02 requires a new explicit user authorization after independent acceptance of this fix.

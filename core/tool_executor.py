@@ -81,6 +81,7 @@ def _authorize(spec: ToolSpec, req: ToolRequest) -> tuple[str, str]:
 
 _seen_lock = threading.Lock()
 _seen_calls: set[str] = set()
+_seen_sigs: dict[str, str] = {}
 _running: dict[str, threading.Event] = {}
 
 
@@ -103,16 +104,22 @@ def execute(req: ToolRequest) -> ToolResult:
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
             error="tool-disabled", duration_ms=0), started)
     sig = _signature(req)
-    receipt = tool_events.find(call_id)
-    if receipt is not None or call_id in _seen_calls:
-        same = receipt is not None and receipt.get("request_id") == sig
+    # Atomic claim: check durable receipts AND reserve the call_id under one
+    # lock, so concurrent duplicates cannot both become executors.
+    with _seen_lock:
+        receipt = tool_events.find(call_id)
+        known_sig = (receipt or {}).get("request_id") or _seen_sigs.get(call_id)
+        duplicate = receipt is not None or call_id in _seen_calls
+        if not duplicate:
+            _seen_calls.add(call_id)
+            _seen_sigs[call_id] = sig
+    if duplicate:
+        same = known_sig == sig
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
             error="duplicate-call" if same else "duplicate-call-signature-mismatch",
             duration_ms=0,
             evidence={"replayed": True, "durable": receipt is not None}), started)
-    with _seen_lock:
-        _seen_calls.add(call_id)
 
     problem = spec.validate_inputs(req.inputs)
     if problem:

@@ -4,3 +4,4 @@
 - 2026-11-27 — `docs: correct blueprint commit reference in current state` — corrected CURRENT-STATE commit reference to `95b901d9a4bccb5d96f50c256668c2d2a904423c`.
 - 2026-11-27 — Phase 01 — Core Foundation and Unified Orchestration accepted: `oc_state()` delegation, canonical event envelope, durable replay-safe ToolEvent receipts, stale RUNNING workflow recovery, observable cancellation, strict ModelGateway validation, 227/227 isolated tests PASS.
 - 2026-11-27 — docs: correct Phase 01 final commit reference after amend (no source change).
+- 2026-11-27 — fix: Phase 01 acceptance — atomic concurrent call-id claim and durable idempotency receipts separated from bounded event history; full suite 231/231 PASS.

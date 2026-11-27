@@ -13,6 +13,21 @@ Original local `~/AI-Factory` was not used for execution; its 151 uncommitted it
    - Result: `Ran 227 tests in 48.398s — OK` (exit 0).
    - Status: **227 PASS / 0 FAIL / 0 ERROR**.
 
+## Targeted acceptance fix (independent review findings)
+4. `python3 -m unittest core.tests.test_phase01_idempotency core.tests.test_afnext_p2_registry core.tests.test_phase01_seams`
+   - Result: `Ran 17 tests in 7.411s — OK`.
+5. `python3 -m unittest discover -s core/tests -p 'test_*.py'` (after both fixes)
+   - Result: `Ran 231 tests in 45.527s — OK` (exit 0).
+   - Status: **231 PASS / 0 FAIL / 0 ERROR**.
+   - New tests use `threading.Barrier` and `threading.Event`; no timing sleeps.
+
+## Fixes proven
+- Concurrent duplicate `call_id`: 6 simultaneous requests, adapter executed exactly once; 1 PASS + 5 BLOCKED duplicate-call.
+- Signature mismatch: same call_id with different inputs → `duplicate-call-signature-mismatch`.
+- Bounded history truncation: 700 filler events, original receipt still rejects replay after clearing in-memory tables.
+- Restart simulation: in-memory claim tables cleared, durable receipt still rejects the old call.
+- Existing sequential duplicate test in `test_afnext_p2_registry` still passes.
+
 All commands were run with `AI_FACTORY_TEST_ROOT` pointing to an isolated temporary root, so no source/project user data was modified.
 
 ## Previously recorded failure

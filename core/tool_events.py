@@ -8,11 +8,15 @@ import time
 from pathlib import Path
 
 import core.config as config
-from core import event_envelope
+from core import event_envelope, opstatus
 
 _STORE = config.PROJECT_ROOT / "data" / "tool_events.json"
 _LOCK = threading.RLock()
 MAX_EVENTS = 600
+# Durable idempotency receipts are intentionally SEPARATE from the bounded
+# display/event history. Truncating history must never make a call replayable.
+_RECEIPT_STORE = config.PROJECT_ROOT / "data" / "tool_receipts.json"
+_RECEIPT_LOCK = threading.RLock()
 
 
 def _load() -> list[dict]:
@@ -33,6 +37,50 @@ def _save(items: list[dict]) -> None:
     except OSError:
         pass
     tmp.replace(_STORE)
+
+
+def _load_receipts() -> dict:
+    try:
+        d = json.loads(_RECEIPT_STORE.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_receipts(items: dict) -> None:
+    _RECEIPT_STORE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _RECEIPT_STORE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(_RECEIPT_STORE)
+
+
+def _remember_receipt(rec: dict) -> None:
+    call_id = str(rec.get("call_id") or "")
+    if not call_id:
+        return
+    with _RECEIPT_LOCK:
+        receipts = _load_receipts()
+        old = receipts.get(call_id)
+        if old and event_envelope.is_terminal(old.get("status")) and \
+                event_envelope.is_terminal(rec.get("status")):
+            # First terminal result wins; never overwrite a real result with a
+            # later replay/cancel marker.
+            return
+        receipts[call_id] = {
+            "call_id": call_id,
+            "request_id": str(rec.get("request_id") or ""),
+            "status": str(rec.get("status") or opstatus.NOT_TESTED),
+            "tool": str(rec.get("tool") or ""),
+            "at": rec.get("at"),
+            "seq": rec.get("seq"),
+            "event_uid": rec.get("event_uid"),
+            "error": str(rec.get("error") or "")[:300],
+        }
+        _save_receipts(receipts)
 
 
 def record(event: dict) -> dict:
@@ -77,6 +125,7 @@ def record(event: dict) -> dict:
                 rec["seq"] = max(int(old.get("seq") or 0), int(rec["seq"]))
             items[idx] = rec
         _save(items)
+    _remember_receipt(rec)
     return rec
 
 
@@ -84,6 +133,12 @@ def find(call_id: str) -> dict | None:
     """Return a durable receipt for *call_id*, if one exists."""
     if not call_id:
         return None
+    with _RECEIPT_LOCK:
+        receipt = _load_receipts().get(call_id)
+    if receipt is not None:
+        return receipt
+    # Older records from before the separate receipt store remain discoverable
+    # while they are still in the bounded event history.
     for item in reversed(_load()):
         if item.get("call_id") == call_id:
             return item
