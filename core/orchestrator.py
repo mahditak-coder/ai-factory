@@ -359,8 +359,10 @@ def canonical_execution_gate(task_id: str, project: str, goal: str,
         return {"allowed": False, "mode": "canonical",
                 "reason": "canonical-intake-failed:%s:%s" %
                           (type(exc).__name__, str(exc)[:120])}
-    auth = ri.can_execute(rec["request_id"], project=project, goal=goal,
-                          plan=plan)
+    # Consume the capability atomically BEFORE any side effect. Read-only
+    # validation (can_execute) is never sufficient at the execution edge.
+    auth = ri.consume_execution(rec["request_id"], project=project, goal=goal,
+                                plan=plan)
     if not auth["allowed"]:
         return {"allowed": False, "mode": "canonical",
                 "reason": auth["reason"], "status": rec.get("status"),

@@ -194,9 +194,13 @@ class Phase02CorrectionsTest(unittest.TestCase):
                               goal="ساخت سیستم پرداخت وب", plan=approved["plan"])
         self.assertFalse(auth["allowed"])
         self.assertEqual(auth["reason"], "no-execution-authorization")
-        ri.authorize_execution(rec["request_id"], "user-1",
-                               "execute-bounded-plan", self.project,
-                               "ساخت سیستم پرداخت وب", approved["plan"]["steps"])
+        prop = ri.propose_execution(rec["request_id"], "user-1",
+                                    "execute-bounded-plan", self.project,
+                                    "ساخت سیستم پرداخت وب",
+                                    approved["plan"]["steps"])
+        ri.confirm_execution(rec["request_id"], prop["confirm_token"], "user-1",
+                             "execute-bounded-plan", self.project,
+                             "ساخت سیستم پرداخت وب", approved["plan"]["steps"])
         auth = ri.can_execute(rec["request_id"], project=self.project,
                               goal="ساخت سیستم پرداخت وب", plan=approved["plan"])
         self.assertTrue(auth["allowed"])

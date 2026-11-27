@@ -716,16 +716,87 @@ def _route_after_answer(rec: dict, can_proceed: bool, reason: str) -> None:
             _transition(rec, "NEEDS_CLARIFICATION", reason)
 
 
-def authorize_execution(request_id: str, actor: str, scope: str,
-                        project: str, goal: str, plan_steps: list,
-                        session_id: str = "") -> dict:
-    """Explicit, bound authorization for one bounded execution.
+def _execution_bindings(rec: dict, project: str, goal: str,
+                        plan_steps: list) -> dict:
+    """Canonical bindings that every execution capability must match."""
+    return {"request_id": rec["request_id"], "revision": rec["revision"],
+            "request_hash": rec["request_hash"],
+            "plan_hash": (rec.get("plan") or {}).get("hash", ""),
+            "steps_hash": canonical_hash({"steps": plan_steps}),
+            "project": str(project),
+            "goal_hash": canonical_hash({"goal": str(goal)}),
+            "scope": "execute-bounded-plan"}
 
-    This is NOT approval: it is a separately defined, one-shot capability for
-    a low/medium-risk bounded action. It binds the exact request revision,
-    request hash, plan hash, explicit step list hash, project, goal, scope,
-    actor and an expiring one-shot token. High/critical requests additionally
-    require an explicit user approval before this can be granted.
+
+def _validate_execution(rec: dict, project: str, goal: str,
+                        plan: dict | None, scope: str, actor: str,
+                        session_id: str) -> dict:
+    """Read-only validation shared by can_execute and atomic consumption."""
+    status = rec.get("status")
+    if status in ("BLOCKED", "REJECTED", "NEEDS_CLARIFICATION", "AWAITING_APPROVAL"):
+        return {"allowed": False, "reason": "status:" + status, "status": status}
+    ex = rec.get("execution") or {}
+    if ex.get("state") != "AUTHORIZED" or ex.get("invalidated"):
+        return {"allowed": False, "reason": "no-execution-authorization",
+                "status": status}
+    bindings = _execution_bindings(rec, project, goal,
+                                   (plan or {}).get("steps") or [])
+    for key in ("request_hash", "revision", "plan_hash"):
+        if ex.get(key) != bindings[key]:
+            return {"allowed": False, "reason": "execution-authorization-stale",
+                    "status": status}
+    if ex.get("project") != bindings["project"]:
+        return {"allowed": False, "reason": "execution-project-mismatch",
+                "status": status}
+    if ex.get("goal_hash") != bindings["goal_hash"]:
+        return {"allowed": False, "reason": "execution-goal-mismatch",
+                "status": status}
+    if ex.get("scope") != scope:
+        return {"allowed": False, "reason": "execution-scope-mismatch",
+                "status": status}
+    if plan is None or not isinstance(plan.get("steps"), list):
+        return {"allowed": False, "reason": "bounded-plan-required",
+                "status": status}
+    if ex.get("steps_hash") != canonical_hash({"steps": plan["steps"]}):
+        return {"allowed": False, "reason": "execution-steps-mismatch",
+                "status": status}
+    if actor and ex.get("actor") != str(actor):
+        return {"allowed": False, "reason": "execution-actor-mismatch",
+                "status": status}
+    if session_id:
+        from core import panelauth
+        if not panelauth.session_token_valid(session_id):
+            return {"allowed": False, "reason": "execution-session-invalid",
+                    "status": status}
+        if ex.get("session_id") and ex["session_id"] != session_id:
+            return {"allowed": False, "reason": "execution-session-mismatch",
+                    "status": status}
+    if ex.get("expires") and float(ex["expires"]) < time.time():
+        return {"allowed": False, "reason": "execution-authorization-expired",
+                "status": status}
+    risk = (rec.get("classification") or {}).get("risk", {}).get("level")
+    ap = rec.get("approval") or {}
+    if risk in ("high", "critical"):
+        if ap.get("status") != "APPROVED" or ap.get("invalidated") or \
+                not ap.get("actor"):
+            return {"allowed": False, "reason": "explicit-approval-required",
+                    "status": status}
+        if ap.get("request_hash") != rec.get("request_hash") or \
+                ap.get("plan_hash") != (rec.get("plan") or {}).get("hash"):
+            return {"allowed": False, "reason": "approval-bindings-stale",
+                    "status": status}
+    return {"allowed": True, "reason": "explicit-execution-authorization",
+            "status": status, "scope": scope, "actor": ex.get("actor"),
+            "request_id": rec["request_id"]}
+
+
+def propose_execution(request_id: str, actor: str, scope: str,
+                      project: str, goal: str, plan_steps: list,
+                      session_id: str = "") -> dict:
+    """Step 1 of 3 — propose an execution capability.
+
+    Creation is NOT authorization. A confirmation token is issued and the
+    canonical record is put into ``PROPOSED``. Nothing may execute yet.
     """
     actor = str(actor or "").strip()
     if not actor:
@@ -749,101 +820,158 @@ def authorize_execution(request_id: str, actor: str, scope: str,
         if risk in ("high", "critical") and \
                 not (ap.get("status") == "APPROVED" and not ap.get("invalidated")):
             raise RequestError("explicit-approval-required-for-execution")
-        steps_hash = canonical_hash({"steps": plan["steps"]})
-        payload = {"request_id": rec["request_id"], "revision": rec["revision"],
-                   "request_hash": rec["request_hash"],
-                   "plan_hash": plan["hash"], "steps_hash": steps_hash,
-                   "project": str(project),
-                   "goal_hash": canonical_hash({"goal": str(goal)}),
-                   "scope": scope, "actor": actor}
+        bindings = _execution_bindings(rec, project, goal, plan["steps"])
         cf = confirmations.create(str(project), "phase02-execution-authorization",
-                                  payload, "اجرای محدود تأیید شد",
+                                  bindings, "تأیید صریح اجرای محدود لازم است",
                                   session_id=session_id)
-        v = confirmations.peek(cf["confirm_token"], str(project),
-                               session_id=session_id)
+        rec["execution"] = {"state": "PROPOSED", "authorized": False,
+                            "actor": actor, "actor_trusted": False,
+                            "scope": scope, "bindings": bindings,
+                            "token": cf["confirm_token"],
+                            "session_id": str(session_id or ""),
+                            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                            "invalidated": False}
+        items[rec["request_id"]] = rec
+        _save_unlocked(items)
+        return {"request_id": rec["request_id"],
+                "confirm_token": cf["confirm_token"],
+                "expires_in_s": cf.get("expires_in_s", 0),
+                "question": cf["question"]}
+
+
+def confirm_execution(request_id: str, token: str, actor: str, scope: str,
+                      project: str, goal: str, plan_steps: list,
+                      session_id: str = "") -> dict:
+    """Step 2 of 3 — genuine explicit confirmation issues the capability.
+
+    Possession of the externally presented one-shot confirmation token is the
+    explicit user action. A caller-supplied actor string alone never suffices.
+    """
+    actor = str(actor or "").strip()
+    if not actor:
+        raise RequestError("execution-actor-required")
+    if scope != "execute-bounded-plan":
+        raise RequestError("execution-scope-unsupported:" + scope)
+    from core import confirmations
+
+    with _request_lock():
+        items = _load_unlocked()
+        rec = items.get(str(request_id or ""))
+        if rec is None:
+            raise RequestError("request-not-found:" + request_id)
+        ex = rec.get("execution") or {}
+        if ex.get("state") != "PROPOSED":
+            raise RequestError("execution-not-proposed:" + str(ex.get("state")))
+        if not token or ex.get("token") != str(token):
+            raise RequestError("execution-token-mismatch")
+        try:
+            v = confirmations.peek(str(token), str(project),
+                                   session_id=session_id)
+        except confirmations.ConfirmError as exc:
+            raise RequestError("execution-confirmation-invalid:" + exc.message) \
+                from exc
+        payload = v.get("payload") or {}
+        expected = _execution_bindings(rec, project, goal,
+                                       (rec.get("plan") or {}).get("steps") or [])
+        for key, value in expected.items():
+            if payload.get(key) != value:
+                raise RequestError("execution-confirmation-binding:" + key)
         trusted = False
         if session_id:
             from core import panelauth
             trusted = bool(panelauth.session_token_valid(session_id))
             if not trusted:
                 raise RequestError("execution-session-invalid")
-        confirmations.consume(cf["confirm_token"], str(project),
-                              session_id=session_id)
-        ex = {"authorized": True, "status": "AUTHORIZED", "actor": actor,
-              "actor_trusted": trusted, "scope": scope, "project": str(project),
-              "goal_hash": payload["goal_hash"],
-              "request_id": rec["request_id"], "revision": rec["revision"],
-              "request_hash": rec["request_hash"], "plan_hash": plan["hash"],
-              "steps_hash": steps_hash,
-              "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-              "expires": float(v.get("expires") or 0), "invalidated": False}
-        rec["execution"] = ex
+        # Presenting a genuine one-shot confirmation token is the explicit
+        # user action; an authenticated panel session also establishes trust.
+        trusted = True
+        confirmations.consume(str(token), str(project), session_id=session_id)
+        ex.update({"state": "AUTHORIZED", "authorized": True,
+                   "actor": actor, "actor_trusted": trusted,
+                   "scope": scope, "project": str(project),
+                   "goal_hash": expected["goal_hash"],
+                   "revision": expected["revision"],
+                   "request_hash": expected["request_hash"],
+                   "plan_hash": expected["plan_hash"],
+                   "steps_hash": expected["steps_hash"],
+                   "session_id": str(session_id or ""),
+                   "authorized_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                   "expires": float(v.get("expires") or 0),
+                   "consumed_at": None})
         items[rec["request_id"]] = rec
         _save_unlocked(items)
         return dict(ex)
 
 
+def authorize_execution(request_id: str, actor: str, scope: str,
+                        project: str, goal: str, plan_steps: list,
+                        session_id: str = "", token: str = "") -> dict:
+    """Compatibility entrypoint: requires an explicit confirmation token.
+
+    Without ``token`` it fails closed; there is deliberately no path that
+    issues a capability from a caller-supplied actor string alone.
+    """
+    if not str(token or ""):
+        raise RequestError("explicit-confirmation-required")
+    return confirm_execution(request_id, token, actor, scope, project, goal,
+                             plan_steps, session_id=session_id)
+
+
 def can_execute(request_id: str, project: str = "", goal: str = "",
                 plan: dict | None = None,
-                scope: str = "execute-bounded-plan") -> dict:
-    """Authoritative execution-boundary check read from the canonical store.
-
-    Plan readiness is NOT execution permission. An explicit, exact, unexpired
-    execution authorization is required for EVERY risk level; high/critical
-    work additionally requires a valid explicit user approval. The actual
-    bounded plan (steps), project and goal must match the authorization.
-    """
+                scope: str = "execute-bounded-plan", actor: str = "",
+                session_id: str = "") -> dict:
+    """READ-ONLY validation. Never consumes a capability; never authorizes."""
     rec = get(request_id)
     if rec is None:
         return {"allowed": False, "reason": "request-not-found",
                 "request_id": request_id}
-    status = rec.get("status")
-    if status in ("BLOCKED", "REJECTED", "NEEDS_CLARIFICATION", "AWAITING_APPROVAL"):
-        return {"allowed": False, "reason": "status:" + status, "status": status,
-                "request_id": request_id}
-    ex = rec.get("execution") or {}
-    if not ex.get("authorized") or ex.get("status") != "AUTHORIZED" or \
-            ex.get("invalidated"):
-        return {"allowed": False, "reason": "no-execution-authorization",
-                "status": status, "request_id": request_id}
-    plan_rec = rec.get("plan") or {}
-    if ex.get("request_hash") != rec.get("request_hash") or \
-            ex.get("revision") != rec.get("revision") or \
-            ex.get("plan_hash") != plan_rec.get("hash"):
-        return {"allowed": False, "reason": "execution-authorization-stale",
-                "status": status, "request_id": request_id}
-    if ex.get("project") != str(project):
-        return {"allowed": False, "reason": "execution-project-mismatch",
-                "status": status, "request_id": request_id}
-    if ex.get("goal_hash") != canonical_hash({"goal": str(goal)}):
-        return {"allowed": False, "reason": "execution-goal-mismatch",
-                "status": status, "request_id": request_id}
-    if ex.get("scope") != scope:
-        return {"allowed": False, "reason": "execution-scope-mismatch",
-                "status": status, "request_id": request_id}
-    if plan is None or not isinstance(plan.get("steps"), list):
-        return {"allowed": False, "reason": "bounded-plan-required",
-                "status": status, "request_id": request_id}
-    if ex.get("steps_hash") != canonical_hash({"steps": plan["steps"]}):
-        return {"allowed": False, "reason": "execution-steps-mismatch",
-                "status": status, "request_id": request_id}
-    if ex.get("expires") and float(ex["expires"]) < time.time():
-        return {"allowed": False, "reason": "execution-authorization-expired",
-                "status": status, "request_id": request_id}
-    risk = (rec.get("classification") or {}).get("risk", {}).get("level")
-    ap = rec.get("approval") or {}
-    if risk in ("high", "critical"):
-        if ap.get("status") != "APPROVED" or ap.get("invalidated") or \
-                not ap.get("actor"):
-            return {"allowed": False, "reason": "explicit-approval-required",
-                    "status": status, "request_id": request_id}
-        if ap.get("request_hash") != rec.get("request_hash") or \
-                ap.get("plan_hash") != plan_rec.get("hash"):
-            return {"allowed": False, "reason": "approval-bindings-stale",
-                    "status": status, "request_id": request_id}
-    return {"allowed": True, "reason": "explicit-execution-authorization",
-            "status": status, "scope": scope, "actor": ex.get("actor"),
-            "request_id": request_id}
+    result = _validate_execution(rec, project, goal, plan, scope, actor,
+                                 session_id)
+    result["request_id"] = request_id
+    return result
+
+
+def consume_execution(request_id: str, project: str, goal: str,
+                      plan: dict | None,
+                      scope: str = "execute-bounded-plan", actor: str = "",
+                      session_id: str = "") -> dict:
+    """Step 3 of 3 — atomically consume the capability at the execution edge.
+
+    The AUTHORIZED -> CONSUMED transition happens under the canonical request
+    lock BEFORE any external, model, tool or pipeline side effect. A replay,
+    concurrent attempt, stale plan or storage failure fails closed. If the
+    execution later fails, the capability is NOT restored.
+    """
+    with _request_lock():
+        try:
+            items = _load_unlocked()
+        except RequestStoreError as exc:
+            return {"allowed": False, "reason": "canonical-store-unavailable:" +
+                    str(exc)[:80], "request_id": request_id}
+        rec = items.get(str(request_id or ""))
+        if rec is None:
+            return {"allowed": False, "reason": "request-not-found",
+                    "request_id": request_id}
+        result = _validate_execution(rec, project, goal, plan, scope, actor,
+                                     session_id)
+        if not result["allowed"]:
+            result["request_id"] = request_id
+            return result
+        ex = rec["execution"]
+        ex["state"] = "CONSUMED"
+        ex["authorized"] = False
+        ex["consumed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        ex["consumed_by"] = str(actor or ex.get("actor") or "")
+        items[rec["request_id"]] = rec
+        try:
+            _save_unlocked(items)
+        except RequestStoreError as exc:
+            return {"allowed": False, "reason": "execution-persistence-failed:" +
+                    str(exc)[:80], "request_id": request_id}
+        result.update({"allowed": True, "reason": "capability-consumed",
+                       "consumed_at": ex["consumed_at"]})
+        return result
 
 
 def _transition(rec: dict, to: str, reason: str) -> None:

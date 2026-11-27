@@ -55,11 +55,14 @@ class ExecutionBoundaryTest(unittest.TestCase):
         return ri.get(rid)
 
     def _authorize(self, rec, goal=None, steps=None, rid=None):
+        rid = rid or rec["request_id"]
         goal = goal or rec.get("intent", {}).get("goal") or self.goal
-        return ri.authorize_execution(rid or rec["request_id"], "user-1",
-                                      "execute-bounded-plan", self.project,
-                                      goal, steps if steps is not None
-                                      else rec["plan"]["steps"])
+        steps = steps if steps is not None else rec["plan"]["steps"]
+        prop = ri.propose_execution(rid, "user-1", "execute-bounded-plan",
+                                    self.project, goal, steps)
+        return ri.confirm_execution(rid, prop["confirm_token"], "user-1",
+                                    "execute-bounded-plan", self.project,
+                                    goal, steps)
 
     def _gate(self, task_id, goal=None, kind="generate"):
         return orchestrator.canonical_execution_gate(
@@ -187,7 +190,7 @@ class ExecutionBoundaryTest(unittest.TestCase):
     def test_unsupported_execution_adapter_fails_closed(self):
         rec = self._low("scope-adapter")
         with self.assertRaisesRegex(ri.RequestError, "scope-unsupported"):
-            ri.authorize_execution(rec["request_id"], "user", "unrestricted",
+            ri.propose_execution(rec["request_id"], "user", "unrestricted",
                                    self.project, self.goal, rec["plan"]["steps"])
         check = ri.can_execute(rec["request_id"], project=self.project,
                                goal=self.goal, plan=rec["plan"],
