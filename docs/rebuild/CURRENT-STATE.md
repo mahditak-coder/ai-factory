@@ -11,7 +11,7 @@
 - Phase 02 status: **ACCEPTED** (final independent review 2026-11-28). Acceptance basis: final code/documentation commit `075921b5f0b8ebe7638b0d38c6394c6402c94541` on `rebuild/phase-02-request-intelligence`, with the full scope of Phase 02 corrections — durable canonical request model, answer mutation, no auto-approval, fail-closed execution gate, genuine one-shot capability, strict session/project binding and authoritative panel-principal attribution. Earlier `NOT ACCEPTED` entries below are historical and SUPERSEDED by this decision; they are not deleted or rewritten.
 - Phase 03 status: **ACCEPTED** (final independent review 2026-11-28). Basis: final commit `0889056b389632e6af721932db3a6dad31684c6a` on `rebuild/phase-03-research-product-strategy`; scope = canonical research engine, alternatives/feasibility, versioned Product Brief and all accepted audit repairs. Earlier `NOT ACCEPTED` entry below is historical and SUPERSEDED, not deleted.
 - Active phase: **04 — Canonical Specialist Engine** — **ACTIVE and EXPLICITLY AUTHORIZED** by the user on 2026-11-28.
-- Phase 04 status: **ACTIVE — AUTHORIZED** (implementation in progress; NOT accepted until independent review).
+- Phase 04 status: **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW** (implementation complete; EXPLICITLY AUTHORIZED by user on 2026-11-28).
 - Phase 05 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 04 acceptance.
 - Phase 03 base: created from the exact accepted Phase 02 commit `075921b5f0b8ebe7638b0d38c6394c6402c94541`, not from `main` or any unrelated branch.
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
@@ -103,5 +103,11 @@
 5. ADR-011..014 remain UNRESOLVED; no later phase may silently decide them.
 6. Receipts for call_ids already evicted from the old 600-event history before this fix cannot be reconstructed; no destructive migration was performed. This is a historical audit limitation, not a regression of the new mechanism.
 
+## Phase 04 evidence (real, on `rebuild/phase-04-specialist-engine`)
+- GATE 0 reconciliation commit `56c5c1d6da8284ab6c62a90a40ecad0e6e822d17`: Phase 03 ACCEPTED (commit `0889056b389632e6af721932db3a6dad31684c6a`), Phase 04 ACTIVE/EXPLICITLY AUTHORIZED; history preserved.
+- `core/specialist_engine.py` — one validated registry (24 stable IDs), legacy aliases, enforceable contracts, dynamic discovery/composition, full-text hash-revalidated handoff, stale-run/PASS rejection, scope enforcement and honest final-response selection. No specialist/provider execution.
+- Tests: targeted `Ran 18 tests ... OK` (exit 0); full suite `Ran 444 tests in 45.916s — OK` (444 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`. Details: `docs/rebuild/evidence/PHASE-04-SPECIALIST-ENGINE.md`.
+- CI/GitHub Actions, live providers and specialist execution: NOT TESTED. ADR-011..014 untouched.
+
 ## Next action
-Phase 04 is authorized and in progress. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 04 is **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
