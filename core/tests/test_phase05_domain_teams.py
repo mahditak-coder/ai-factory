@@ -725,5 +725,115 @@ dt.set_domain_flag(sys.argv[2], True)
                             for p in rep["problems"]))
 
 
+    # ===== Narrow Finding D repair: design/media owner-flag enforcement =====
+    def test_65_design_flag_off_blocks_visual_capability_in_software(self):
+        dt.set_domain_flag("design", False)
+        try:
+            r = self._team("webapp", "ساخت وب اپلیکیشن",
+                           capabilities=["visual"])
+            self.assertTrue(r["ok"], r["problems"])
+            self.assertEqual(r["context"]["domain"], "software")
+            self.assertNotIn("visual-designer", self._ids(r))
+        finally:
+            dt.set_domain_flag("design", True)
+
+    def test_66_design_flag_on_preserves_visual_activation(self):
+        self.assertEqual(dt._role_domain("visual-designer"), "design")
+        r = self._team("webapp", "ساخت وب اپلیکیشن",
+                       capabilities=["visual"])
+        self.assertTrue(r["ok"], r["problems"])
+        ids = set(self._ids(r))
+        self.assertIn("visual-designer", ids)
+        item = next(m for m in r["team"]
+                    if m["role_id"] == "visual-designer")
+        self.assertEqual(item["domain"], "design")
+        self.assertTrue(dt.validate_team(r["team"])["ok"])
+
+    def test_67_media_flag_off_blocks_audio_dependency_in_game(self):
+        dt.set_domain_flag("media", False)
+        try:
+            r = self._team("game", "ساخت بازی اندرویدی")
+            self.assertTrue(r["ok"], r["problems"])
+            ids = set(self._ids(r))
+            self.assertNotIn("audio-designer", ids)
+            self.assertNotIn("game-developer", ids)
+        finally:
+            dt.set_domain_flag("media", True)
+
+    def test_68_media_flag_off_blocks_music_and_media_deps_in_education(self):
+        dt.set_domain_flag("media", False)
+        try:
+            r = self._team("android", "اپلیکیشن آموزشی اندروید",
+                           capabilities=["music"])
+            self.assertTrue(r["ok"], r["problems"])
+            self.assertEqual(r["context"]["domain"], "education")
+            ids = set(self._ids(r))
+            self.assertNotIn("music-sound-specialist", ids)
+            self.assertNotIn("audio-designer", ids)
+        finally:
+            dt.set_domain_flag("media", True)
+
+    def test_69_media_flag_on_preserves_valid_behavior(self):
+        self.assertEqual(dt._role_domain("audio-designer"), "media")
+        game = self._team("game", "ساخت بازی اندرویدی")
+        self.assertTrue(game["ok"], game["problems"])
+        game_ids = set(self._ids(game))
+        self.assertIn("audio-designer", game_ids)
+        self.assertIn("game-developer", game_ids)
+        edu = self._team("android", "اپلیکیشن آموزشی اندروید",
+                         capabilities=["music"])
+        self.assertTrue(edu["ok"], edu["problems"])
+        self.assertIn("music-sound-specialist", self._ids(edu))
+        item = next(m for m in game["team"]
+                    if m["role_id"] == "audio-designer")
+        self.assertEqual(item["domain"], "media")
+        self.assertTrue(dt.validate_team(game["team"])["ok"])
+
+    def test_70_closure_cannot_inject_disabled_owner_role(self):
+        registry = se.canonical_registry()
+        qa = dict(registry["qa-engineer"])
+        # Force a media-owned dependency on a software-domain consumer.
+        qa["depends_on"] = ("audio-designer",)
+        registry["qa-engineer"] = qa
+        dt.set_domain_flag("media", False)
+        try:
+            with mock.patch.object(se, "canonical_registry",
+                                   return_value=registry):
+                r = self._team("webpage", "ساخت صفحه وب ساده")
+            self.assertTrue(r["ok"], r["problems"])
+            ids = set(self._ids(r))
+            self.assertNotIn("audio-designer", ids)
+            self.assertNotIn("qa-engineer", ids)
+        finally:
+            dt.set_domain_flag("media", True)
+
+    def test_71_other_flags_and_independent_roles_unchanged(self):
+        base = self._team("webpage", "ساخت صفحه وب ساده")
+        dt.set_domain_flag("design", False)
+        dt.set_domain_flag("media", False)
+        try:
+            same = self._team("webpage", "ساخت صفحه وب ساده")
+            self.assertEqual(base["hash"], same["hash"])
+        finally:
+            dt.set_domain_flag("design", True)
+            dt.set_domain_flag("media", True)
+
+        dt.set_domain_flag("android", False)
+        try:
+            r = self._team("android", "اپلیکیشن نرم افزار اندروید")
+            self.assertTrue(r["ok"], r["problems"])
+            self.assertNotIn("android-developer", self._ids(r))
+        finally:
+            dt.set_domain_flag("android", True)
+
+        dt.set_domain_flag("game", False)
+        try:
+            r = self._team("game", "ساخت بازی اندرویدی")
+            self.assertTrue(r["ok"], r["problems"])
+            self.assertEqual(r.get("mode"), "phase04")
+        finally:
+            dt.set_domain_flag("game", True)
+
+
 if __name__ == "__main__":
     unittest.main()

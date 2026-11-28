@@ -92,6 +92,11 @@ _GAME_ONLY = frozenset((
 # their canonical product_types intentionally include non-game delivery types.
 _CROSS_DOMAIN_CREATIVE = frozenset(("narrative-designer",
                                     "music-sound-specialist"))
+# Narrow Finding D repair: these two roles previously fell through to default
+# software ownership, so the design/media flags never gated them. Ownership is
+# now explicit and authoritative (product-type compatibility is unchanged).
+_DESIGN_ROLES = frozenset(("visual-designer",))
+_MEDIA_ROLES = frozenset(("audio-designer",)) | _CROSS_DOMAIN_CREATIVE
 # Domain-specific ownership is authoritative and derived from the canonical
 # contract inventory (every ID here is verified present by reconciliation).
 _EDUCATION_ROLES = frozenset(("education-specialist", "curriculum-designer",
@@ -310,7 +315,7 @@ def _eligible_roles(ctx: dict) -> tuple[set[str], list[str]]:
     def usable(role_id):
         return (role_id in registry and
                 _role_eligible(role_id, ctx, registry) and
-                domain_enabled(_role_domain(role_id, registry)))
+                _owner_enabled(role_id, registry))
 
     selected = {r for r in _CORE_BY_DOMAIN.get(domain, ()) if usable(r)}
     if platform == "Android" and domain_enabled("android"):
@@ -354,9 +359,16 @@ def _role_domain(role_id: str, registry: dict | None = None) -> str:
         return "education"
     if rid in _ANDROID_ROLES:
         return "android"
-    if rid in _CROSS_DOMAIN_CREATIVE:
+    if rid in _DESIGN_ROLES:
+        return "design"
+    if rid in _MEDIA_ROLES:
         return "media"
     return "software"
+
+
+def _owner_enabled(role_id: str, registry: dict) -> bool:
+    """True only when the role's authoritative owner domain flag is enabled."""
+    return domain_enabled(_role_domain(role_id, registry))
 
 
 def _types_compatible(contract: dict, ctx: dict) -> bool:
@@ -507,7 +519,7 @@ def build_team(product_type: str = "", goal: str = "",
     def base_eligible(rid):
         return (rid in registry and
                 _role_eligible(rid, ctx, registry) and
-                domain_enabled(_role_domain(rid, registry)))
+                _owner_enabled(rid, registry))
 
     queue = list(selected)
     while queue:
