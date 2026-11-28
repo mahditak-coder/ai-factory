@@ -421,6 +421,12 @@ def validate_team(team: list) -> dict:
             problems.append("malformed-scopes:" + rid)
         elif not scopes:
             problems.append("missing-scopes:" + rid)
+        elif not all(isinstance(scope, str) for scope in scopes):
+            # Unhashable or non-string values would raise TypeError inside
+            # set()/membership checks. Fail closed before any set operation.
+            bad_index = next(i for i, scope in enumerate(scopes)
+                             if not isinstance(scope, str))
+            problems.append("malformed-scope:%s:%d" % (rid, bad_index))
         else:
             if len(scopes) != len(set(scopes)):
                 problems.append("duplicate-scope:" + rid)

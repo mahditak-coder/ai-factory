@@ -57,3 +57,10 @@ Fix: `allowed_scopes` must now equal the canonical contract list exactly — sam
 Regression tests added to `core/tests/test_phase05_domain_teams.py`: exact list passes; removing one scope, removing all scopes, adding an unauthorized scope, duplicating a scope, reordering scopes and malformed non-list values all fail; canonical aliases still validate.
 
 Verification: `python3 -m unittest core.tests.test_phase05_domain_teams -v` — exit `0`, `Ran 29 tests ... OK` (`/data/data/com.termux/files/usr/tmp/opencode/p5scope-t1.log`); full suite `Ran 560 tests in 52.822s — OK` (`/data/data/com.termux/files/usr/tmp/opencode/p5scope-full.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. ADR-011..014, ADR-024 and ADR-025 unchanged. Phase 05 NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW.
+
+## Final malformed-scope input hardening
+Finding: `validate_team()` called `len(set(scopes))` on caller-supplied `allowed_scopes`; a list containing an unhashable element (nested list/dict) raised `TypeError` instead of returning a fail-closed report.
+
+Fix: elements are checked with `isinstance(scope, str)` BEFORE any set operation or membership check. Non-string elements (nested list, dict, int, bool, None, or mixed lists) return `ok=False` with deterministic `malformed-scope:<role>:<index>` diagnostic and never raise. All existing diagnostics (`missing-scopes`, `malformed-scopes`, `duplicate-scope`, `unauthorized-scope`, `omitted-scope`, `scope-order-mismatch`) and exact canonical list equality including ordering are preserved. ToolExecutor, SecurityPolicy, Phase 04, canonical registry and ADR statuses are unchanged.
+
+Verification: `python3 -m unittest core.tests.test_phase05_domain_teams -v` — exit `0`, `Ran 36 tests ... OK` (`/data/data/com.termux/files/usr/tmp/opencode/p5mal-t2.log`); full suite `Ran 567 tests in 55.709s — OK` (`/data/data/com.termux/files/usr/tmp/opencode/p5mal-full.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. Phase 05 NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW.

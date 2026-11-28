@@ -344,6 +344,50 @@ class DomainTeamsTest(unittest.TestCase):
         self.assertFalse(dt.validate_team([item])["ok"])
 
 
+    # -------------------------------- Finding: malformed scope input safety
+    def _malformed_scope_check(self, bad_value):
+        item = self._contract_item("product-architect")
+        item["allowed_scopes"] = [bad_value]
+        # Must not raise TypeError/ValueError for unhashable inputs.
+        report = dt.validate_team([item])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("malformed-scope" in p
+                            for p in report["problems"]))
+        return report
+
+    def test_30_nested_list_scope_element(self):
+        report = self._malformed_scope_check(["project:read"])
+        self.assertIn("malformed-scope", " ".join(report["problems"]))
+
+    def test_31_dict_scope_element(self):
+        self._malformed_scope_check({"scope": "project:read"})
+
+    def test_32_integer_scope_element(self):
+        self._malformed_scope_check(42)
+
+    def test_33_boolean_scope_element(self):
+        self._malformed_scope_check(True)
+        self._malformed_scope_check(False)
+
+    def test_34_null_scope_element(self):
+        self._malformed_scope_check(None)
+
+    def test_35_mixed_valid_and_invalid_scope_elements(self):
+        item = self._contract_item("product-architect")
+        item["allowed_scopes"] = ["project:read", ["nested"]]
+        report = dt.validate_team([item])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("malformed-scope:product-architect:1" in p
+                            for p in report["problems"]))
+
+    def test_36_valid_scope_list_still_exact(self):
+        item = self._contract_item("product-architect")
+        self.assertTrue(dt.validate_team([item])["ok"])
+        item["allowed_scopes"] = list(reversed(item["allowed_scopes"])) \
+            if len(item["allowed_scopes"]) > 1 else ["project:write"]
+        self.assertFalse(dt.validate_team([item])["ok"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

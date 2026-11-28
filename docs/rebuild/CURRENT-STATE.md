@@ -171,5 +171,9 @@
 - `validate_team()` now requires `allowed_scopes` to equal the exact canonical contract list (membership, completeness, no duplicates, canonical ordering), with deterministic diagnostics for each failure mode. Alias, artifact, input, dependency and acceptance validation unchanged; ToolExecutor/SecurityPolicy untouched.
 - Tests: targeted Phase 05 `Ran 29 tests ... OK` (exit 0); full suite `Ran 560 tests in 52.822s — OK` (560 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR statuses unchanged.
 
+## Phase 05 malformed-scope hardening (same branch)
+- `allowed_scopes` elements are validated as strings before set operations; nested lists, dicts, integers, booleans, null and mixed values fail closed with deterministic `malformed-scope:<role>:<index>` diagnostics and never raise. Exact canonical list equality and all prior diagnostics preserved; no authorization boundary changed.
+- Tests: targeted Phase 05 `Ran 36 tests ... OK` (exit 0); full suite `Ran 567 tests in 55.709s — OK` (567 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR statuses unchanged.
+
 ## Next action
 Phase 05 implementation is complete and ready for final independent review; Phase 04 is **ACCEPTED**. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 06 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
