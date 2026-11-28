@@ -1,6 +1,6 @@
 # Current State
 
-> خلاصه فارسی: فازهای ۰۱، ۰۲، ۰۳ و ۰۴ توسط بازبینی مستقل پذیرفته شدند (ACCEPTED). فاز ۰۵ — Domain Specialist Teams — با اجازۀ صریح کاربر (۲۰۲۶-۱۱-۲۸) ACTIVE است؛ فاز ۰۶ مجاز نیست.
+> خلاصه فارسی: فازهای ۰۱، ۰۲، ۰۳ و ۰۴ توسط بازبینی مستقل پذیرفته شدند (ACCEPTED). فاز ۰۵ — Domain Specialist Teams — با اجازۀ صریح کاربر (۲۰۲۶-۱۱-۲۸) ACTIVE است؛ فاز ۰۶ مجاز نیست. (Historical summary, preserved. SUPERSEDED: فاز ۰۵ توسط بازبینی مستقل پذیرفته شد و فاز ۰۶ توسط کاربر صریحاً مجاز اعلام شد — رجوع به ثبتهای SUPERSEDES در پایین.)
 
 - Audit snapshot: `2bf75e834d0444ac5cfef767261757324cbefee8` on `audit/full-source-review`
 - Documentation branch: `rebuild/blueprint-v1` created from the exact audit commit
@@ -12,8 +12,11 @@
 - Phase 03 status: **ACCEPTED** (final independent review 2026-11-28). Basis: final commit `0889056b389632e6af721932db3a6dad31684c6a` on `rebuild/phase-03-research-product-strategy`; scope = canonical research engine, alternatives/feasibility, versioned Product Brief and all accepted audit repairs. Earlier `NOT ACCEPTED` entry below is historical and SUPERSEDED, not deleted.
 - Phase 04 status: **ACCEPTED** (final independent review 2026-11-28). Basis: final commit `1d53571025812e3cff725c508de62a894ffd37e4` on `rebuild/phase-04-specialist-engine`, parent `35bbf335f722696118669213903400950f8bd3b4`, built on accepted Phase 03 `0889056b389632e6af721932db3a6dad31684c6a`. Scope: canonical specialist registry, enforced tool identity, lease-fenced side effects and all accepted final repairs. Earlier `NOT ACCEPTED` entries below are historical and SUPERSEDED, not deleted.
 - Active phase: **05 — Domain Specialist Teams** — **ACTIVE and EXPLICITLY AUTHORIZED** by the user on 2026-11-28.
-- Phase 05 status: **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW** (implementation complete; EXPLICITLY AUTHORIZED by user on 2026-11-28).
-- Phase 06 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 05 acceptance.
+- Phase 05 status: **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW** (historical entry, preserved and SUPERSEDED by the acceptance record below; not deleted or rewritten).
+- Phase 05 status (SUPERSEDES the historical line above): **ACCEPTED** — final independent review dated 2026-11-28. Basis: final commit `8209449e6d32a5e6368faae8365e07114b915e45` on `rebuild/phase-05-domain-teams`, parent `5cf0fcdcb368084690ac0b404c634a9caeaf8ad1`; full ancestry to accepted Phase 04 `1d53571025812e3cff725c508de62a894ffd37e4` verified from GitHub. Scope accepted: 16 domain contracts in the single canonical registry, deterministic activation, process-safe fail-closed flags, and the narrow design/media ownership repair.
+- Phase 06 status: **NOT AUTHORIZED** (historical entry, preserved and SUPERSEDED below).
+- Phase 06 status (SUPERSEDES the historical line above): **AUTHORIZED / ACTIVE** — explicitly authorized by the user in the Phase 06 execution mission dated 2026-11-28, starting from the exact accepted Phase 05 commit `8209449e6d32a5e6368faae8365e07114b915e45`.
+- Last accepted phase (SUPERSEDES the earlier Phase 04 entry above): **05 — Domain Specialist Teams** — ACCEPTED by final independent review dated 2026-11-28.
 - Phase 03 base: created from the exact accepted Phase 02 commit `075921b5f0b8ebe7638b0d38c6394c6402c94541`, not from `main` or any unrelated branch.
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
 - Phase 01 acceptance-fix commit: 8e292a70d20bc11450f41a03de175b81ef149356
@@ -25,7 +28,8 @@
 - Historical note (preserved): Phase 03 was recorded as `NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW` before the final independent decision; that status is SUPERSEDED by the 2026-11-28 acceptance above.
 - Historical note (preserved): Phase 04 was recorded as `NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW` before the independent decision; that status is SUPERSEDED by the 2026-11-28 acceptance above.
 - Phase 05 base: created from the exact accepted Phase 04 commit `1d53571025812e3cff725c508de62a894ffd37e4`; remote ancestry verified before editing.
-- Next allowed action: implement Phase 05 on `rebuild/phase-05-domain-teams`. Do not start Phase 06 automatically.
+- Next allowed action (historical, preserved): implement Phase 05 on `rebuild/phase-05-domain-teams`. SUPERSEDED by the current action below.
+- Next allowed action (current): implement Phase 06 — Professional Production Engine — on `rebuild/phase-06-production-engine`, branched from the exact accepted Phase 05 commit `8209449e6d32a5e6368faae8365e07114b915e45`. ADR-011/012/013 are NOT silently resolved; user decisions are required for game-engine scope, paid-service policy and screenshot policy. ADR-014 remains a separate audit-maintenance decision.
 
 ## Audit status and limitations
 - Audit source state: local `~/AI-Factory` HEAD `3878db271313415656328ec57595d1fe87c5fa3a`, branch `main`, 151 uncommitted items, zero remotes, version `0.47.0`.
@@ -182,5 +186,14 @@
 - `constraints` and `project_context` are metadata only in Phase 05 (validated, preserved, no effect on team hash). Invalid risk fails closed into security-role activation. `validate_team()` requires exact built-in `str` scopes, dependency-before-consumer order and authoritative metadata.
 - Tests: targeted Phase 05 `Ran 64 tests ... OK` (exit 0); Phase 04 regressions `Ran 57 tests ... OK` (exit 0); full suite `Ran 595 tests in 67.507s — OK` (595 PASS / 0 FAIL / 0 ERROR, exit 0); multi-process flag concurrency PASS; `py_compile` and `git diff --check` PASS. CI NOT TESTED. ADR statuses unchanged.
 
+## Phase 06 evidence (real, on `rebuild/phase-06-production-engine`)
+- Branch created from the exact accepted Phase 05 commit `8209449e6d32a5e6368faae8365e07114b915e45`; GitHub ancestry verified before editing.
+- User decisions recorded (history preserved): ADR-011 2.5D via local Chromium (no 3D claim), ADR-012 user-controlled hybrid providers (explicit provider+model, verified price, paid approval per call, no fallback, env-only credentials), ADR-013 local headless read-only screenshots. ADR-024/025 ACCEPTED; ADR-014 unchanged.
+- New additive modules: `core/production_assets.py`, `core/provider_policy.py`, `core/visual_review.py`, `core/production_engine.py`; 15 deterministic tests. No specialist execution, provider call, payment or authority added; ToolExecutor/SecurityPolicy and Phases 01–05 untouched.
+- Real detected capabilities: ffmpeg/ffprobe, Pillow, Chromium 156, aapt2/d8/apksigner/keytool/gradle/java, bundletool, android.jar. Blender/Godot/3D NOT VERIFIED; nothing installed.
+- Real evidence: Chromium screenshot 1280x720 PNG sha256 `8c231f9a121870a555e3f5d9175458f4d6baf072dc41c5d6d9fafc541f90d6f0` marked evidence-only/non-production; real WAV validated by ffprobe; real Android build PASS; migration preserved original hashes and rolled back cleanly; corrupt store fails closed.
+- Tests: targeted Phase 06 `Ran 15 tests ... OK` (exit 0); Phase 04 `Ran 57 tests ... OK`; Phase 05 `Ran 71 tests ... OK`; full suite `Ran 617 tests in 58.930s — OK`; real Android build `Ran 1 test ... OK`; `py_compile` and `git diff --check` PASS. CI, live paid provider calls, live free OpenRouter generation, interactive 2.5D runtime and 3D paths NOT TESTED.
+- Details: `docs/rebuild/evidence/PHASE-06-PRODUCTION-ENGINE.md`.
+
 ## Next action
-Phase 05 implementation is complete and ready for final independent review; Phase 04 is **ACCEPTED**. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 06 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 06 is **DONE** against the stated acceptance criteria; Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 06 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
