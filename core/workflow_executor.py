@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import secrets
 
-from core import opstatus, tool_executor
+from core import opstatus, tool_executor, tool_identity
 
 _CID = 0
 
@@ -20,7 +20,9 @@ def _call(project, tool_id, inputs, scopes):
     r = tool_executor.execute(tool_executor.ToolRequest(
         tool_id=tool_id, project=project, inputs=inputs, scopes=scopes,
         task_id="workflow-executor", call_id=cid,
-        execution_token=tool_executor.issue_infrastructure_context()))
+        capability_token=tool_identity.issue_infrastructure_capability(
+            project, tool_id, (scopes or ["project:read"])[0],
+            issuer_key=tool_identity.server_issuer_key())))
     return r
 
 

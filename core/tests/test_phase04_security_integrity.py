@@ -9,7 +9,8 @@ from unittest import mock
 
 import core.config as config
 from core import (agent_collaboration as ac, confirmations, opstatus, paths,
-                  specialist_engine as se, tool_events, tool_executor)
+                  specialist_engine as se, tool_events, tool_executor,
+                  tool_identity)
 
 
 class GoodGateway:
@@ -99,18 +100,19 @@ class Phase04SecurityIntegrityTest(unittest.TestCase):
     def test_01_forged_execution_context_string_denied(self):
         req = tool_executor.ToolRequest(
             tool_id="project.read_file", project=self.project,
-            inputs={}, scopes=["project:read"],
-            execution_context="non-specialist-explicit",
-            call_id="p4-forged")
+            inputs={"path": "sample.txt"}, scopes=["project:read"],
+            call_id="p4-no-identity")
         result = tool_executor.execute(req)
         self.assertEqual(result.status, opstatus.BLOCKED)
-        self.assertIn("forged", result.error)
+        self.assertIn("identity-required", result.error)
 
     def test_02_server_issued_context_allowed(self):
         req = tool_executor.ToolRequest(
             tool_id="project.read_file", project=self.project,
             inputs={"path": "sample.txt"}, scopes=["project:read"],
-            execution_token=tool_executor.issue_infrastructure_context(),
+            capability_token=tool_identity.issue_infrastructure_capability(
+                self.project, "project.read_file", "project:read",
+                issuer_key=tool_identity.server_issuer_key()),
             call_id="p4-infra")
         self.assertEqual(tool_executor.execute(req).status, opstatus.PASS)
 
@@ -118,7 +120,7 @@ class Phase04SecurityIntegrityTest(unittest.TestCase):
         req = tool_executor.ToolRequest(
             tool_id="project.read_file", project=self.project,
             inputs={}, scopes=["project:read"],
-            execution_token="caller-made-up-token", call_id="p4-badtoken")
+            capability_token="caller-made-up-token", call_id="p4-badtoken")
         self.assertEqual(tool_executor.execute(req).status, opstatus.BLOCKED)
 
     def test_04_specialist_path_without_role_denied(self):

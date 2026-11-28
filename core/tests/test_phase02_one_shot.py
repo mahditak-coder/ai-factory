@@ -14,6 +14,7 @@ import core.config as config
 from core import (confirmations, factory, opstatus, orchestrator,
                   request_intelligence as ri, tool_events, tool_executor,
                   tool_registry)
+from core.tests import trusted_request
 
 _CTX = mp.get_context("fork")
 
@@ -307,7 +308,7 @@ class OneShotAuthorizationTest(unittest.TestCase):
             tool_registry.registry().register(tool_registry.ToolSpec(
                 tid, "P2", "test", "test", "test", "project:read", {},
                 timeout_s=10, adapter=lambda p, i, **k: {"ok": True}))
-            req = tool_executor.ToolRequest(tool_id=tid, project=self.project,
+            req = trusted_request(tool_id=tid, project=self.project,
                                             inputs={}, scopes=["project:read"],
                                             call_id="p2-one-shot-check")
             self.assertEqual(tool_executor.execute(req).status, opstatus.PASS)

@@ -5,6 +5,7 @@ from unittest import mock
 
 import core.config as config
 from core import image_providers as ip, tool_executor, tool_registry
+from core.tests import trusted_request
 
 
 def fixture(name="img-unit"):
@@ -122,12 +123,12 @@ class ProcessingTest(unittest.TestCase):
             self.assertEqual(im.size, (64, 64))
 
     def test_governed_tool_execution_and_scope_denial(self):
-        r = tool_executor.execute(tool_executor.ToolRequest(
+        r = tool_executor.execute(trusted_request(
             tool_id="image.process", project="img-process",
             inputs={"op": "inspect", "path": "source.png"},
             scopes=["image:write"], task_id="img-test", call_id="img-inspect-1"))
         self.assertEqual(r.status, "PASS", r.error)
-        denied = tool_executor.execute(tool_executor.ToolRequest(
+        denied = tool_executor.execute(trusted_request(
             tool_id="image.process", project="img-process",
             inputs={"op": "inspect", "path": "source.png"},
             scopes=[], task_id="img-test", call_id="img-inspect-2"))

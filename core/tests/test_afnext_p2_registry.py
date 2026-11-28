@@ -5,6 +5,7 @@ from unittest import mock
 
 import core.config as config
 from core import factory, opstatus, tool_events, tool_executor, tool_registry
+from core.tests import trusted_request
 
 
 def fixture(name="afp2-unit"):
@@ -59,7 +60,7 @@ class ExecutionTest(unittest.TestCase):
         self.tf.close()
 
     def test_allowed_read_executes_and_records(self):
-        r = tool_executor.execute(tool_executor.ToolRequest(
+        r = tool_executor.execute(trusted_request(
             tool_id="project.read_file", project="afp2-unit",
             inputs={"path": "sample.txt"}, scopes=["project:read"],
             call_id="call-read"))
@@ -70,7 +71,7 @@ class ExecutionTest(unittest.TestCase):
                             e.get("status") == opstatus.PASS for e in ev))
 
     def test_forbidden_tool_is_not_executed(self):
-        r = tool_executor.execute(tool_executor.ToolRequest(
+        r = tool_executor.execute(trusted_request(
             tool_id="project.write_file", project="afp2-unit",
             inputs={"path": "sample.txt", "content": "bad"},
             scopes=["project:read"], call_id="call-denied"))
@@ -80,14 +81,14 @@ class ExecutionTest(unittest.TestCase):
                          "hello")
 
     def test_forbidden_shell_is_blocked(self):
-        r = tool_executor.execute(tool_executor.ToolRequest(
+        r = tool_executor.execute(trusted_request(
             tool_id="shell.safe_run", project="afp2-unit",
             inputs={"command": "curl http://evil.invalid"},
             scopes=["shell:execute"], call_id="call-shell"))
         self.assertEqual(r.status, opstatus.BLOCKED)
 
     def test_duplicate_call_id_refused(self):
-        req = tool_executor.ToolRequest(
+        req = trusted_request(
             tool_id="project.read_file", project="afp2-unit",
             inputs={"path": "sample.txt"}, scopes=["project:read"],
             call_id="call-once")
@@ -99,7 +100,7 @@ class ExecutionTest(unittest.TestCase):
         reg.register(tool_registry.ToolSpec(
             "test.sleep", "sleep", "unit", "test", "unit", "project:read",
             timeout_s=0.2, adapter=lambda p, i, **k: time.sleep(2)))
-        r = tool_executor.execute(tool_executor.ToolRequest(
+        r = tool_executor.execute(trusted_request(
             tool_id="test.sleep", project="afp2-unit", inputs={},
             scopes=["project:read"], call_id="call-timeout"))
         self.assertEqual(r.status, opstatus.BLOCKED)

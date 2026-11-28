@@ -32,11 +32,9 @@ class ToolRequest:
     # Phase 04: canonical role context for enforced tool authorization.
     role_id: str = ""
     enforce_role: bool = False
-    # Server-issued infrastructure capability token. Caller strings are NEVER
-    # accepted as authorization; only tokens minted by issue_infrastructure_context.
-    execution_token: str = ""
-    # Retired caller-supplied field: any non-empty value is treated as forged.
-    execution_context: str = ""
+    # Exactly one identity is mandatory: canonical role contract OR a bounded
+    # server-issued infrastructure capability. Caller strings are never trusted.
+    capability_token: str = ""
 
 
 @dataclass
@@ -49,32 +47,6 @@ class ToolResult:
     call_id: str = ""
     duration_ms: int = 0
     evidence: dict = field(default_factory=dict)
-
-
-SERVER_PRINCIPAL = "server:infrastructure"
-_CONTEXT_TTL_S = 3600
-_contexts: dict[str, dict] = {}
-_context_lock = threading.RLock()
-
-
-def issue_infrastructure_context(principal: str = SERVER_PRINCIPAL,
-                                 kind: str = "non-specialist-infrastructure") -> str:
-    """Mint a server-side capability for legitimate non-specialist tools."""
-    if not str(principal or ""):
-        raise ValueError("infrastructure-principal-required")
-    token = secrets.token_urlsafe(24)
-    with _context_lock:
-        _contexts[token] = {"principal": str(principal), "kind": str(kind),
-                            "created": time.time()}
-    return token
-
-
-def _valid_context(token: str, kind: str) -> bool:
-    with _context_lock:
-        rec = _contexts.get(str(token or ""))
-    if rec is None or rec.get("kind") != kind:
-        return False
-    return (time.time() - float(rec.get("created") or 0)) < _CONTEXT_TTL_S
 
 
 def _authorize(spec: ToolSpec, req: ToolRequest) -> tuple[str, str]:
@@ -137,19 +109,27 @@ def execute(req: ToolRequest) -> ToolResult:
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
             error="tool-disabled", duration_ms=0), started)
-    # Phase 04 — role authorization at the real tool boundary. Caller scopes
-    # are NOT proof of role permission; a canonical contract must allow it.
-    if getattr(req, "execution_context", ""):
+    # Phase 04 — MANDATORY identity at the real tool boundary.
+    from core import tool_identity
+    has_role = bool(str(req.role_id or ""))
+    enforce = bool(req.enforce_role)
+    has_cap = bool(str(req.capability_token or ""))
+    if has_role != enforce:
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
-            error="forged-execution-context", duration_ms=0),
+            error="incomplete-role-identity", duration_ms=0),
             started, finalize_receipt=False)
-    if req.enforce_role or req.role_id:
-        if getattr(req, "execution_token", ""):
-            return _record(req, call_id, ToolResult(
-                status=opstatus.BLOCKED, decision="none", call_id=call_id,
-                error="ambiguous-execution-identity", duration_ms=0),
-                started, finalize_receipt=False)
+    if has_role and has_cap:
+        return _record(req, call_id, ToolResult(
+            status=opstatus.BLOCKED, decision="none", call_id=call_id,
+            error="ambiguous-identity", duration_ms=0),
+            started, finalize_receipt=False)
+    if not has_role and not has_cap:
+        return _record(req, call_id, ToolResult(
+            status=opstatus.BLOCKED, decision="none", call_id=call_id,
+            error="identity-required", duration_ms=0),
+            started, finalize_receipt=False)
+    if has_role:
         try:
             from core import specialist_engine as _se
             role_auth = _se.authorize_tool_request(
@@ -165,13 +145,12 @@ def execute(req: ToolRequest) -> ToolResult:
                 duration_ms=0,
                 evidence={"role_enforced": True, "role_id": req.role_id}),
                 started, finalize_receipt=False)
-    if getattr(req, "execution_token", ""):
-        if not _valid_context(req.execution_token,
-                              "non-specialist-infrastructure"):
-            return _record(req, call_id, ToolResult(
-                status=opstatus.BLOCKED, decision="none", call_id=call_id,
-                error="execution-identity-invalid", duration_ms=0),
-                started, finalize_receipt=False)
+    elif not tool_identity.validate_capability(
+            req.capability_token, req.project, req.tool_id, spec.scope):
+        return _record(req, call_id, ToolResult(
+            status=opstatus.BLOCKED, decision="none", call_id=call_id,
+            error="capability-invalid", duration_ms=0),
+            started, finalize_receipt=False)
     sig = _signature(req)
     # One cross-process atomic operation: read, duplicate/signature check and
     # durable RESERVED write. An adapter may run only if this process won the

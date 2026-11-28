@@ -11,7 +11,8 @@ import secrets
 import time
 from pathlib import Path
 
-from core import engine_adapter, opstatus, paths, quality_checks as qc, tool_executor
+from core import (engine_adapter, opstatus, paths, quality_checks as qc,
+                  tool_executor, tool_identity)
 
 PASS, FAIL, BLOCKED, SKIPPED, NOT_VERIFIED = (
     "PASS", "FAIL", "BLOCKED", "SKIPPED", "NOT VERIFIED")
@@ -32,7 +33,9 @@ def _call(project, tool_id, inputs, scopes, task_id="quality-gate"):
     r = tool_executor.execute(tool_executor.ToolRequest(
         tool_id=tool_id, project=project, inputs=inputs, scopes=scopes,
         task_id=task_id, call_id=cid,
-        execution_token=tool_executor.issue_infrastructure_context()))
+        capability_token=tool_identity.issue_infrastructure_capability(
+            project, tool_id, (scopes or ["project:read"])[0],
+            issuer_key=tool_identity.server_issuer_key())))
     return {"status": r.status, "ok": r.ok, "output": r.output or {},
             "error": r.error, "call_id": r.call_id, "duration_ms": r.duration_ms}
 

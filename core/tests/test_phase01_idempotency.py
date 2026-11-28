@@ -14,6 +14,7 @@ from unittest import mock
 
 import core.config as config
 from core import opstatus, tool_events, tool_executor, tool_registry
+from core.tests import trusted_request
 
 
 class IdempotencyTest(unittest.TestCase):
@@ -55,7 +56,7 @@ class IdempotencyTest(unittest.TestCase):
         return tid
 
     def _request(self, tool_id, call_id, extra=None):
-        return tool_executor.ToolRequest(
+        return trusted_request(
             tool_id=tool_id, project=self.project,
             inputs=dict(extra or {}), scopes=["project:read"],
             call_id=call_id)

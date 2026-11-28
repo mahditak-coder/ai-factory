@@ -14,6 +14,7 @@ from unittest import mock
 
 import core.config as config
 from core import opstatus, tool_events, tool_executor, tool_registry
+from core.tests import trusted_request
 
 _CTX = mp.get_context("fork")  # Termux/Linux target
 
@@ -46,7 +47,7 @@ def _worker(store, receipts, side_dir, result_path, barrier, tool_id,
         tool_registry.registry().register(tool_registry.ToolSpec(
             tool_id, "MP", "test", "test", "test", "project:read", {},
             timeout_s=20, adapter=adapter))
-        req = tool_executor.ToolRequest(
+        req = trusted_request(
             tool_id=tool_id, project=project, inputs=dict(inputs),
             scopes=["project:read"], call_id=call_id)
         if mode == "after_reservation":
@@ -83,7 +84,7 @@ def _batch_worker(store, receipts, side_dir, result_path, barrier, tool_id,
         barrier.wait(timeout=30)
         statuses = []
         for cid in call_ids:
-            req = tool_executor.ToolRequest(
+            req = trusted_request(
                 tool_id=tool_id, project=project, inputs={"cid": cid},
                 scopes=["project:read"], call_id=cid)
             statuses.append(tool_executor.execute(req).status)

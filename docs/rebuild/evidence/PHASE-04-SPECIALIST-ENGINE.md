@@ -68,6 +68,18 @@ Verification: `python3 -m unittest core.tests.test_phase04_integration -v` — e
 
 Verification: `python3 -m unittest core.tests.test_phase04_security_integrity -v` — exit `0`, `Ran 12 tests ... OK` (`…/p4sec-t4.log`); all Phase 04 tests `Ran 54 tests ... OK` (`…/p4sec-target3.log`); full suite `Ran 480 tests in 45.839s — OK` (`…/p4sec-full.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. No real provider/model/paid operation or product generation occurred. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
 
+## Final identity enforcement repair (same branch)
+
+| Finding | Repair | Evidence |
+|---|---|---|
+| ToolExecutor accepted requests with no identity | MANDATORY identity: exactly one of canonical `role_id`+`enforce_role=True` (contract-authorized) OR a bounded server-issued `capability_token`. Neither, only one half of role identity, or both identities → BLOCKED before adapter side effects | `test_01_no_identity_blocked`, `test_07_valid_role_within_contract`, `test_08_role_scope_denied`, `test_10_ambiguous_identity_blocked` |
+| Forgeable/uncapped infrastructure context | `core/tool_identity.py` mints capabilities only through a trusted in-process issuer key or a validated panel session; capabilities bind exact project/tool/scope and expiry. Forged, expired, wrong-scope and wrong-project tokens fail closed; caller cannot mint a capability by choosing a principal | `test_02_forged_capability_blocked`, `test_03_expired_capability_blocked`, `test_04_wrong_scope_capability_blocked`, `test_05_wrong_project_capability_blocked`, `test_06_caller_cannot_mint_capability`, `test_09_valid_capability_bounded` |
+| QA outside canonical lifecycle | `independent_qa()` now claims a canonical lease, rejects stale/superseded runs before and during its tool calls, checks every tool and artifact write, and records terminal state via `record_result()`; non-PASS persistence makes the public result non-PASS | `test_11_qa_stale_run_blocked`, `test_12_qa_failed_tool_not_pass`, `test_13_qa_failed_artifact_write_not_pass`, `test_14_qa_failed_terminal_not_pass`, `test_15_qa_current_run_pass` |
+
+Trusted issuance boundary: `tool_identity.server_issuer_key()` is generated in server process memory at import and is used only by trusted infrastructure modules (`quality_gate`, `workflow_executor`) and the test helper that issues REAL bounded capabilities. Model prompts, caller JSON, scope strings and principal labels are never accepted as issuance authority. SecurityPolicy, confirmations, project containment and Phase 01 durable receipts remain in force; no generic bypass was added.
+
+Verification: `python3 -m unittest core.tests.test_phase04_identity_enforcement -v` — exit `0`, `Ran 15 tests ... OK` (`…/p4ident-t3.log`); all Phase 04 tests `Ran 69 tests ... OK` (`…/p4ident-target.log`); full suite `Ran 495 tests in 42.563s — OK` (`…/p4ident-full2.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. No live provider/model/paid operation or product generation occurred. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
 ## Labels and limitations
 - **PASS:** implemented registry/engine functions and all executed tests (444/444 core tests green).
 - **FAIL:** none in executed checks.

@@ -5,6 +5,7 @@ from unittest import mock
 
 import core.config as config
 from core import opstatus, tool_events, tool_executor, workflow as wf
+from core.tests import trusted_request
 
 
 def fixture(name="wf-unit"):
@@ -21,7 +22,7 @@ def producer(path="spec/product-brief.md", text="## Target User\nx\n## Scope\ny\
     import secrets
     calls = []
     def run(project, stage, goal):
-        r = tool_executor.execute(tool_executor.ToolRequest(
+        r = tool_executor.execute(trusted_request(
             tool_id="project.write_file", project=project,
             inputs={"path": path, "content": text}, scopes=["project:write"],
             task_id="wf-test", call_id="wf-prod-" + secrets.token_hex(8)))

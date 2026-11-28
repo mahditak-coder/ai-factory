@@ -129,5 +129,10 @@
 - Main and missing-artifact turns use canonical newest-completed response selection with trustworthy timestamps; aborted/incomplete/timestamp-less turns are skipped.
 - Tests: targeted Phase 04 `Ran 54 tests ... OK` (exit 0); full suite `Ran 480 tests in 45.839s — OK` (480 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
 
+## Phase 04 final identity enforcement (same branch)
+- Mandatory ToolExecutor identity: exactly one of canonical role contract or bounded server-issued capability; no identity, ambiguous identity, forged/expired/misbound capability and caller-minted authority are blocked before adapter side effects. Capability issuance is server-memory/session-controlled only and bound to project/tool/scope/expiry.
+- `independent_qa()` uses canonical run leases with stale rejection and `record_result()` terminal persistence; failed tool, failed artifact write or failed persistence never return PASS.
+- Tests: targeted Phase 04 `Ran 69 tests ... OK` (exit 0); full suite `Ran 495 tests in 42.563s — OK` (495 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
 ## Next action
 Phase 04 is **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.

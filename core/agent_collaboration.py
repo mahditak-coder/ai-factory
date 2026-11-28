@@ -385,7 +385,7 @@ def run_specialist(project: str, role_id: str, goal: str,
 
 
 def independent_qa(project: str, role_id: str = "qa-engineer") -> dict:
-    """QA runs its OWN tools; developer claims are not an input to verdicts."""
+    """QA runs its OWN tools under the canonical specialist lifecycle."""
     from core import specialist_engine as _se
     role = specialists.get(role_id)
     if role is None:
@@ -393,11 +393,36 @@ def independent_qa(project: str, role_id: str = "qa-engineer") -> dict:
     ok, why = can_start(project, role_id)
     if not ok:
         return {"status": opstatus.BLOCKED, "error": why}
+    canonical = _se.engine_mode() == "canonical"
+    run = None
+    if canonical:
+        try:
+            run = _se.start_run(project, role_id)
+        except _se.EngineError as exc:
+            return {"status": opstatus.BLOCKED, "error": str(exc)[:200]}
+    def _terminal(status, artifacts=None):
+        try:
+            if canonical and run is not None:
+                return _se.record_result(project, role_id, run["token"],
+                                         status, artifacts or [])
+            return record(project, role_id, status, artifacts=artifacts,
+                          note="independent tool execution")
+        except Exception as exc:  # noqa: BLE001
+            return {"status": opstatus.BLOCKED,
+                    "error": "terminal-persistence-failed:" + str(exc)[:120]}
+    if canonical and not _se.reject_stale(
+            project, role_id, run["token"])["accepted"]:
+        _terminal(opstatus.BLOCKED)
+        return {"status": opstatus.BLOCKED, "error": "stale-qa-run"}
     checks = []
     for tool_id, inputs, scope in (
         ("tests.run", {}, "tests:run"),
         ("security.scan", {"mode": "export"}, "security:read"),
     ):
+        if canonical and not _se.reject_stale(
+                project, role_id, run["token"])["accepted"]:
+            _terminal(opstatus.BLOCKED)
+            return {"status": opstatus.BLOCKED, "error": "stale-qa-run"}
         r = execute_tool(ToolRequest(tool_id=tool_id, project=project,
             inputs=inputs, scopes=[scope], task_id=_se.resolve_id(role_id),
             role_id=_se.resolve_id(role_id), enforce_role=True,
@@ -409,8 +434,12 @@ def independent_qa(project: str, role_id: str = "qa-engineer") -> dict:
               ", ".join(c["call_id"] for c in checks)]
     wr = write_artifact(project, "spec/test-report.md", "\n".join(lines) + "\n",
                         role_id)
-    status = (opstatus.PASS if all(c["status"] == opstatus.PASS for c in checks)
-              and wr["status"] == opstatus.PASS else opstatus.FAIL)
-    record(project, role_id, status, artifacts=[wr],
-           evidence={"checks": checks}, note="independent tool execution")
-    return {"status": status, "checks": checks, "artifact": wr}
+    status = opstatus.PASS if (all(c["status"] == opstatus.PASS
+                                   for c in checks) and
+                               wr.get("status") == opstatus.PASS) \
+        else opstatus.FAIL
+    terminal = _terminal(status, artifacts=[wr])
+    if terminal.get("status") != status:
+        status = opstatus.BLOCKED
+    return {"status": status, "checks": checks, "artifact": wr,
+            "record": terminal}

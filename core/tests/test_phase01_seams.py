@@ -6,6 +6,7 @@ from unittest import mock
 import core.config as config
 from core import (event_envelope, model_gateway, opstatus, orchestrator,
                   tool_events, tool_executor, tool_registry, workflow as wf)
+from core.tests import trusted_request
 
 
 class Phase01Seams(unittest.TestCase):
@@ -43,7 +44,7 @@ class Phase01Seams(unittest.TestCase):
         spec = tool_registry.ToolSpec(tid, "P1 echo", "test", "test", "test",
             "project:read", {}, timeout_s=5, adapter=lambda p, i, **k: calls.append(1) or {"ok": True})
         tool_registry.registry().register(spec)
-        req = tool_executor.ToolRequest(tool_id=tid, project="p1-seams",
+        req = trusted_request(tool_id=tid, project="p1-seams",
             inputs={}, scopes=["project:read"], call_id="p1-dup-1")
         first = tool_executor.execute(req)
         second = tool_executor.execute(req)

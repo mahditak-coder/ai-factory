@@ -9,7 +9,8 @@ from unittest import mock
 
 import core.config as config
 from core import (agent_collaboration as ac, confirmations, opstatus, paths,
-                  specialist_engine as se, tool_events, tool_executor)
+                  specialist_engine as se, tool_events, tool_executor,
+                  tool_identity)
 
 VALID_SESSION = "panel-session"
 
@@ -124,7 +125,9 @@ class Phase04IntegrationTest(unittest.TestCase):
         req = tool_executor.ToolRequest(
             tool_id="project.read_file", project=self.project,
             inputs={"path": "sample.txt"}, scopes=["project:read"],
-            execution_token=tool_executor.issue_infrastructure_context(),
+            capability_token=tool_identity.issue_infrastructure_capability(
+                self.project, "project.read_file", "project:read",
+                issuer_key=tool_identity.server_issuer_key()),
             call_id="p4-nonspec")
         self.assertEqual(tool_executor.execute(req).status, opstatus.PASS)
 
@@ -133,7 +136,9 @@ class Phase04IntegrationTest(unittest.TestCase):
             tool_id="project.read_file", project=self.project,
             inputs={"path": "sample.txt"}, scopes=["project:read"],
             role_id="developer", enforce_role=True,
-            execution_context="non-specialist-explicit",
+            capability_token=tool_identity.issue_infrastructure_capability(
+                self.project, "project.read_file", "project:read",
+                issuer_key=tool_identity.server_issuer_key()),
             call_id="p4-ambiguous")
         self.assertEqual(tool_executor.execute(req).status, opstatus.BLOCKED)
 

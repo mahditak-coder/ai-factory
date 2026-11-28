@@ -11,6 +11,7 @@ from PIL import Image
 import core.config as config
 from core import image_governance as gov, image_providers as ip, image_remote as ir
 from core import paths, tool_events, tool_executor
+from core.tests import trusted_request
 
 MODEL = "recraft/recraft-v4.1-flash-v2:free"
 BUF = io.BytesIO(); Image.new("RGBA", (32, 32), (200, 100, 50, 255)).save(BUF, "PNG")
@@ -41,7 +42,7 @@ class AdapterTest(unittest.TestCase):
         shutil.rmtree(config.PROJECTS_DIR / "img-adapter-unit", ignore_errors=True)
 
     def call(self, inputs):
-        return tool_executor.execute(tool_executor.ToolRequest(
+        return tool_executor.execute(trusted_request(
             tool_id="image.generate", project="img-adapter-unit", inputs=inputs,
             scopes=["image:generate"], task_id="adapter-test",
             call_id="adapter-" + os.urandom(6).hex()))
