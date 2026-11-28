@@ -212,5 +212,9 @@
 - Phase 01–05 files were not reopened; no automatic provider/model selection; no live provider call and no paid spend.
 - Evidence: MOCKED provider/browser tests; REAL Android build and REAL `unshare -n` probe (blocked here); full suite 650/650; Phase 04 57/57; Phase 05 71/71. Live provider generation, real spend, CI and isolated screenshots NOT TESTED.
 
+## Phase 06 final decision-handle TOCTOU closure (same branch, additive)
+- `decision_id` is bound into the server fingerprint; the consume path uses only the verified server-side handle for validation, TTL, consumed check and atomic persistence before token issuance. Caller-dict mutation in any window cannot redirect consumption.
+- Deterministic Event/Barrier race tests (7) plus all prior Phase 06 suites PASS; full suite 657/657; Phase 04 57/57; Phase 05 71/71. MOCKED transport only; NO live provider call or paid spend. Live generation, real spend, CI and isolated screenshots NOT TESTED.
+
 ## Next action
 Phase 06 is submitted for final independent review; the implementing agent does NOT mark it ACCEPTED. Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **(Historical entry, PRESERVED and SUPERSEDED by the Phase 06 AUTHORIZED / ACTIVE record above: "Phase 06 has NOT started and is NOT authorized.")** Historical provisional/superseded status entries are preserved above, not deleted.

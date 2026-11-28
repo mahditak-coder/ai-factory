@@ -52,8 +52,8 @@ _tokens: dict[str, dict] = {}
 _token_lock = threading.Lock()
 
 _PUBLIC_KEYS = (
-    "project", "provider", "model", "operation", "quality", "prompt",
-    "size", "references", "region", "estimated_cost_usd",
+    "decision_id", "project", "provider", "model", "operation", "quality",
+    "prompt", "size", "references", "region", "estimated_cost_usd",
     "confirmed_cost_usd", "free", "cost_source", "credential_source",
     "approval_id", "request_hash", "limits", "provider_status")
 _REQUEST_KEYS = ("project", "provider_id", "model_id", "operation", "quality",
@@ -294,6 +294,8 @@ def _peek_decision(decision: dict) -> tuple[dict | None, dict | None]:
         return None, _blocked("decision-store-unavailable:" + str(exc))
     if rec is None:
         return None, _blocked("decision-not-registered")
+    if str(rec.get("decision_id") or "") != did:
+        return None, _blocked("decision-record-id-mismatch")
     if rec["consumed"]:
         return None, _blocked("decision-already-consumed")
     if time.time() - rec["created_at"] > _DECISION_TTL_SECONDS:
@@ -380,7 +382,7 @@ def consume_approval(decision: dict) -> dict:
                        verified["size"], verified["references"],
                        verified["region"])
     expected_hash = gov.request_hash(payload)
-    did = str(decision.get("decision_id") or "")
+    did = str(rec["decision_id"])   # server-derived; never re-read from caller
     verdict = None
     try:
         with _decision_file_lock():
@@ -388,6 +390,8 @@ def consume_approval(decision: dict) -> dict:
             current = data["decisions"].get(did)
             if current is None:
                 return _blocked("decision-not-registered")
+            if str(current.get("decision_id") or "") != did:
+                return _blocked("decision-record-id-mismatch")
             if current["consumed"]:
                 return _blocked("decision-already-consumed")
             if time.time() - current["created_at"] > _DECISION_TTL_SECONDS:

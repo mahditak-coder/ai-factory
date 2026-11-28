@@ -183,3 +183,20 @@ Starting HEAD `2d93ce0a92027d799dcab9e53f8ac78ea1093fdd`; all work in an isolate
 Logs: `…/p6c-s1.log` … `…/p6c-s6.log`, `…/p6c-p04.log`, `…/p6c-p05.log`, `…/p6c-full2.log`, `…/p6c-realbuild.log`, `…/p6c-iso.log`.
 
 **Proposed decision: NOT ACCEPTED by the implementing agent** — submitted for final independent review only. Phase 07 NOT started.
+
+## FINAL DECISION-HANDLE TOCTOU CLOSURE
+
+Starting HEAD `44db16dc91f1d21695b9244fddd76999c27a8376`; isolated clone; Phase 01–05 and all prior Phase 06 fixes preserved.
+
+- **Defect:** `_fingerprint()` did not cover `decision_id`, and `consume_approval()` re-read the handle identifier from the caller-owned dictionary AFTER validation (`did = decision.get("decision_id")`). A controlled mutation in that window could make the validated handle differ from the handle whose consumption was persisted.
+- **Fix:** `decision_id` is now part of the server-side fingerprint; `_peek_decision()` returns the verified server record and enforces `record.decision_id == lookup key`; `consume_approval()` derives the ID exclusively from that verified record for TTL check, consumed check, flock-guarded atomic persistence and token issuance. The caller dictionary is never re-read for authorization after validation. Cross-process flock and persistence-before-token are unchanged; free/paid, governance, direct-adapter, no-fallback and exact-model contracts are unchanged.
+- **Deterministic race evidence:** tests force the mutation window with `threading.Event` and `Barrier` (no random sleeps): mutation after validation, mutation between peek and consume, consume A with B's handle, thread + process races, one winner per handle, no unconsumed/decision-left-by-race, free and paid one-shot, replay after provider failure and zero transport calls on every rejected path.
+- **MOCKED:** all provider transports are injected fakes; no live OpenRouter request and no spend.
+- **REAL:** real local config/governance files and cross-process file locking under isolated `AI_FACTORY_TEST_ROOT`.
+- **PASS:** handle TOCTOU 7/7; acceptance gate 13/13; forgery 7/7; focused remediation 13/13; Phase 06 15/15; OpenRouter 9/9; image_remote 9/9; Phase 04 57/57; Phase 05 71/71; full suite 657/657 (74.319s); `py_compile` and `git diff --check` clean.
+- **FAIL:** none in final runs.
+- **NOT TESTED:** live OpenRouter generation, real paid spend, CI, isolated screenshots (blocked by the OS here).
+
+Logs: `…/p6t-s1.log` … `…/p6t-s7.log`, `…/p6t-p04.log`, `…/p6t-p05.log`, `…/p6t-full.log`.
+
+**Proposed decision: NOT ACCEPTED by the implementing agent** — submitted for final independent review. Phase 07 NOT started.
