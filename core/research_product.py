@@ -302,13 +302,13 @@ def add_alternative(project: str, option_id: str, name: str,
     canonical = tuple(aliases.values())
     scores = {}
     for key, value in (criteria or {}).items():
-        name = aliases.get(key, key)
-        if name not in canonical:
+        score_key = aliases.get(key, key)
+        if score_key not in canonical:
             raise ResearchError("invalid-criterion:" + key)
         try:
-            scores[name] = max(0, min(5, int(value)))
+            scores[score_key] = max(0, min(5, int(value)))
         except (TypeError, ValueError):
-            scores[name] = None  # explicitly unknown, never fabricated
+            scores[score_key] = None  # explicitly unknown, never fabricated
     rec = {"option_id": option_id, "project": project, "name": str(name)[:300],
            "description": str(description or "")[:2000],
            # Higher utility is ALWAYS more desirable: 5 = cheapest, simplest,

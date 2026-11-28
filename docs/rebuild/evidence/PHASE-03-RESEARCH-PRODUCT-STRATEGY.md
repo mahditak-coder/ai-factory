@@ -58,8 +58,16 @@ Sample artifacts note: `docs/product/brief-v1.json` and `docs/product/acceptance
 
 CI/GitHub Actions: NOT TESTED (no workflow run observed). Live providers, payments, market research, specialist execution and browser/mobile visual inspection: NOT TESTED.
 
+
+## Final minimal regression fix (option name shadowing)
+
+- Finding: in `add_alternative()`, the criterion loop reused the variable `name`, which also held the option's real name, so the stored/returned name could become the last criterion key (e.g. `cost_utility`).
+- Fix: the criterion loop variable was renamed to `score_key`; the option `name` is untouched on every path. No data structure, API, verification, approval, token, lock, path-containment or security-policy change was made.
+- Regression: `test_option_name_survives_utility_scoring_and_comparison` registers two clearly named options with five distinct utility values, checks both names directly in storage, checks both in `compare_alternatives()` output, and asserts neither name equals any criterion key.
+- Verification: new test `Ran 1 test ... OK` (exit 0); targeted Phase 03 `Ran 46 tests in 0.143s — OK` (exit 0); full suite `Ran 426 tests in 45.723s — OK` (426 PASS / 0 FAIL / 0 ERROR, exit 0); `py_compile` exit `0`. Logs: `/data/data/com.termux/files/usr/tmp/opencode/p3final-target.log`, `/data/data/com.termux/files/usr/tmp/opencode/p3final-full.log`. CI/GitHub Actions: NOT TESTED (no workflow run observed).
+
 ## Labels and limitations
-- **PASS:** all implemented and executed gates above; 425/425 core tests green after repair (407/407 before repair).
+- **PASS:** all implemented and executed gates above; 426/426 core tests green after the final minimal fix (425/425 after the earlier repair).
 - **FAIL:** none in executed checks.
 - **NOT TESTED:** GitHub Actions/CI (no workflow run), live providers, payments, specialist execution, product implementation/build, browser/mobile visual inspection. No such success is claimed.
 - **AWAITING USER:** final product scope and success criteria approval; no unverified external claim is presented as fact; ADR-011..014 remain unresolved and untouched.

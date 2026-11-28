@@ -282,6 +282,27 @@ class Phase03SecurityRepairTest(unittest.TestCase):
         self.assertIn("score_scale", rec)
         self.assertNotIn("raw_cost", rec)
 
+    def test_option_name_survives_utility_scoring_and_comparison(self):
+        name_a, name_b = "نام متمایز گزینهٔ الف", "نام متمایز گزینهٔ ب"
+        rp.add_alternative(self.project, "opt-alpha", name_a, "x",
+                           criteria={"cost": 5, "complexity": 4, "risk": 3,
+                                     "time": 2, "feasibility": 1})
+        rp.add_alternative(self.project, "opt-beta", name_b, "y",
+                           criteria={"cost": 1, "complexity": 2, "risk": 3,
+                                     "time": 4, "feasibility": 5})
+        stored = json.loads(self.store.read_text(encoding="utf-8"))
+        self.assertEqual(stored["alternatives"]["opt-alpha"]["name"], name_a)
+        self.assertEqual(stored["alternatives"]["opt-beta"]["name"], name_b)
+        self.assertEqual(len(stored["alternatives"]["opt-alpha"]["utility_scores"]), 5)
+        rows = {r["option_id"]: r for r in
+                rp.compare_alternatives(self.project)["options"]}
+        self.assertEqual(rows["opt-alpha"]["name"], name_a)
+        self.assertEqual(rows["opt-beta"]["name"], name_b)
+        for bad in ("cost_utility", "feasibility_utility", "risk_utility",
+                    "complexity_utility", "time_utility"):
+            self.assertNotEqual(rows["opt-alpha"]["name"], bad)
+            self.assertNotEqual(rows["opt-beta"]["name"], bad)
+
 
 if __name__ == "__main__":
     unittest.main()
