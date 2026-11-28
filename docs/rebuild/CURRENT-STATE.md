@@ -196,4 +196,4 @@
 - Details: `docs/rebuild/evidence/PHASE-06-PRODUCTION-ENGINE.md`.
 
 ## Next action
-Phase 06 is **DONE** against the stated acceptance criteria; Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 06 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 06 is **DONE** against the stated acceptance criteria; Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **(Historical entry, PRESERVED and SUPERSEDED by the Phase 06 AUTHORIZED / ACTIVE record above: "Phase 06 has NOT started and is NOT authorized.")** Historical provisional/superseded status entries are preserved above, not deleted.
