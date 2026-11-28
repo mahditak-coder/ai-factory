@@ -147,5 +147,10 @@
 - Real ToolExecutor + registered adapter + canonical store concurrency tests prove supersession is fenced; QA cannot write or return PASS on a stale lease; artifact hash and terminal persistence remain verified.
 - Tests: targeted Phase 04 `Ran 99 tests ... OK` (exit 0); full suite `Ran 525 tests in 55.824s — OK` (525 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
 
+## Phase 04 timeout fence closure (same branch)
+- A timeout now requests cancellation and keeps the specialist lease fence, running state and unresolved receipt until the adapter actually exits; the BLOCKED/`tool-timeout` result is finalized only after real termination with truthful evidence.
+- Real ToolExecutor concurrency tests prove a non-cooperative adapter cannot be superseded or overlapped while alive; repeated 5/5 stable.
+- Tests: targeted Phase 04 `Ran 105 tests ... OK` (exit 0); full suite `Ran 531 tests in 52.945s — OK` (531 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
 ## Next action
 Phase 04 is **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.

@@ -110,6 +110,19 @@ Whole-repository audit confirmed every tool entry point has exactly one identity
 
 Verification: `python3 -m unittest core.tests.test_phase04_real_boundary -v` — exit `0`, `Ran 9 tests ... OK` (`…/p4abs-t8.log`); service boundary `Ran 7 tests ... OK` (`…/p4abs-svc.log`); all Phase 04 tests `Ran 99 tests ... OK` (`…/p4abs-target2.log`); full suite `Ran 525 tests in 55.824s — OK` (`…/p4abs-final.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. No live provider/payment/production execution. ADR-024 PROPOSED / AWAITING INDEPENDENT ACCEPTANCE; Phase 05 NOT AUTHORIZED.
 
+## Final timeout / side-effect fence closure (same branch)
+
+Defect fixed: `execute()` previously called `cancel.set()`, recorded a BLOCKED timeout receipt, returned and released `lease_fence()` while the adapter thread could still be alive and performing side effects.
+
+New behavior: a timeout only REQUESTS cancellation. The executor then joins the adapter thread without a further timeout while still inside the fence; only after the adapter actually exits are `_running` cleaned up and the BLOCKED/`tool-timeout` receipt finalized, with truthful evidence (`cancel_requested=True`, `cancel_acknowledged=False`, `waited_for_adapter_exit=True`). A non-cooperative adapter therefore cannot outlive its lease or overlap a superseding run.
+
+Verification with the REAL ToolExecutor, real registered adapters and the real canonical lease store (no mocked `execute`/`lease_fence`):
+- An adapter detects cancellation but deliberately ignores it, performs a delayed side effect and exits; a concurrent `start_run(..., supersede=True)` is held until that adapter actually exits.
+- No PASS and no terminal receipt while the adapter is alive; timeout result finalized only after exit; lease can then be superseded.
+- Missing token, receipt-store failure, adapter exception, normal completion and infrastructure identity remain fail-closed/correct.
+
+Commands: `python3 -m unittest core.tests.test_phase04_timeout_fence -v` — exit `0`, `Ran 6 tests ... OK` (`…/p4timeout-t1.log`); combined Phase 04 `Ran 105 tests ... OK` (`…/p4timeout-target.log`); full suite `Ran 531 tests in 52.945s — OK` (`…/p4timeout-full.log`); repeated timeout+real-boundary concurrency runs 5/5 OK. `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. No live provider, payment or production execution. ADR-024 PROPOSED / AWAITING INDEPENDENT ACCEPTANCE; Phase 05 NOT AUTHORIZED.
+
 ## Labels and limitations
 - **PASS:** implemented registry/engine functions and all executed tests (444/444 core tests green).
 - **FAIL:** none in executed checks.

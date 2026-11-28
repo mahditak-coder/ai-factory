@@ -225,14 +225,21 @@ def execute(req: ToolRequest) -> ToolResult:
             th.start()
             th.join(timeout)
             if th.is_alive():
+                # A timeout is only a CANCELLATION REQUEST. It is not proof
+                # that the adapter stopped. Keep the lease fence, the running
+                # state and the unresolved receipt until the adapter actually
+                # exits; otherwise a non-cooperative adapter could outlive its
+                # fence and overlap a superseding specialist run.
                 cancel.set()
+                th.join()  # unbounded: fence is released only after real exit
                 with _seen_lock:
                     _running.pop(call_id, None)
                 return _record(req, call_id, ToolResult(
                     status=opstatus.BLOCKED, decision=decision, call_id=call_id,
                     error="tool-timeout", duration_ms=int((time.time()-started)*1000),
                     evidence={"timeout_s": timeout, "cancel_requested": True,
-                              "cancel_acknowledged": False}), started)
+                              "cancel_acknowledged": False,
+                              "waited_for_adapter_exit": True}), started)
             with _seen_lock:
                 _running.pop(call_id, None)
             if cancel.is_set():
