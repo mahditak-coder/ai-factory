@@ -119,7 +119,7 @@ class CritiqueTest(unittest.TestCase):
         self.assertEqual(out["decision"], "reject")
         soft = critique.evaluate(rubric, [self._findings("low")])
         self.assertFalse(soft["blocked"])
-        self.assertEqual(soft["decision"], "accept")
+        self.assertEqual(soft["decision"], "pass")
 
     def test_06_missing_evidence_stays_explicitly_unknown(self):
         rubric = self._rubric()
@@ -168,9 +168,13 @@ class CritiqueTest(unittest.TestCase):
     def test_11_critic_cannot_self_approve(self):
         review = self._review()
         token = review["critic_run_token"]
-        with self.assertRaises(critique.CritiqueError) as ctx:
-            critique.record_verdict(review["id"], token, [],
-                                    self._rubric(5.0), "")
+        forged = {"ok": True, "aggregate": 5.0, "blockers": [],
+                  "blocked": False, "decision": "approve",
+                  "rejected_options": [], "uncertainty": []}
+        with mock.patch.object(critique, "evaluate", return_value=forged):
+            with self.assertRaises(critique.CritiqueError) as ctx:
+                critique.record_verdict(review["id"], token, [],
+                                        self._rubric(5.0), self.session)
         self.assertIn("self-approve", str(ctx.exception))
 
     def test_12_immutable_artifact_and_lineage(self):

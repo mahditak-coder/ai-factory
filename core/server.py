@@ -658,6 +658,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_workflow_answer()
             elif route == "/api/workflow/critique/flag":
                 self._api_workflow_critique_flag()
+            elif route == "/api/workflow/critique/run":
+                self._api_workflow_critique_run()
+            elif route == "/api/workflow/critique/decide":
+                self._api_workflow_critique_decide()
             elif route == "/api/factory/deps":
                 self._api_factory_deps()
             elif route == "/api/factory/run":
@@ -2512,6 +2516,47 @@ class Handler(BaseHTTPRequestHandler):
             out = critique.set_critic_flag(data.get("enabled") is True)
         except critique.CritiqueError as exc:
             self._error(400, str(exc)[:120])
+            return
+        self._json({"ok": True, "result": out})
+
+    def _api_workflow_critique_run(self) -> None:
+        """Drive the REAL bounded critique/revision series for a stage."""
+        from core import critique
+        data = self._read_json()
+        if data is None:
+            self._error(400, "invalid JSON body")
+            return
+        project = str(data.get("project") or "")
+        stage_id = str(data.get("stage") or "")
+        if not _Name.match(project):
+            self._error(400, "پروژه نامعتبر")
+            return
+        try:
+            out = critique.run_series(project, stage_id)
+        except critique.CritiqueError as exc:
+            self._error(409, str(exc)[:140])
+            return
+        self._json({"ok": True, "result": out})
+
+    def _api_workflow_critique_decide(self) -> None:
+        """Authenticated human decision bound to the exact reviewed version."""
+        from core import critique, panelauth
+        data = self._read_json()
+        if data is None:
+            self._error(400, "invalid JSON body")
+            return
+        session = self._cookie(panelauth.SESSION_COOKIE)
+        if not panelauth.principal_for_session(session):
+            self._error(401, "authenticated-session-required")
+            return
+        try:
+            out = critique.human_decision(
+                str(data.get("project") or ""), str(data.get("stage") or ""),
+                str(data.get("review_id") or ""), str(data.get("option") or ""),
+                str(data.get("confirm_token") or ""), session,
+                str(data.get("reject_note") or ""))
+        except critique.CritiqueError as exc:
+            self._error(409, str(exc)[:140])
             return
         self._json({"ok": True, "result": out})
 

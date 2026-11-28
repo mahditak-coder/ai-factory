@@ -82,3 +82,6 @@ This phase is DONE only when all deliverables, tests, evidence, document updates
   675/675 PASS. Evidence: `docs/rebuild/evidence/PHASE-07-COLLABORATION-CRITIQUE.md`.
 - NOT TESTED: real HTTP/auth round-trip, real browser visual inspection, live
   model execution, different-model independence, CI. Phase 08 NOT started.
+
+## Mandatory completion record (append-only, 2026-11-28)
+Real workflow-driven Critic/revision/decision path implemented and proven by 10 E2E tests plus the full core suite (685 PASS). Real HTTP socket, browser visual inspection and live model NOT TESTED. Phase 07 submitted for independent review; Phase 08 NOT started.

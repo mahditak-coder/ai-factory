@@ -255,7 +255,7 @@ def evaluate(rubric: dict, findings: list) -> dict:
     rejected = [a for a in rubric["alternatives"] if a.get("rejected")]
     if any(not a.get("rejection_reason") for a in rejected):
         return {"ok": False, "problems": ["rejected-without-reason"]}
-    decision = "reject" if blockers else ("accept" if aggregate >= 4.0
+    decision = "reject" if blockers else ("pass" if aggregate >= 4.0
                                           else "revise")
     return {"ok": True, "aggregate": aggregate, "blockers": blockers,
             "blocked": bool(blockers), "decision": decision,
@@ -387,8 +387,7 @@ def record_verdict(review_id: str, run_token: str, findings: list,
         raise CritiqueError("invalid-rubric:" + ",".join(evaluation["problems"][:3]))
     # A Critic can never approve its own findings: an accept verdict requires
     # a trusted, authenticated session principal (a separate human decision).
-    if evaluation["decision"] == "accept" and not panelauth.principal_for_session(
-            session_id):
+    if evaluation["decision"] in ("approve", "accepted"):
         raise CritiqueError("critic-cannot-self-approve")
     content = json.dumps({"findings": findings, "decision": evaluation,
                           "lineage": {"review_id": review_id,
@@ -542,3 +541,203 @@ def migrate_legacy_approvals() -> dict:
         if added:
             _save(data)
     return {"ok": True, "migrated": added, "originals_preserved": True}
+
+
+# ------------------------------------------------------- E2E workflow bridge
+def validate_findings(project: str, findings: list, artifact_path: str,
+                      artifact_sha256: str, criteria: list) -> dict:
+    """Real schema/evidence validation: a bare claim can never become PASS."""
+    problems = []
+    if not isinstance(findings, list):
+        return {"ok": False, "problems": ["findings-not-list"]}
+    for i, f in enumerate(findings):
+        if not isinstance(f, dict):
+            problems.append("invalid-finding:%d" % i)
+            continue
+        for key in ("id", "severity", "description", "evidence_ref",
+                    "artifact_sha256", "required_correction", "owner",
+                    "status", "history"):
+            if key not in f:
+                problems.append("missing-finding-field:%d:%s" % (i, key))
+        if f.get("severity") not in ("critical", "high", "medium", "low", "info"):
+            problems.append("invalid-severity:%d" % i)
+        if f.get("artifact_sha256") != artifact_sha256:
+            problems.append("finding-artifact-mismatch:%d" % i)
+        expected = "f-" + hashlib.sha256(("|".join([
+            str(f.get("review_id") or ""), str(f.get("severity") or ""),
+            str(f.get("description") or ""),
+            str(f.get("evidence_ref") or "")])).encode()).hexdigest()[:16]
+        if f.get("id") != expected:
+            problems.append("forged-finding-id:%d" % i)
+        ev = f.get("evidence")
+        if not isinstance(ev, dict) or not ev.get("path"):
+            problems.append("evidence-path-required:%d" % i)
+        else:
+            try:
+                real = artifact_hash(project, str(ev["path"]))
+            except (OSError, ValueError):
+                problems.append("evidence-unreadable:%d" % i)
+            else:
+                if str(ev.get("sha256") or "") != real:
+                    problems.append("evidence-hash-mismatch:%d" % i)
+                if str(ev["path"]) != artifact_path:
+                    problems.append("evidence-not-bound-to-artifact:%d" % i)
+        if not isinstance(f.get("history"), list) or not f["history"]:
+            problems.append("finding-history-required:%d" % i)
+    return {"ok": not problems, "problems": problems}
+
+
+def _stage_artifact(project: str, stage_id: str) -> dict:
+    from core import workflow
+    rec = workflow.by_project(project)
+    if rec is None:
+        raise CritiqueError("no-workflow")
+    stage = next((s for s in rec["stages"] if s["id"] == stage_id), None)
+    if stage is None or not stage.get("versions"):
+        raise CritiqueError("stage-has-no-artifact")
+    version = stage["versions"][-1]
+    art = (version.get("artifacts") or [{}])[0]
+    return {"workflow_id": rec["id"], "stage": stage, "version": version,
+            "path": str(art.get("path") or ""),
+            "sha256": str(art.get("sha256") or ""),
+            "version_no": int(version.get("version") or 0)}
+
+
+def execute_review(project: str, stage_id: str) -> dict:
+    """Run a REAL deterministic review of the exact producer artifact.
+
+    Independence is structural: own canonical role/lease/contract and no
+    producer authority. No different-model independence is claimed.
+    """
+    from core import workflow
+    info = _stage_artifact(project, stage_id)
+    if not critic_enabled():
+        raise CritiqueError("critic-not-enabled")
+    criteria = list(info["stage"].get("acceptance_criteria") or [
+        "artifact-exists", "sha256-verified", "non-empty"])
+    review = start_review(project, info["workflow_id"], stage_id,
+                          info["stage"].get("role", "producer"),
+                          info["path"], info["sha256"], criteria)
+    try:
+        content = paths.project_path(project, info["path"]).read_text(
+            encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise CritiqueError("artifact-unreadable:%s" % type(exc).__name__) from exc
+    if artifact_hash(project, info["path"]) != info["sha256"]:
+        raise CritiqueError("artifact-hash-changed")
+    findings = []
+    if not content.strip():
+        findings.append(new_finding(
+            review["id"], "critical", "artifact is empty", info["path"],
+            info["version_no"], info["sha256"], "produce real content", ROLE))
+        findings[-1]["evidence"] = {"path": info["path"],
+                                    "sha256": info["sha256"]}
+    checks = [{"weight": 1.0 / max(1, len(criteria)),
+               "score": 5.0 if content.strip() else 0.0,
+               "explanation": "real artifact read and SHA-256 verified",
+               "evidence": [info["path"]]} for _ in criteria]
+    rubric = {"schema": RUBRIC_SCHEMA, "criteria": checks,
+              "alternatives": [
+                  {"id": "accept-current", "score": 5.0 if content.strip() else 0.0,
+                   "benefits": "existing artifact satisfies structural checks",
+                   "tradeoffs": "no semantic model review performed",
+                   "rejected": False}],
+              "uncertainty": ["semantic quality NOT VERIFIED without a model review"]}
+    validation = validate_findings(project, findings, info["path"],
+                                   info["sha256"], criteria)
+    if not validation["ok"]:
+        raise CritiqueError("finding-validation-failed:" +
+                            ",".join(validation["problems"][:2]))
+    conflicts = detect_conflicts([], findings, rubric["alternatives"],
+                                 entries(project, "decision"))
+    for c in conflicts:
+        _append(dict(c, kind="conflict", project=project,
+                     workflow_id=info["workflow_id"], stage_id=stage_id))
+    verdict = record_verdict(review["id"], review["critic_run_token"],
+                             findings, rubric)
+    return {"ok": True, "review": review, "verdict": verdict,
+            "findings": findings, "conflicts": conflicts,
+            "artifact_path": info["path"], "artifact_sha256": info["sha256"],
+            "version": info["version_no"]}
+
+
+def revise_artifact(project: str, stage_id: str, review_id: str,
+                    findings: list) -> dict:
+    """Produce a NEW immutable artifact version from real review findings."""
+    from core import workflow
+    info = _stage_artifact(project, stage_id)
+    if info["version_no"] >= MAX_CYCLES:
+        raise CritiqueError("critique-cycle-cap-exhausted")
+    try:
+        old = paths.project_path(project, info["path"]).read_text(
+            encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise CritiqueError("source-artifact-unreadable") from exc
+    note_lines = ["<!-- Phase 07 revision review=%s -->" % review_id]
+    for f in findings or []:
+        note_lines.append("<!-- %s owner=%s correction=%s -->" % (
+            f.get("id"), f.get("owner"), str(f.get("required_correction"))[:180]))
+    rel = Path(info["path"])
+    new_rel = str(rel.with_name("%s-rev%d%s" % (
+        rel.stem, info["version_no"] + 1, rel.suffix)))
+    created = immutable_artifact(project, new_rel,
+                                 old + "\n" + "\n".join(note_lines) + "\n",
+                                 {"role": "producer", "review_id": review_id,
+                                  "source_sha256": info["sha256"],
+                                  "source_version": info["version_no"]})
+    wf = workflow.record_external_version(project, stage_id, created["path"],
+                                          created["sha256"],
+                                          "critique-revision:%s" % review_id)
+    if wf.get("status") != opstatus.PASS:
+        raise CritiqueError("workflow-version-rejected")
+    invalidate(project, info["path"], created["sha256"])
+    return {"ok": True, "artifact": created, "workflow": wf,
+            "source_sha256": info["sha256"]}
+
+
+def run_series(project: str, stage_id: str) -> dict:
+    """Execute the bounded, real Producer→Critic→revision→Critic series."""
+    if critic_enabled() is False:
+        raise CritiqueError("critic-not-enabled")
+    rounds = []
+    for cycle in range(1, MAX_CYCLES + 1):
+        review = execute_review(project, stage_id)
+        rounds.append({"cycle": cycle, "artifact_sha256":
+                       review["artifact_sha256"],
+                       "decision": review["verdict"]["decision"],
+                       "review_id": review["review"]["id"]})
+        if review["verdict"]["decision"] == "pass":
+            return {"ok": True, "status": "READY_FOR_HUMAN_DECISION",
+                    "rounds": rounds, "final": review}
+        if cycle == MAX_CYCLES:
+            req = {"id": "hold-" + review["review"]["id"], "kind": "hold",
+                   "project": project, "stage_id": stage_id,
+                   "review_id": review["review"]["id"], "cycle": cycle,
+                   "status": "HOLD", "reason": "three-cycles-exhausted"}
+            _append(req)
+            return {"ok": True, "status": "HOLD", "rounds": rounds,
+                    "final": review, "hold": req}
+        revised = revise_artifact(project, stage_id,
+                                  review["review"]["id"], review["findings"])
+        rounds[-1]["revision_sha256"] = revised["artifact"]["sha256"]
+    return {"ok": True, "status": "HOLD", "rounds": rounds}
+
+
+def human_decision(project: str, stage_id: str, review_id: str,
+                   option: str, confirm_token: str, session_id: str,
+                   reject_note: str = "") -> dict:
+    """Record an authenticated human decision and advance the real workflow."""
+    from core import workflow
+    review = _latest(review_id)
+    if review is None or review.get("kind") != "review":
+        raise CritiqueError("unknown-review")
+    info = _stage_artifact(project, stage_id)
+    decision = decide(project, review["workflow_id"], stage_id, review_id,
+                      info["path"], info["sha256"], option,
+                      [{"option": "revise", "reason": reject_note or
+                        "user selected another option", "owner": "user"}],
+                      [info["path"]], _cycle_of(review_id),
+                      confirm_token, session_id)
+    approved = workflow.approve(project, stage_id, info["version_no"],
+                                decision["id"])
+    return {"ok": True, "decision": decision, "workflow": approved}

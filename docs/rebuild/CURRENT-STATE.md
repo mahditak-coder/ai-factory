@@ -220,5 +220,9 @@
 - `decision_id` is bound into the server fingerprint; the consume path uses only the verified server-side handle for validation, TTL, consumed check and atomic persistence before token issuance. Caller-dict mutation in any window cannot redirect consumption.
 - Deterministic Event/Barrier race tests (7) plus all prior Phase 06 suites PASS; full suite 657/657; Phase 04 57/57; Phase 05 71/71. MOCKED transport only; NO live provider call or paid spend. Live generation, real spend, CI and isolated screenshots NOT TESTED.
 
+## Phase 07 mandatory completion (same branch, append-only)
+- Critic is now driven by the real workflow path (exact version+SHA, own canonical lease), produces evidence-bound findings, rubric verdicts and conflicts; revision creates a real new immutable artifact version and invalidates old approvals; the three-cycle cap ends in HOLD; human decisions require a one-shot confirmation and trusted session and advance the workflow.
+- 10 new E2E tests + 18 Phase 07 tests PASS; full core suite 685/685 PASS; safe-DOM JS 5/5. Real HTTP socket, browser visual inspection and live model NOT TESTED.
+
 ## Next action
-Phase 06 is **ACCEPTED** by independent review (commit `b7182f83771b7af12937acc5e257a5307e34986e`). Phase 07 is **ACTIVE** on `rebuild/phase-07-collaboration-critique` with explicit user authorization dated 2026-11-28. Phase 08 is NOT authorized. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 07 is submitted for final independent review; the implementing agent does NOT mark it ACCEPTED. Phase 08 is NOT authorized. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. Historical provisional/superseded status entries are preserved above, not deleted.

@@ -457,6 +457,39 @@ def revise(project: str, stage_id: str, note: str = "") -> dict:
     return _mutate(rec["id"], op)
 
 
+def record_external_version(project: str, stage_id: str, rel: str,
+                            sha256: str, note: str = "") -> dict:
+    """Append a NEW immutable version produced by a governed critique revision.
+
+    Never rewrites an existing version. The caller (core.critique) has already
+    written the versioned file and computed its real SHA-256.
+    """
+    rec = by_project(project)
+    if rec is None:
+        return {"status": opstatus.BLOCKED, "error": "no-workflow"}
+    def op(r, items):
+        s = _stage(r, stage_id)
+        if s is None:
+            return {"status": opstatus.BLOCKED, "error": "unknown-stage"}
+        if not sha256:
+            return {"status": opstatus.FAIL, "error": "artifact-hash-unavailable"}
+        version = len(s["versions"]) + 1
+        s["versions"].append({
+            "version": version,
+            "artifacts": [{"path": rel, "sha256": sha256,
+                           "kind": s.get("kind", "code"),
+                           "note": str(note)[:200]}],
+            "at": _now(), "evidence": {"producer": "critique-revision"},
+            "note": str(note)[:300]})
+        s["status"] = AWAIT_REVIEW
+        s["finished_at"] = _now()
+        r["status"] = AWAIT_REVIEW
+        r["current_stage"] = stage_id
+        _history(r, "revision-version-added", stage_id, "v%d" % version)
+        return {"status": opstatus.PASS, "ok": True, "version": version}
+    return _mutate(rec["id"], op)
+
+
 def amend_artifact_hash(project: str, stage_id: str, version: int,
                         path: str, sha256: str, reason: str) -> dict:
     """Record a formatting-only amendment without creating a new version."""

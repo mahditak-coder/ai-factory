@@ -77,7 +77,45 @@
             "ردشده: " + (r.option || "") + " — " + (r.reason || "")));
       }
       if (e.reason) box.appendChild(el("div", "wf-meta", e.reason));
+      if (e.artifact_sha256)
+        box.appendChild(el("div", "wf-meta", "SHA: " + e.artifact_sha256));
+      if (e.reviewed_sha256)
+        box.appendChild(el("div", "wf-meta", "بررسیشده: " + e.reviewed_sha256));
+      if (e.decision)
+        box.appendChild(el("div", "wf-meta", "نتیجه Critic: " + e.decision));
+      if (e.kind === "conflict")
+        box.appendChild(el("div", "wf-meta", "تضاد حلنشده: " + (e.reason || "") +
+          " — مالک: " + (e.owner || "")));
+      for (const f of (e.findings || [])) {
+        box.appendChild(el("div", "wf-meta", "شاهد: " +
+          ((f.evidence && f.evidence.path) || f.evidence_ref || "UNKNOWN") +
+          " — وضعیت: " + (f.status || "UNKNOWN")));
+      }
+      if (e.status === "HOLD")
+        box.appendChild(el("div", "wf-meta", "HOLD — نیاز به تصمیم انسانی"));
     }
+    const bar = el("div", "wf-actions");
+    const runBtn = el("button", "", "اجرای بازبینی مستقل");
+    runBtn.type = "button";
+    runBtn.onclick = async () => {
+      try { err(""); await post("/api/workflow/critique/run", { project, stage:
+        selected || (st && st.current_stage) || "" }); await loadState(); }
+      catch (e) { err(e.message); }
+    };
+    bar.appendChild(runBtn);
+    const token = el("input"); token.placeholder = "confirmation token";
+    const decideBtn = el("button", "", "ثبت تصمیم انسانی");
+    decideBtn.type = "button";
+    decideBtn.onclick = async () => {
+      try { err(""); await post("/api/workflow/critique/decide", { project,
+        stage: selected || (st && st.current_stage) || "",
+        review_id: (rows.filter((x) => x.kind === "review").pop() || {}).id || "",
+        option: "accept-current", confirm_token: token.value });
+        await loadState(); }
+      catch (e) { err(e.message); }
+    };
+    bar.appendChild(token); bar.appendChild(decideBtn);
+    box.appendChild(bar);
   }
 
   function watch() {

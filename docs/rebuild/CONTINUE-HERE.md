@@ -24,3 +24,6 @@ Rebuild status: NOT STARTED. Last accepted phase: NONE. Active phase: NONE. Next
 
 ## Current pointer (SUPERSEDES the historical pointer above, preserved not rewritten, 2026-11-28)
 GitHub is the source of truth. Rebuild status: IN PROGRESS. Last accepted phase: **06 — Professional Production Engine** — ACCEPTED by independent review at commit `b7182f83771b7af12937acc5e257a5307e34986e` on `rebuild/phase-06-production-engine`. Active phase: **07 — Collaboration, Independent Critique & Bounded Revision** — ACTIVE and explicitly user-authorized on `rebuild/phase-07-collaboration-critique`. Next allowed action: implement and submit Phase 07 for independent review. Phase 08 is NOT authorized. Read `CURRENT-STATE.md` first and verify Git state before any action.
+
+## Current pointer (append-only update, 2026-11-28)
+Phase 07 mandatory completion executed on `rebuild/phase-07-collaboration-critique`; real E2E workflow path proven with 10 E2E tests and full core suite 685/685 PASS. Phase 07 awaits independent review; Phase 08 NOT authorized. Last accepted phase remains 06.

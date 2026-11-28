@@ -69,3 +69,52 @@ Node JS check output recorded in the delivery report.
 
 **Proposed decision: NOT ACCEPTED by the implementing agent** — submitted for
 independent GitHub review. Phase 08 was NOT started.
+
+
+## MANDATORY COMPLETION — real end-to-end path (append-only)
+
+Continues from commit `422e894cef41970f295c69794d019bb19dbfcb55` on the same branch.
+
+### Root gaps closed
+1. Critic was only callable as a library; it is now driven by the REAL workflow
+   path: `critique.run_series(project, stage_id)` reads the current workflow
+   stage version and artifact SHA-256, starts an independent canonical lease,
+   reviews the exact file on disk, records evidence-bound findings, evaluates
+   the rubric, detects conflicts, writes an immutable verdict and loops.
+2. `request_revision()` no longer only appends text: `revise_artifact()` writes
+   a NEW immutable versioned file with real lineage, records a new workflow
+   version via `workflow.record_external_version()`, and invalidates prior
+   decisions bound to the changed artifact.
+3. Verdict semantics separated from human approval: Critic may only recommend
+   `pass` / `revise` / `reject`. A forged `approve` verdict fails closed.
+   Only `human_decision()` with a real one-shot confirmation and trusted
+   session principal records an approval and calls `workflow.approve()`.
+4. Finding validation requires a stable recomputed ID, correct artifact hash,
+   history and evidence with a REAL file path whose SHA-256 matches.
+5. Three-cycle cap is enforced in `run_series`; the fourth cycle creates HOLD
+   and no further artifact version. API/UI cannot raise it.
+6. API handlers `POST /api/workflow/critique/run` and
+   `POST /api/workflow/critique/decide` drive the same real path, inside the
+   existing panel gate; the second derives identity from the session cookie.
+
+### Real E2E evidence (MOCKED transport only, no live provider/paid call)
+- Real workflow created; Producer stage wrote `spec/proposal.md` via the real
+  `workflow.run_stage` executor path with a real SHA-256.
+- Non-empty artifact: 1 review round → PASS recommendation → human decision →
+  workflow stage APPROVED.
+- Empty artifact: Critical finding → real revised file (new SHA) → v1 file
+  unchanged → second review PASS → prior decision invalidated.
+- Three forced revision rounds → HOLD, exactly three workflow versions; no
+  fourth version.
+- API handler path exercised with the real server handler methods; missing
+  session returns 401.
+- 10 E2E tests + 18 prior Phase 07 tests = 28 PASS; full core suite 685 PASS
+  (70.994s); JS safe-DOM check 5/5; `py_compile` and `git diff --check` clean.
+
+### NOT TESTED / BLOCKED
+- Real HTTP socket round-trip with browser login (handler-level harness used).
+- Real browser visual inspection (fake-DOM behavioural test used).
+- Live Critic model turn / different-model independence (NOT claimed).
+- CI. No external blocker; all required in-repo criteria implemented.
+
+Logs: `…/p7e-t4.log`, `…/p7e-full.log`, JS check output in delivery report.
