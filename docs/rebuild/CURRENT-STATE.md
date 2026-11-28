@@ -202,5 +202,10 @@
 - Evidence: MOCKED provider/transport tests only (no live provider call and no paid spend); full suite `Ran 630 tests in 58.673s — OK`; focused 13/13, Phase 06 15/15, OpenRouter 9/9, image_remote 9/9. LIVE OpenRouter generation, real paid spend and isolated screenshots NOT TESTED.
 - No Phase 01–05 file was reopened; ToolExecutor, SecurityPolicy and governance contracts preserved.
 
+## Phase 06 final focused security fix (same branch, additive)
+- Approval decisions are opaque server-issued handles; caller-supplied ok/free/cost/provider/model/hash are never authorization. Mutation is detected and the whole request is revalidated against current config and governance immediately before token issuance. Free/paid comes exclusively from verified current pricing; one-time paid consumption and all provider contracts preserved.
+- Evidence: MOCKED forgery tests only (no live provider call, no paid spend); forgery 7/7, focused 13/13, Phase 06 15/15, full suite 637/637. LIVE provider generation, real spend and isolated screenshots NOT TESTED.
+- No Phase 01–05 file was reopened.
+
 ## Next action
-Phase 06 focused remediation is complete; Phase 06 is NOT marked ACCEPTED by this agent and awaits independent review. Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **(Historical entry, PRESERVED and SUPERSEDED by the Phase 06 AUTHORIZED / ACTIVE record above: "Phase 06 has NOT started and is NOT authorized.")** Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 06 final focused security fix is complete; Phase 06 is NOT marked ACCEPTED by this agent and awaits independent review. Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **(Historical entry, PRESERVED and SUPERSEDED by the Phase 06 AUTHORIZED / ACTIVE record above: "Phase 06 has NOT started and is NOT authorized.")** Historical provisional/superseded status entries are preserved above, not deleted.

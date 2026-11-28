@@ -162,7 +162,8 @@ class ProductionEngineTest(unittest.TestCase):
         with mock.patch.object(pp, "_cfg", return_value=self._free_cfg()), \
              mock.patch.object(pp.gov, "estimate", return_value=est), \
              mock.patch.object(ip, "get", return_value=fake):
-            d = pp.decide(PROJECT, "fake-free", "fake-model")
+            d = pp.decide(PROJECT, "fake-free", "fake-model",
+                          prompt="a prompt", size="1:1")
             out = pp.dispatch(d, "a prompt", size="1:1")
         self.assertTrue(out["ok"], out)
         self.assertEqual(fake.calls, 1)

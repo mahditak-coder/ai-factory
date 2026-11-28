@@ -132,3 +132,17 @@ Continues from the remote Phase 06 HEAD `bc1bba91958c84ee04422254404a42390167f96
 - **SUPERSEDED historical evidence**: the earlier screenshot PNG sha256 `8c231f9a...` recorded in this file was produced BEFORE OS-level isolation was required; it is preserved as history and is NOT valid evidence under the current policy. No production claim rests on it.
 
 Logs: `…/p6r-focused-final.log`, `…/p6r-p06-final.log`, `…/p6r-or-final.log`, `…/p6r-remote-final.log`, `…/p6r-full2.log`, `…/p6r-realblock.log`.
+
+## FINAL FOCUSED SECURITY FIX — approval-decision forgery
+
+Continues from remote HEAD `200801002765ab8fa5222d3048f6df6b8dc5fb26` in an isolated clone. Only the confirmed forgery defect was changed; Phase 01–05 and all other Phase 06 behavior were not reopened.
+
+- **Defect:** `consume_approval()` and `dispatch()` treated the caller-owned decision dictionary as authoritative: a hand-crafted `{"ok": True, "free": True, ...}` could obtain a free authorization token for a paid model, and a validated decision could be mutated between validation and consumption.
+- **Fix:** `decide()` now returns an OPAQUE HANDLE (`decision_id`). The caller's `ok`/`free`/cost/provider/model/hash fields are informational only and are NEVER used for authorization. A server-side immutable snapshot of the ORIGINAL request is registered; `consume_approval()` rejects unregistered handles, detects any mutation of the caller handle by fingerprint, and REVALIDATES the entire request against CURRENT provider configuration and governance records immediately before token issuance. Free/paid is derived exclusively from verified current pricing (`free` flag AND zero cost; a zero price without a free configuration is rejected). Paid approvals still require exact binding, exact cost and one atomic flock-guarded consumption; the one-time adapter token, exact-model, no-fallback and direct-adapter contracts are unchanged.
+- **MOCKED:** 7 new forgery tests use an injected transport; a real network attempt raises an assertion. They cover hand-forged free=True for a paid model, forged cost/provider/model/request-hash, post-validation mutation, genuine free (no approval), genuine paid (exactly one consumption), price changed after `decide()` (revalidation blocks), and prompt changed at dispatch (no transport call). **No real provider call and no paid spend occurred.**
+- **REAL:** current environment capability is unchanged (no live OpenRouter call was attempted). Governance approval records and local config were real files under an isolated `AI_FACTORY_TEST_ROOT`.
+- **PASS:** forgery 7/7; focused remediation 13/13; Phase 06 suite 15/15; OpenRouter 9/9; image_remote 9/9; full suite 637/637 (63.662s); `py_compile` and `git diff --check` clean.
+- **FAIL:** none in final runs (one older test passed its prompt only at dispatch; it was aligned to bind the prompt at validation and the complete suites were rerun).
+- **NOT TESTED:** live OpenRouter generation (free or paid), real paid spend, CI, and isolated screenshots (still blocked in this environment).
+
+Logs: `…/p6f-s1.log`, `…/p6f-s2.log`, `…/p6f-s3.log`, `…/p6f-s4.log`, `…/p6f-s5.log`, `…/p6f-full.log`.
