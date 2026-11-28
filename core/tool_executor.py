@@ -32,8 +32,10 @@ class ToolRequest:
     # Phase 04: canonical role context for enforced tool authorization.
     role_id: str = ""
     enforce_role: bool = False
-    # Explicit, validated NON-specialist context. Only workflow infrastructure
-    # that is not a specialist may set this; it never grants role permission.
+    # Server-issued infrastructure capability token. Caller strings are NEVER
+    # accepted as authorization; only tokens minted by issue_infrastructure_context.
+    execution_token: str = ""
+    # Retired caller-supplied field: any non-empty value is treated as forged.
     execution_context: str = ""
 
 
@@ -47,6 +49,32 @@ class ToolResult:
     call_id: str = ""
     duration_ms: int = 0
     evidence: dict = field(default_factory=dict)
+
+
+SERVER_PRINCIPAL = "server:infrastructure"
+_CONTEXT_TTL_S = 3600
+_contexts: dict[str, dict] = {}
+_context_lock = threading.RLock()
+
+
+def issue_infrastructure_context(principal: str = SERVER_PRINCIPAL,
+                                 kind: str = "non-specialist-infrastructure") -> str:
+    """Mint a server-side capability for legitimate non-specialist tools."""
+    if not str(principal or ""):
+        raise ValueError("infrastructure-principal-required")
+    token = secrets.token_urlsafe(24)
+    with _context_lock:
+        _contexts[token] = {"principal": str(principal), "kind": str(kind),
+                            "created": time.time()}
+    return token
+
+
+def _valid_context(token: str, kind: str) -> bool:
+    with _context_lock:
+        rec = _contexts.get(str(token or ""))
+    if rec is None or rec.get("kind") != kind:
+        return False
+    return (time.time() - float(rec.get("created") or 0)) < _CONTEXT_TTL_S
 
 
 def _authorize(spec: ToolSpec, req: ToolRequest) -> tuple[str, str]:
@@ -111,11 +139,16 @@ def execute(req: ToolRequest) -> ToolResult:
             error="tool-disabled", duration_ms=0), started)
     # Phase 04 — role authorization at the real tool boundary. Caller scopes
     # are NOT proof of role permission; a canonical contract must allow it.
+    if getattr(req, "execution_context", ""):
+        return _record(req, call_id, ToolResult(
+            status=opstatus.BLOCKED, decision="none", call_id=call_id,
+            error="forged-execution-context", duration_ms=0),
+            started, finalize_receipt=False)
     if req.enforce_role or req.role_id:
-        if req.execution_context:
+        if getattr(req, "execution_token", ""):
             return _record(req, call_id, ToolResult(
                 status=opstatus.BLOCKED, decision="none", call_id=call_id,
-                error="ambiguous-execution-context", duration_ms=0),
+                error="ambiguous-execution-identity", duration_ms=0),
                 started, finalize_receipt=False)
         try:
             from core import specialist_engine as _se
@@ -131,6 +164,13 @@ def execute(req: ToolRequest) -> ToolResult:
                 error="role-authorization-denied:" + str(role_auth["reason"]),
                 duration_ms=0,
                 evidence={"role_enforced": True, "role_id": req.role_id}),
+                started, finalize_receipt=False)
+    if getattr(req, "execution_token", ""):
+        if not _valid_context(req.execution_token,
+                              "non-specialist-infrastructure"):
+            return _record(req, call_id, ToolResult(
+                status=opstatus.BLOCKED, decision="none", call_id=call_id,
+                error="execution-identity-invalid", duration_ms=0),
                 started, finalize_receipt=False)
     sig = _signature(req)
     # One cross-process atomic operation: read, duplicate/signature check and

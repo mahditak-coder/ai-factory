@@ -20,7 +20,7 @@ def _call(project, tool_id, inputs, scopes):
     r = tool_executor.execute(tool_executor.ToolRequest(
         tool_id=tool_id, project=project, inputs=inputs, scopes=scopes,
         task_id="workflow-executor", call_id=cid,
-        execution_context="non-specialist-explicit"))
+        execution_token=tool_executor.issue_infrastructure_context()))
     return r
 
 

@@ -58,6 +58,16 @@ Verification after repair (local, isolated `AI_FACTORY_TEST_ROOT`):
 
 Verification: `python3 -m unittest core.tests.test_phase04_integration -v` — exit `0`, `Ran 11 tests ... OK` (`…/p4int-t6.log`); all Phase 04 tests `Ran 42 tests ... OK` (`…/p4int-target.log`); full suite `Ran 468 tests in 44.502s — OK` (`…/p4int-full.log`). `py_compile` exit `0`. CI/GitHub Actions: NOT TESTED. No real provider/model/paid operation or product generation occurred (the gateway was a deterministic local fixture solely for exercising the integration path). ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
 
+## Final security and result-integrity repair (same branch)
+
+| Finding | Repair | Evidence |
+|---|---|---|
+| Forged `execution_context` bypass | Retired the caller-supplied string (any non-empty value is rejected as `forged-execution-context`). Added server-minted `execution_token` via `issue_infrastructure_context()` with a TTL registry; only valid tokens authorize infrastructure tools. Specialist calls still require canonical `role_id` with `enforce_role=True`; prompt text/caller scopes cannot grant anything | `test_01_forged_execution_context_string_denied`, `test_02_server_issued_context_allowed`, `test_03_unknown_context_token_denied`, `test_04_specialist_path_without_role_denied`, `test_05_prompt_and_scopes_cannot_grant` |
+| PASS despite write/persistence failure | `run_specialist()` now checks every `write_artifact()` result and validates content + SHA of newly written artifacts only; stale leases are rejected before any model/write; terminal persistence is checked and any rejection makes the public result non-PASS; failures never reuse older files as proof | `test_06_stale_worker_terminal_rejected`, `test_07_blocked_write_with_older_valid_file_no_pass`, `test_08_persistence_failure_never_pass`, `test_09_successful_current_worker`, `test_10_overlapping_only_current_pass` |
+| First-assistant heuristic | Both the main turn and missing-artifact subturn use canonical `select_final_response()`; aborted/errored/incomplete/timestamp-less turns are skipped, newest completed turn wins by timestamp, list order is never a fallback | `test_11_shuffled_history_uses_newest_completed`, `test_12_no_completed_turn_is_not_pass` |
+
+Verification: `python3 -m unittest core.tests.test_phase04_security_integrity -v` — exit `0`, `Ran 12 tests ... OK` (`…/p4sec-t4.log`); all Phase 04 tests `Ran 54 tests ... OK` (`…/p4sec-target3.log`); full suite `Ran 480 tests in 45.839s — OK` (`…/p4sec-full.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. No real provider/model/paid operation or product generation occurred. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
 ## Labels and limitations
 - **PASS:** implemented registry/engine functions and all executed tests (444/444 core tests green).
 - **FAIL:** none in executed checks.

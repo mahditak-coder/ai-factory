@@ -123,5 +123,11 @@
 - Real run leases integrated into `run_specialist()`: `start_run()` claims the lease and all terminal results use `record_result()` with the current token; superseded/stale workers cannot record PASS; overlapping executions yield exactly one PASS.
 - Tests: targeted Phase 04 `Ran 42 tests ... OK` (exit 0); full suite `Ran 468 tests in 44.502s — OK` (468 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`. CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
 
+## Phase 04 final security & result-integrity repair (same branch)
+- Forged caller `execution_context` strings are rejected; infrastructure tools use server-minted expiring capability tokens; specialist tools require canonical role ID and contract scopes. Prompt text and caller scopes never grant permission.
+- `run_specialist()` refuses PASS when an artifact write fails, when only older files validate, when the lease is stale, or when terminal persistence is rejected; acceptance binds to newly written artifacts and their SHA-256.
+- Main and missing-artifact turns use canonical newest-completed response selection with trustworthy timestamps; aborted/incomplete/timestamp-less turns are skipped.
+- Tests: targeted Phase 04 `Ran 54 tests ... OK` (exit 0); full suite `Ran 480 tests in 45.839s — OK` (480 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
 ## Next action
 Phase 04 is **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.

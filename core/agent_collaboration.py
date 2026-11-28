@@ -234,7 +234,12 @@ def engine_advice(project: str, goal: str) -> str:
 
 def run_specialist(project: str, role_id: str, goal: str,
                    model: str | None = None) -> dict:
-    """REAL specialist turn: gate → model → artifacts → acceptance."""
+    """Specialist turn with canonical identity, verified handoff and leases.
+
+    PASS is returned only when every artifact write succeeded, the current
+    lease accepted the terminal persistence, and the selected model turn was
+    a completed assistant turn.
+    """
     role = specialists.get(role_id)
     if role is None:
         return {"status": opstatus.BLOCKED, "error": "unknown-role"}
@@ -250,14 +255,33 @@ def run_specialist(project: str, role_id: str, goal: str,
             run = _se.start_run(project, role_id)
         except _se.EngineError as exc:
             return {"status": opstatus.BLOCKED, "error": str(exc)[:200]}
+
     def _terminal(status, artifacts=None, evidence=None, note=""):
-        if canonical and run is not None:
-            return _se.record_result(project, role_id, run["token"], status,
-                                     artifacts or [])
-        return record(project, role_id, status, artifacts=artifacts,
-                      evidence=evidence or {}, note=note)
+        try:
+            if canonical and run is not None:
+                return _se.record_result(project, role_id, run["token"],
+                                         status, artifacts or [])
+            return record(project, role_id, status, artifacts=artifacts,
+                          evidence=evidence or {}, note=note)
+        except Exception as exc:  # noqa: BLE001 — persistence failure fails closed
+            return {"status": opstatus.BLOCKED,
+                    "error": "terminal-persistence-failed:" + str(exc)[:120]}
+
+    def _final_text(history):
+        picked = _se.select_final_response(history or [])
+        if not picked.get("ok"):
+            return ""
+        msg = picked["message"]
+        blocks = [p.get("text", "") for p in (msg.get("parts") or [])
+                  if p.get("type") == "text"]
+        return _strip_fence("\n".join(blocks))
+
     try:
         from core import tool_registry
+        if canonical and run is not None and not _se.reject_stale(
+                project, role_id, run["token"])["accepted"]:
+            _terminal(opstatus.BLOCKED, note="stale-worker")
+            return {"status": opstatus.BLOCKED, "error": "stale-worker"}
         catalog = tool_registry.registry().catalog_prompt(set(role.allowed_scopes))
         advice = ""
         if role_id in ("product-architect", "software-architect"):
@@ -269,14 +293,16 @@ def run_specialist(project: str, role_id: str, goal: str,
                 expected.update(_se.accepted_producer_hashes(project, dep))
             verified = verified_handoff(project, role_id, expected)
             if not verified["ok"]:
-                _terminal(opstatus.BLOCKED, note="; ".join(verified["problems"]))
+                _terminal(opstatus.BLOCKED,
+                          note="; ".join(verified["problems"]))
                 return {"status": opstatus.BLOCKED,
                         "error": "verified-handoff-failed",
                         "problems": verified["problems"]}
             handoff_text = verified["texts"]
             rechecked = revalidate_handoff(project, role_id, expected)
             if not rechecked["ok"]:
-                _terminal(opstatus.BLOCKED, note="; ".join(rechecked["problems"]))
+                _terminal(opstatus.BLOCKED,
+                          note="; ".join(rechecked["problems"]))
                 return {"status": opstatus.BLOCKED,
                         "error": "handoff-revalidation-failed",
                         "problems": rechecked["problems"]}
@@ -290,26 +316,16 @@ def run_specialist(project: str, role_id: str, goal: str,
                                 + "\n\n" + catalog + advice, model=model)
         deadline = time.time() + 240
         while time.time() < deadline:
-            st = gateway().state(sid)
-            if not st.get("running"):
+            if not gateway().state(sid).get("running"):
                 break
             time.sleep(2)
         hist = gateway().history(sid).get("messages") or []
-        text = ""
-        for m in hist:
-            if m.get("type") == "assistant":
-                blocks = [p.get("text", "") for p in (m.get("parts") or [])
-                          if p.get("type") == "text"]
-                if blocks:
-                    text = "\n".join(blocks)
-                    break
+        text = _final_text(hist)
         parts = _parse_artifacts(text, role)
-        artifacts = []
+        written, problems, write_failed = {}, [], False
         for art in role.artifacts:
             content = parts.get(art.path)
             if not content:
-                # AF NEXT P3 — a dedicated, REAL model turn for a missing
-                # artifact; no fabricated file and no manual content.
                 sub = gateway().prompt(project, sid,
                     "Write ONLY the complete content of " + art.path +
                     " (format " + art.format + "). Required sections: " +
@@ -320,30 +336,52 @@ def run_specialist(project: str, role_id: str, goal: str,
                     if not gateway().state(sid).get("running"):
                         break
                     time.sleep(2)
-                h2 = gateway().history(sid).get("messages") or []
-                for m in h2:
-                    if m.get("type") == "assistant":
-                        blocks = [p.get("text", "") for p in (m.get("parts") or [])
-                                  if p.get("type") == "text"]
-                        if blocks:
-                            content = _strip_fence("\n".join(blocks))
-                            break
-            if content:
-                artifacts.append(write_artifact(project, art.path, content,
-                                                role_id))
-        accepted, problems = acceptance(project, role_id)
-        status = opstatus.PASS if accepted and artifacts else opstatus.FAIL
-        rec = _terminal(status, artifacts=artifacts,
-                        evidence={"session_id": sid,
-                                  "message_id": resp.get("message_id"),
-                                  "model": model or "session-default",
-                                  "scopes": list(role.allowed_scopes)},
-                        note="; ".join(problems))
+                content = _final_text(
+                    gateway().history(sid).get("messages") or [])
+            if not content:
+                problems.append("no-completed-artifact-turn:" + art.path)
+                write_failed = True
+                continue
+            wr = write_artifact(project, art.path, content, role_id)
+            if wr.get("status") != opstatus.PASS:
+                write_failed = True
+                problems.append("write-failed:" + art.path + ":" +
+                                str(wr.get("error") or "")[:120])
+                continue
+            bad = art.validate(content)
+            if bad:
+                write_failed = True
+                problems.append(art.path + ":" + str(bad)[:160])
+                continue
+            sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            if wr.get("sha256") != sha:
+                write_failed = True
+                problems.append("hash-mismatch:" + art.path)
+                continue
+            written[art.path] = {"content": content, "sha256": sha}
+        accepted_now = all(art.path in written for art in role.artifacts)
+        if not accepted_now:
+            problems.append("new-artifacts-incomplete")
+        status = opstatus.PASS if accepted_now and not write_failed \
+            else opstatus.FAIL
+        terminal = _terminal(status, artifacts=[
+            {"path": path, "sha256": item["sha256"]}
+            for path, item in written.items()],
+            evidence={"session_id": sid,
+                      "message_id": resp.get("message_id"),
+                      "model": model or "session-default",
+                      "scopes": list(role.allowed_scopes)},
+            note="; ".join(problems))
+        if terminal.get("status") != status:
+            problems.append("terminal-persistence-rejected")
+            status = opstatus.BLOCKED
         return {"status": status, "role": role_id, "session_id": sid,
-                "artifacts": artifacts, "problems": problems, "record": rec}
+                "artifacts": list(written.values()), "problems": problems,
+                "record": terminal}
     except Exception as exc:  # noqa: BLE001 — real failure, never fake success
         _terminal(opstatus.FAIL, note=str(exc)[:300])
-        return {"status": opstatus.FAIL, "role": role_id, "error": str(exc)[:300]}
+        return {"status": opstatus.FAIL, "role": role_id,
+                "error": str(exc)[:300]}
 
 
 def independent_qa(project: str, role_id: str = "qa-engineer") -> dict:

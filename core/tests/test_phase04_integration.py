@@ -20,6 +20,7 @@ class FakeGateway:
         self.prompts = []
         self.artifact_text = artifact_text
         self.long_producer = long_producer or ""
+        self.counter = 0
 
     def create_session(self, project, label):
         return {"id": "ses-test-" + label}
@@ -32,9 +33,13 @@ class FakeGateway:
         return {"running": False}
 
     def history(self, sid):
+        self.counter += 1
         text = "===FILE src/game.py (py)\n" + self.artifact_text
-        return {"messages": [{"type": "assistant", "parts": [
-            {"type": "text", "text": text}]}]}
+        return {"messages": [{"type": "assistant", "finish": "stop",
+                              "completed": self.base_time + self.counter,
+                              "parts": [{"type": "text", "text": text}]}]}
+
+    base_time = 1000
 
 
 class Phase04IntegrationTest(unittest.TestCase):
@@ -119,7 +124,7 @@ class Phase04IntegrationTest(unittest.TestCase):
         req = tool_executor.ToolRequest(
             tool_id="project.read_file", project=self.project,
             inputs={"path": "sample.txt"}, scopes=["project:read"],
-            execution_context="non-specialist-explicit",
+            execution_token=tool_executor.issue_infrastructure_context(),
             call_id="p4-nonspec")
         self.assertEqual(tool_executor.execute(req).status, opstatus.PASS)
 
