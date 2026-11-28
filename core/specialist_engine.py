@@ -43,6 +43,19 @@ LEGACY_ALIASES = {
     "game-designer-gdd": "game-designer", "ui-game": "ui-ux-designer",
     "audio-game": "audio-designer", "qa-game": "qa-engineer",
     "security-game": "security-reviewer",
+    # Phase 05 domain capability aliases (old/conversational names).
+    "backend": "backend-specialist", "back-end": "backend-specialist",
+    "frontend": "frontend-specialist", "front-end": "frontend-specialist",
+    "database": "database-specialist", "db": "database-specialist",
+    "api": "api-specialist", "devops": "devops-specialist",
+    "mobile-ux": "mobile-ux-specialist",
+    "app-architecture": "application-architect",
+    "level": "level-designer", "balance": "game-balance-specialist",
+    "narrative": "narrative-designer", "education": "education-specialist",
+    "curriculum": "curriculum-designer",
+    "learning-experience": "learning-experience-specialist",
+    "accessibility": "accessibility-specialist",
+    "visual": "visual-designer", "music": "music-sound-specialist",
 }
 
 
@@ -183,7 +196,8 @@ def canonical_registry() -> dict[str, dict]:
     """One validated registry. Duplicate IDs with differing contracts fail."""
     out: dict[str, dict] = {}
     for source, table in (("ROLES", specialists.ROLES),
-                          ("EXTRA_ROLES", specialists.EXTRA_ROLES)):
+                          ("EXTRA_ROLES", specialists.EXTRA_ROLES),
+                          ("DOMAIN_ROLES", specialists.DOMAIN_ROLES)):
         for role in table:
             contract = _contract(role, source)
             existing = out.get(role.id)

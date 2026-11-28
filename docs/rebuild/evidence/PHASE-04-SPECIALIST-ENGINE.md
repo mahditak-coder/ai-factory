@@ -129,3 +129,6 @@ Commands: `python3 -m unittest core.tests.test_phase04_timeout_fence -v` — exi
 - **NOT TESTED:** GitHub Actions/CI (no workflow run observed), live providers, paid operations, real specialist execution, product production/build, browser/mobile visual inspection. No PASS claimed for these.
 - Specialist capability discovery is contract-based and does not assert operational tools/providers exist; that verification belongs to later authorized phases.
 - Phase 04 is **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**; Phase 05 is NOT authorized.
+
+## Final independent acceptance (2026-11-28)
+Phase 04 is ACCEPTED by final independent review. Accepted commit: `1d53571025812e3cff725c508de62a894ffd37e4` (parent `35bbf335f722696118669213903400950f8bd3b4`, base Phase 03 `0889056b389632e6af721932db3a6dad31684c6a`). Earlier NOT ACCEPTED / READY FOR REVIEW entries remain as historical record. Honest limitations preserved: CI NOT TESTED, live providers NOT TESTED, production specialist execution NOT TESTED.

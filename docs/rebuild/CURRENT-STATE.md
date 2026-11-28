@@ -1,18 +1,19 @@
 # Current State
 
-> خلاصه فارسی: فازهای ۰۱، ۰۲ و ۰۳ توسط بازبینی مستقل پذیرفته شدند (ACCEPTED). فاز ۰۴ — Canonical Specialist Engine — با اجازۀ صریح کاربر (۲۰۲۶-۱۱-۲۸) ACTIVE است و در حال پیادهسازی است؛ فاز ۰۵ مجاز نیست.
+> خلاصه فارسی: فازهای ۰۱، ۰۲، ۰۳ و ۰۴ توسط بازبینی مستقل پذیرفته شدند (ACCEPTED). فاز ۰۵ — Domain Specialist Teams — با اجازۀ صریح کاربر (۲۰۲۶-۱۱-۲۸) ACTIVE است؛ فاز ۰۶ مجاز نیست.
 
 - Audit snapshot: `2bf75e834d0444ac5cfef767261757324cbefee8` on `audit/full-source-review`
 - Documentation branch: `rebuild/blueprint-v1` created from the exact audit commit
 - Blueprint commit: 95b901d9a4bccb5d96f50c256668c2d2a904423c
 - Rebuild status: **IN PROGRESS**
-- Last accepted phase: **03 — Research, Innovation & Product Strategy** — ACCEPTED by final independent review dated 2026-11-28.
+- Last accepted phase: **04 — Canonical Specialist Engine** — ACCEPTED by final independent review dated 2026-11-28.
 - Phase 01 status: **ACCEPTED**. Basis: final code commit `43bf30818e77b47b4ce23e70bd35738a0eb1db71`, documentation/remote HEAD commit `3dcae0703bee408bc34fdfd83e81807a25c6a2a7`, independent review 2026-11-27.
 - Phase 02 status: **ACCEPTED** (final independent review 2026-11-28). Acceptance basis: final code/documentation commit `075921b5f0b8ebe7638b0d38c6394c6402c94541` on `rebuild/phase-02-request-intelligence`, with the full scope of Phase 02 corrections — durable canonical request model, answer mutation, no auto-approval, fail-closed execution gate, genuine one-shot capability, strict session/project binding and authoritative panel-principal attribution. Earlier `NOT ACCEPTED` entries below are historical and SUPERSEDED by this decision; they are not deleted or rewritten.
 - Phase 03 status: **ACCEPTED** (final independent review 2026-11-28). Basis: final commit `0889056b389632e6af721932db3a6dad31684c6a` on `rebuild/phase-03-research-product-strategy`; scope = canonical research engine, alternatives/feasibility, versioned Product Brief and all accepted audit repairs. Earlier `NOT ACCEPTED` entry below is historical and SUPERSEDED, not deleted.
-- Active phase: **04 — Canonical Specialist Engine** — **ACTIVE and EXPLICITLY AUTHORIZED** by the user on 2026-11-28.
-- Phase 04 status: **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW** (implementation complete; EXPLICITLY AUTHORIZED by user on 2026-11-28).
-- Phase 05 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 04 acceptance.
+- Phase 04 status: **ACCEPTED** (final independent review 2026-11-28). Basis: final commit `1d53571025812e3cff725c508de62a894ffd37e4` on `rebuild/phase-04-specialist-engine`, parent `35bbf335f722696118669213903400950f8bd3b4`, built on accepted Phase 03 `0889056b389632e6af721932db3a6dad31684c6a`. Scope: canonical specialist registry, enforced tool identity, lease-fenced side effects and all accepted final repairs. Earlier `NOT ACCEPTED` entries below are historical and SUPERSEDED, not deleted.
+- Active phase: **05 — Domain Specialist Teams** — **ACTIVE and EXPLICITLY AUTHORIZED** by the user on 2026-11-28.
+- Phase 05 status: **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW** (implementation complete; EXPLICITLY AUTHORIZED by user on 2026-11-28).
+- Phase 06 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 05 acceptance.
 - Phase 03 base: created from the exact accepted Phase 02 commit `075921b5f0b8ebe7638b0d38c6394c6402c94541`, not from `main` or any unrelated branch.
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
 - Phase 01 acceptance-fix commit: 8e292a70d20bc11450f41a03de175b81ef149356
@@ -22,7 +23,9 @@
 - Historical note (preserved, not rewritten): before the independent decision, this file recorded `Last accepted phase: NONE` and Phase 01 as awaiting acceptance. That status is superseded by the 2026-11-27 independent acceptance recorded above.
 - Historical note (preserved): Phase 02 was recorded as `NOT ACCEPTED — READY FOR INDEPENDENT REVIEW` before the final independent decision; that status is SUPERSEDED by the 2026-11-28 acceptance above.
 - Historical note (preserved): Phase 03 was recorded as `NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW` before the final independent decision; that status is SUPERSEDED by the 2026-11-28 acceptance above.
-- Next allowed action: final independent review of Phase 04 on `rebuild/phase-04-specialist-engine`. Phase 04 implementation is complete; do not start Phase 05 automatically.
+- Historical note (preserved): Phase 04 was recorded as `NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW` before the independent decision; that status is SUPERSEDED by the 2026-11-28 acceptance above.
+- Phase 05 base: created from the exact accepted Phase 04 commit `1d53571025812e3cff725c508de62a894ffd37e4`; remote ancestry verified before editing.
+- Next allowed action: implement Phase 05 on `rebuild/phase-05-domain-teams`. Do not start Phase 06 automatically.
 
 ## Audit status and limitations
 - Audit source state: local `~/AI-Factory` HEAD `3878db271313415656328ec57595d1fe87c5fa3a`, branch `main`, 151 uncommitted items, zero remotes, version `0.47.0`.
@@ -152,5 +155,12 @@
 - Real ToolExecutor concurrency tests prove a non-cooperative adapter cannot be superseded or overlapped while alive; repeated 5/5 stable.
 - Tests: targeted Phase 04 `Ran 105 tests ... OK` (exit 0); full suite `Ran 531 tests in 52.945s — OK` (531 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
 
+## Phase 05 evidence (real, on `rebuild/phase-05-domain-teams`)
+- Base: accepted Phase 04 commit `1d53571025812e3cff725c508de62a894ffd37e4`; ancestry to accepted Phase 03 `0889056b389632e6af721932db3a6dad31684c6a` verified before editing.
+- `core/specialists.py` adds 16 domain capability/subrole contracts (backend, frontend, database, API, DevOps, mobile UX, application architecture, level, balance, narrative, education, curriculum, learning experience, accessibility, visual, music/sound); all are entries in the SINGLE canonical registry (40 roles total), never a parallel catalog.
+- `core/domain_teams.py`: deterministic activation matrix over product domain, delivery platform, goal capabilities, constraints, dependencies and risk. Domain and platform remain independent: game+Android ≠ game+Web; Android alone never activates game roles; a simple web task activates no game/audio/3D/character roles.
+- Fail closed on ambiguous domain, unknown role, unresolved dependency and dependency cycles; artifact and scope validation; per-domain feature flags fall back to accepted Phase 04 read-only composition without deleting data or enabling unsafe execution.
+- Tests: targeted `Ran 17 tests ... OK` (exit 0); full suite `Ran 548 tests in 56.303s — OK` (548 PASS / 0 FAIL / 0 ERROR). CI/GitHub Actions, live providers and production specialist execution: NOT TESTED. ADR-024 unchanged (PROPOSED); ADR-025 PROPOSED.
+
 ## Next action
-Phase 04 is **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 05 implementation is complete and ready for independent review; Phase 04 is **ACCEPTED**. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 06 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
