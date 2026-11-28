@@ -151,15 +151,26 @@ def add_source(project: str, url: str, title: str, claim: str,
                claim_type: str = "hypothesis", topic: str = "",
                evidence: str = "", accessed_at: str = "",
                researcher: str = "system:research",
-               confidence=None) -> dict:
-    """Record a traceable research finding. Untrusted text stays DATA."""
+               confidence=None, **kwargs) -> dict:
+    """Record a DECLARED research finding. Verification is never caller-set.
+
+    ``claim_type`` is merely the caller's claim (``claimed_type``). The real
+    ``verification_status`` is always ``unverified`` in Phase 03 because no
+    trusted verifier exists; provenance records only honest declaration data.
+    """
+    if kwargs:
+        raise ResearchError("forged-source-field:" +
+                            ",".join(sorted(kwargs))[:120])
     project, url, claim = str(project or ""), str(url or "").strip(), str(claim or "").strip()
     if not project or not url or not claim:
         raise ResearchError("source-requires-project-url-claim")
     if claim_type not in CLAIM_TYPES:
-        raise ResearchError("invalid-claim-type:" + claim_type)
+        raise ResearchError("invalid-claimed-type:" + claim_type)
     sid = "src-" + canonical_hash({"project": project, "url": url,
                                    "claim": claim})[:16]
+    low = url.lower()
+    reserved = (".invalid" in low or low.startswith("file://") or
+                low.startswith("localhost") or low.startswith("127.0.0.1"))
 
     def fn(data):
         sources = data["sources"]
@@ -167,15 +178,24 @@ def add_source(project: str, url: str, title: str, claim: str,
             return dict(sources[sid])  # idempotent
         rec = {"source_id": sid, "project": project, "url": url[:2000],
                "title": str(title or "")[:500], "claim": claim[:2000],
-               "claim_type": claim_type, "topic": str(topic or "")[:200],
+               "claimed_type": claim_type, "claim_type": claim_type,
+               "topic": str(topic or "")[:200],
                "evidence": str(evidence or "")[:2000],
                "accessed_at": str(accessed_at or _now()),
-               "created": _now(),
-               "confidence": confidence,
+               "created": _now(), "confidence": confidence,
+               "verification_status": "unverified",
+               "verification": {"status": "unverified",
+                                "reason": ("reserved-or-unreachable-url"
+                                           if reserved else
+                                           "no-trusted-verifier-in-phase03"),
+                                "method": None, "verified_at": None,
+                                "verifier": None},
                "provenance": {"researcher": str(researcher or "system:research"),
-                              "method": "declared-source",
-                              "at": _now(),
-                              "hash": canonical_hash({"url": url, "claim": claim})}}
+                              "declaration_method": "declared-source",
+                              "declared_at": _now(), "at": _now(),
+                              "hash": canonical_hash({"url": url, "claim": claim}),
+                              "verification_method": None,
+                              "verified_at": None, "verifier": None}}
         sources[sid] = rec
         return rec
 
@@ -195,11 +215,12 @@ def source(source_id: str) -> dict | None:
 
 
 def assess_sources(project: str) -> dict:
-    """Detect insufficient, unverified or contradictory evidence."""
+    """Evidence report based ONLY on system-controlled verification status."""
     items = sources(project)
-    verified = [s for s in items if s["claim_type"] == "verified_fact"]
-    unverified = [s for s in items if s["claim_type"] in ("hypothesis",
-                                                           "estimate", "unknown")]
+    verified = [s for s in items
+                if s.get("verification_status") == "verified" and
+                (s.get("verification") or {}).get("status") == "verified"]
+    unverified = [s for s in items if s not in verified]
     conflicts = []
     for i, a in enumerate(verified):
         for b in verified[i + 1:]:
@@ -207,10 +228,25 @@ def assess_sources(project: str) -> dict:
                     a["claim"] != b["claim"]:
                 conflicts.append({"a": a["source_id"], "b": b["source_id"],
                                   "topic": a["topic"], "material": True})
+    declared_conflicts = []
+    for i, a in enumerate(unverified):
+        for b in unverified[i + 1:]:
+            if a.get("topic") and a["topic"] == b.get("topic") and \
+                    a["claim"] != b["claim"]:
+                declared_conflicts.append({"a": a["source_id"],
+                                           "b": b["source_id"],
+                                           "topic": a["topic"],
+                                           "material": False})
+    by_claim = {}
+    for s in items:
+        key = s.get("claimed_type", "unknown")
+        by_claim[key] = by_claim.get(key, 0) + 1
     return {"sufficient": bool(verified) and not conflicts,
-            "verified_count": len(verified), "unverified": unverified,
+            "declared_conflicts": declared_conflicts,
+            "verified_count": len(verified), "verified": verified,
+            "unverified": unverified, "by_claimed_type": by_claim,
             "conflicts": conflicts,
-            "reasons": (["no-verified-source"] if not verified else []) +
+            "reasons": (["no-trusted-verifier"] if not verified else []) +
                        (["contradictory-sources"] if conflicts else [])}
 
 
@@ -260,18 +296,27 @@ def add_alternative(project: str, option_id: str, name: str,
     option_id = str(option_id or "").strip()
     if not project or not option_id or not str(name or "").strip():
         raise ResearchError("alternative-requires-id-name")
-    valid = ("cost", "complexity", "risk", "time", "feasibility")
+    aliases = {"cost": "cost_utility", "complexity": "complexity_utility",
+               "risk": "risk_utility", "time": "time_utility",
+               "feasibility": "feasibility_utility"}
+    canonical = tuple(aliases.values())
     scores = {}
     for key, value in (criteria or {}).items():
-        if key not in valid:
+        name = aliases.get(key, key)
+        if name not in canonical:
             raise ResearchError("invalid-criterion:" + key)
         try:
-            scores[key] = max(0, min(5, int(value)))
+            scores[name] = max(0, min(5, int(value)))
         except (TypeError, ValueError):
-            scores[key] = None  # explicitly unknown, never fabricated
+            scores[name] = None  # explicitly unknown, never fabricated
     rec = {"option_id": option_id, "project": project, "name": str(name)[:300],
            "description": str(description or "")[:2000],
-           "criteria": scores, "pros": list(pros or []), "cons": list(cons or []),
+           # Higher utility is ALWAYS more desirable: 5 = cheapest, simplest,
+           # lowest risk, fastest, most feasible. These are NOT raw amounts.
+           "utility_scores": scores, "criteria": dict(scores),
+           "score_direction": "higher_is_better",
+           "score_scale": "0..5 (5=most desirable; not a raw cost/risk/time value)",
+           "pros": list(pros or []), "cons": list(cons or []),
            "limits": list(limits or []),
            "evidence_source_ids": list(evidence_source_ids or []),
            "status": "considered", "reject_reason": "", "at": _now()}
@@ -306,20 +351,22 @@ def compare_alternatives(project: str, auto_select: bool = False) -> dict:
                  _load_unlocked()["alternatives"].values()
                  if v.get("project") == project]
     ids = {s["source_id"] for s in sources(project)
-           if s["claim_type"] == "verified_fact"}
+           if s.get("verification_status") == "verified"}
     rows = []
     for alt in items:
-        known = {k: v for k, v in alt["criteria"].items() if v is not None}
-        scores = {"cost": known.get("cost"), "complexity": known.get("complexity"),
-                  "risk": known.get("risk"), "time": known.get("time"),
-                  "feasibility": known.get("feasibility")}
+        utils = alt.get("utility_scores") or alt.get("criteria") or {}
+        scores = {k: utils.get(k) for k in (
+            "cost_utility", "complexity_utility", "risk_utility",
+            "time_utility", "feasibility_utility")}
         evidence_ok = bool(alt["evidence_source_ids"]) and \
             all(x in ids for x in alt["evidence_source_ids"])
         total = sum(scores.values()) if len(scores) == 5 and \
             all(v is not None for v in scores.values()) else None
         rows.append({"option_id": alt["option_id"], "name": alt["name"],
                      "status": alt["status"], "reject_reason": alt["reject_reason"],
-                     "scores": scores, "score_total": total,
+                     "utilities": scores, "scores": scores,
+                     "score_total": total,
+                     "score_direction": "higher_is_better",
                      "evidence_ok": evidence_ok,
                      "evidence_source_ids": alt["evidence_source_ids"]})
     selectable = [r for r in rows if r["status"] == "considered" and
@@ -511,13 +558,37 @@ def brief_history(project: str) -> list[dict]:
     return sorted(out, key=lambda r: (r.get("brief_id", ""), r.get("version", 0)))
 
 
+def _safe_project_dir(project: str) -> Path:
+    """Resolve a strict allowlisted project dir inside PROJECTS_DIR."""
+    import re
+    name = str(project or "")
+    if not re.fullmatch(r"[A-Za-z0-9_\-\u0600-\u06FF ]{1,64}", name) or \
+            name in (".", "..") or "/" in name or "\\" in name:
+        raise ResearchError("invalid-project-id-for-artifact")
+    root = config.PROJECTS_DIR.resolve()
+    literal = root / name
+    cursor = root
+    for part in Path(name).parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ResearchError("project-path-symlink-escape")
+    resolved = literal.resolve()
+    if resolved.parent != root or resolved == root or \
+            not str(resolved).startswith(str(root) + os.sep):
+        raise ResearchError("project-path-escape")
+    return resolved
+
+
 def write_brief_artifact(brief_id: str) -> dict:
     """Persist a real versioned artifact file with its SHA-256."""
     rec = brief(brief_id)
     if rec is None:
         raise ResearchError("brief-not-found:" + brief_id)
     project = rec["project"]
-    d = config.PROJECTS_DIR / project / "docs" / "product"
+    base = _safe_project_dir(project)  # validate BEFORE any side effect
+    d = base / "docs" / "product"
+    if d.is_symlink() or (d.parent / "docs").is_symlink():
+        raise ResearchError("artifact-path-symlink-escape")
     d.mkdir(parents=True, exist_ok=True)
     path = d / ("brief-v%d.json" % rec["version"])
     text = json.dumps(rec, ensure_ascii=False, indent=1, sort_keys=True)
@@ -527,53 +598,81 @@ def write_brief_artifact(brief_id: str) -> dict:
             "sha256": sha, "brief_id": brief_id, "version": rec["version"]}
 
 
-def approve_brief(brief_id: str, token: str, actor: str) -> dict:
-    """Explicit user acceptance of final scope/success criteria.
+def approve_brief(brief_id: str, token: str, actor: str,
+                  session_id: str = "") -> dict:
+    """Atomically validate AND consume an approval at the execution edge.
 
-    Without a genuine confirmation token this never marks a brief final.
+    Every critical check (current record, project, hash, status, token
+    bindings, authoritative identity and expiry) happens INSIDE one canonical
+    lock; token consumption and the approval write are one operation.
     """
     from core import confirmations
     token = str(token or "")
-    if not token or not str(actor or "").strip():
+    actor = str(actor or "").strip()
+    if not token or not actor:
         raise ResearchError("brief-approval-requires-token-and-actor")
-    rec = brief(brief_id)
-    if rec is None:
-        raise ResearchError("brief-not-found:" + brief_id)
-    try:
-        v = confirmations.peek(token, rec["project"])
-    except confirmations.ConfirmError as exc:
-        raise ResearchError("brief-approval-invalid:" + exc.message) from exc
-    payload = v.get("payload") or {}
-    if payload.get("brief_id") != brief_id or \
-            payload.get("hash") != rec.get("hash"):
-        raise ResearchError("brief-approval-binding-mismatch")
 
-    def fn(data):
-        cur = data["briefs"].get(brief_id)
+    with _store_lock():
+        data = _load_unlocked()
+        cur = data["briefs"].get(str(brief_id or ""))
         if cur is None:
             raise ResearchError("brief-not-found:" + brief_id)
-        confirmations.consume(token, rec["project"])
-        cur["user_approval"] = {"status": "APPROVED", "actor": str(actor),
-                                "at": _now(), "token_consumed": True}
+        if cur.get("status") != "PENDING_USER_APPROVAL":
+            raise ResearchError("brief-not-pending:" + str(cur.get("status")))
+        try:
+            v = confirmations.peek(token)  # read original binding first
+        except confirmations.ConfirmError as exc:
+            raise ResearchError("brief-approval-invalid:" + exc.message) from exc
+        payload = v.get("payload") or {}
+        if payload.get("brief_id") != brief_id or \
+                payload.get("hash") != cur.get("hash") or \
+                payload.get("project") != cur.get("project"):
+            raise ResearchError("brief-approval-binding-mismatch")
+        bound = str(v.get("session_id") or "")
+        if bound:
+            if not session_id or str(session_id) != bound:
+                raise ResearchError("brief-approval-session-binding-required")
+            from core import panelauth
+            principal = str(panelauth.principal_for_session(str(session_id)) or "")
+            if not principal:
+                raise ResearchError("brief-approval-session-invalid")
+        else:
+            principal = ""
+        # A token proves consent only; identity comes from a trusted session.
+        trusted_actor = principal or ""
+        confirmations.consume(token, cur.get("project", ""),
+                              session_id=bound)
+        cur["user_approval"] = {
+            "status": "APPROVED", "actor": trusted_actor or actor,
+            "declared_actor": actor, "authenticated_principal": principal,
+            "actor_trusted": bool(trusted_actor),
+            "identity_mode": "authenticated" if trusted_actor else "self-declared",
+            "consent_confirmed": True,
+            "at": _now(), "token_consumed": True}
         cur["status"] = "USER_APPROVED"
         cur["updated"] = _now()
+        _save_unlocked(data)
         return dict(cur)
 
-    return _mutate(fn)
 
-
-def propose_brief_approval(brief_id: str) -> dict:
+def propose_brief_approval(brief_id: str, session_id: str = "",
+                           actor: str = "") -> dict:
     from core import confirmations
-    rec = brief(brief_id)
-    if rec is None:
-        raise ResearchError("brief-not-found:" + brief_id)
-    if rec["status"] == "USER_APPROVED":
-        raise ResearchError("brief-already-approved")
-    if rec["status"] == "SUPERSEDED":
-        raise ResearchError("brief-superseded")
-    cf = confirmations.create(
-        rec["project"], "phase03-product-brief-approval",
-        {"brief_id": brief_id, "hash": rec.get("hash")},
-        "تأیید نهایی محدوده و معیارهای موفقیت محصول")
-    return {"confirm_token": cf["confirm_token"], "brief_id": brief_id,
-            "hash": rec.get("hash"), "question": cf["question"]}
+
+    def fn(data):
+        rec = data["briefs"].get(str(brief_id or ""))
+        if rec is None:
+            raise ResearchError("brief-not-found:" + brief_id)
+        if rec["status"] != "PENDING_USER_APPROVAL":
+            raise ResearchError("brief-not-pending:" + rec["status"])
+        cf = confirmations.create(
+            rec["project"], "phase03-product-brief-approval",
+            {"brief_id": brief_id, "hash": rec.get("hash"),
+             "project": rec.get("project"), "declared_actor": str(actor or "")},
+            "تأیید نهایی محدوده و معیارهای موفقیت محصول",
+            session_id=str(session_id or ""))
+        return {"confirm_token": cf["confirm_token"], "brief_id": brief_id,
+                "hash": rec.get("hash"), "project": rec.get("project"),
+                "question": cf["question"]}
+
+    return _mutate(fn)
