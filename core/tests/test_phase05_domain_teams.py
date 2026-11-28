@@ -193,6 +193,89 @@ class DomainTeamsTest(unittest.TestCase):
                         "acceptance", "retry", "evidence_required"):
                 self.assertIn(key, rec)
 
+    # ------------------------------------------- Finding A/B audit regressions
+    def test_18_topological_order_education_curriculum(self):
+        r = self._team("android", "اپلیکیشن آموزشی اندروید",
+                       capabilities=["curriculum"])
+        self.assertTrue(r["ok"], r["problems"])
+        ids = self._ids(r)
+        self.assertIn("education-specialist", ids)
+        self.assertIn("curriculum-designer", ids)
+        self.assertLess(ids.index("education-specialist"),
+                        ids.index("curriculum-designer"))
+
+    def test_19_every_dependency_precedes_consumer(self):
+        for ptype, goal, kw in (
+            ("webpage", "ساخت صفحه وب ساده", {}),
+            ("game", "ساخت بازی اندرویدی", {}),
+            ("android", "اپلیکیشن آموزشی اندروید",
+             {"capabilities": ["curriculum"]}),
+        ):
+            with self.subTest(goal=goal):
+                r = self._team(ptype, goal, **kw)
+                self.assertTrue(r["ok"], r["problems"])
+                ids = self._ids(r)
+                for item in r["team"]:
+                    for dep in item["dependencies"]:
+                        self.assertIn(dep, ids)
+                        self.assertLess(ids.index(dep),
+                                        ids.index(item["role_id"]))
+
+    def test_20_unauthorized_scopes_rejected(self):
+        contract = se.get("product-architect")
+        base = {"role_id": "product-architect",
+                "stage_id": "role:product-architect",
+                "title": contract["title"], "domain": "software",
+                "dependencies": [se.resolve_id(d)
+                                 for d in contract["depends_on"]],
+                "inputs": list(contract["inputs"]),
+                "expected_artifacts": list(contract["artifacts"]),
+                "allowed_scopes": list(contract["allowed_scopes"]),
+                "acceptance": list(contract["acceptance"])}
+        for bad in ("network:admin", "project:delete", "credentials:read"):
+            with self.subTest(scope=bad):
+                item = dict(base)
+                item["allowed_scopes"] = list(base["allowed_scopes"]) + [bad]
+                report = dt.validate_team([item])
+                self.assertFalse(report["ok"])
+                self.assertTrue(any("unauthorized-scope" in p
+                                    for p in report["problems"]))
+        self.assertTrue(dt.validate_team([base])["ok"])
+
+    def test_21_forged_artifact_and_dependency_rejected(self):
+        r = self._team("webpage", "ساخت صفحه وب ساده")
+        item = dict(r["team"][0])
+        forged = dict(item)
+        forged["expected_artifacts"] = [{"path": "spec/fake.md",
+                                         "format": "md",
+                                         "required_sections": []}]
+        self.assertFalse(dt.validate_team([forged])["ok"])
+        fake_dep = dict(item)
+        fake_dep["dependencies"] = ["fake-role"]
+        report = dt.validate_team([fake_dep])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("dependency-mismatch" in p
+                            for p in report["problems"]))
+        game = self._team("game", "ساخت بازی اندرویدی")
+        with_dep = next(m for m in game["team"] if m["dependencies"])
+        removed = dict(with_dep)
+        removed["dependencies"] = []
+        self.assertFalse(dt.validate_team([removed])["ok"])
+
+    def test_22_alias_resolves_in_validation(self):
+        self.assertEqual(se.resolve_id("backend"), "backend-specialist")
+        self.assertEqual(se.resolve_id("product-director"), "product-architect")
+        contract = se.get("product-director")
+        item = {"role_id": "product-director",
+                "inputs": list(contract["inputs"]),
+                "expected_artifacts": list(contract["artifacts"]),
+                "dependencies": [se.resolve_id(d)
+                                 for d in contract["depends_on"]],
+                "allowed_scopes": list(contract["allowed_scopes"]),
+                "acceptance": list(contract["acceptance"])}
+        self.assertTrue(dt.validate_team([item])["ok"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

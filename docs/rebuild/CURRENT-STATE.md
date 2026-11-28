@@ -162,5 +162,10 @@
 - Fail closed on ambiguous domain, unknown role, unresolved dependency and dependency cycles; artifact and scope validation; per-domain feature flags fall back to accepted Phase 04 read-only composition without deleting data or enabling unsafe execution.
 - Tests: targeted `Ran 17 tests ... OK` (exit 0); full suite `Ran 548 tests in 56.303s — OK` (548 PASS / 0 FAIL / 0 ERROR). CI/GitHub Actions, live providers and production specialist execution: NOT TESTED. ADR-024 unchanged (PROPOSED); ADR-025 PROPOSED.
 
+## Phase 05 audit repair (same branch)
+- Dependency ordering replaced by real Kahn topological sort over selected roles and alias-resolved canonical dependencies; deterministic tie-break, DAG/stage history preserved, unknown dependency and cycle fail closed, no role activated only for ordering.
+- `validate_team()` compares every sensitive field (role_id, artifacts, inputs, dependencies, scopes, acceptance) to the exact canonical contract; arbitrary out-of-contract scopes and forged fields are rejected. ToolExecutor/SecurityPolicy unchanged.
+- Tests: targeted Phase 05 `Ran 22 tests ... OK` (exit 0); full suite `Ran 553 tests in 61.394s — OK` (553 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-025 remains PROPOSED.
+
 ## Next action
-Phase 05 implementation is complete and ready for independent review; Phase 04 is **ACCEPTED**. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 06 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 05 implementation is complete and ready for final independent review; Phase 04 is **ACCEPTED**. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 06 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.

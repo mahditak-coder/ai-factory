@@ -259,6 +259,47 @@ def _detect_cycle(selected: set[str], registry: dict) -> list[str]:
     return []
 
 
+def _topological_order(selected: set, registry: dict, dag: list) -> list:
+    """Kahn ordering over ONLY selected roles and canonical dependencies.
+
+    Aliases are resolved before comparison. Ties are broken by historical DAG
+    stage order, then canonical role ID, so the result is deterministic. The
+    DAG itself is not modified and no extra role is activated for ordering.
+    """
+    nodes = {se.resolve_id(r) for r in selected}
+    deps = {}
+    for rid in nodes:
+        contract = registry.get(rid)
+        if contract is None:
+            raise TeamError("unknown-role:" + rid)
+        canonical = []
+        for dep in contract["depends_on"]:
+            dep = se.resolve_id(dep)
+            if dep not in registry:
+                raise TeamError("unresolved-dependency:" + rid + ":" + dep)
+            canonical.append(dep)
+        deps[rid] = canonical
+    rank = {}
+    for idx, stage in enumerate(dag):
+        sid = se.resolve_id(stage.get("role"))
+        if sid not in rank:
+            rank[sid] = idx
+    def sort_key(rid):
+        return (rank.get(rid, 10 ** 6), rid)
+    remaining = set(nodes)
+    ordered = []
+    while remaining:
+        ready = sorted((rid for rid in remaining
+                        if all(d in ordered for d in deps[rid])),
+                       key=sort_key)
+        if not ready:
+            raise TeamError("dependency-cycle:" +
+                            "->".join(sorted(remaining)))
+        ordered.append(ready[0])
+        remaining.remove(ready[0])
+    return ordered
+
+
 def build_team(product_type: str = "", goal: str = "",
                capabilities=None, constraints=None, risk: str = "",
                project_context=None) -> dict:
@@ -304,13 +345,22 @@ def build_team(product_type: str = "", goal: str = "",
                 "problems": ["dependency-cycle:" + "->".join(cycle)]}
 
     dag = workflow_roles.dag_for(ctx["product_type"], goal or "")
-    order = [se.resolve_id(stage.get("role")) for stage in dag]
-    ordered = [rid for rid in order if rid in selected]
-    ordered += sorted(rid for rid in selected if rid not in ordered)
+    stage_by_role = {}
+    for stage in dag:
+        sid = se.resolve_id(stage.get("role"))
+        if sid not in stage_by_role:
+            stage_by_role[sid] = stage.get("id")
+    try:
+        ordered = _topological_order(selected, registry, dag)
+    except TeamError as exc:
+        return {"ok": False, "context": ctx, "team": [], "questions": [],
+                "problems": [str(exc)]}
     team = []
     for rid in ordered:
         contract = registry[rid]
-        team.append({"role_id": rid, "title": contract["title"],
+        team.append({"role_id": rid,
+                     "stage_id": stage_by_role.get(rid, "role:" + rid),
+                     "title": contract["title"],
                      "domain": _role_domain(rid),
                      "dependencies": [se.resolve_id(d)
                                       for d in contract["depends_on"]],
@@ -331,29 +381,48 @@ def hash_from(team: list) -> str:
 
 
 def validate_team(team: list) -> dict:
+    """Validate every sensitive field against the canonical contract."""
     problems = []
     if not isinstance(team, list):
         return {"ok": False, "problems": ["team-not-list"]}
-    ids = [item.get("role_id") for item in team]
+    ids = []
+    for item in team:
+        ids.append(se.resolve_id(item.get("role_id")) if isinstance(item, dict)
+                   else "")
     if len(ids) != len(set(ids)):
         problems.append("duplicate-role")
     registry = se.canonical_registry()
-    for item in team:
-        rid = item.get("role_id")
+    for item, rid in zip(team, ids):
+        if not isinstance(item, dict):
+            problems.append("team-item-not-dict")
+            continue
         contract = registry.get(rid)
         if contract is None:
-            problems.append("unknown-role:" + str(rid))
+            problems.append("unknown-role:" + str(item.get("role_id")))
             continue
-        if not item.get("expected_artifacts"):
+        # Artifacts must be EXACTLY the canonical artifact schemas.
+        expected = item.get("expected_artifacts")
+        if not expected:
             problems.append("missing-artifacts:" + rid)
-        # Least-privilege check applies to NEW Phase 05 domain roles; accepted
-        # Phase 04 roles keep their already-reviewed contracts.
-        if contract.get("source") == "DOMAIN_ROLES" and any(
-                scope.startswith(("billing:", "payment:", "shell:")) or
-                scope in ("image:generate", "media:write", "release:export")
-                for scope in item.get("allowed_scopes", [])):
-            problems.append("unauthorized-scope:" + rid)
-        for dep in item.get("dependencies", []):
+        elif expected != contract["artifacts"]:
+            problems.append("artifact-mismatch:" + rid)
+        if item.get("inputs") != contract["inputs"]:
+            problems.append("input-mismatch:" + rid)
+        canonical_deps = [se.resolve_id(d) for d in contract["depends_on"]]
+        if item.get("dependencies") != canonical_deps:
+            problems.append("dependency-mismatch:" + rid)
+        if item.get("acceptance") != contract["acceptance"]:
+            problems.append("acceptance-mismatch:" + rid)
+        scopes = item.get("allowed_scopes")
+        allowed = set(contract["allowed_scopes"])
+        if not isinstance(scopes, list) or not scopes:
+            problems.append("missing-scopes:" + rid)
+        else:
+            for scope in scopes:
+                if scope not in allowed:
+                    problems.append("unauthorized-scope:" + rid + ":" +
+                                    str(scope))
+        for dep in canonical_deps:
             if dep not in ids:
                 problems.append("unresolved-dependency:" + rid + ":" + dep)
     return {"ok": not problems, "problems": problems}
