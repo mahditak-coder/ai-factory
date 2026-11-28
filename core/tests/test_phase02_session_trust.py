@@ -29,8 +29,10 @@ class SessionTrustTest(unittest.TestCase):
                         mock.patch.object(ri, "_FLAGS", self.flags),
                         mock.patch.object(confirmations, "_STORE", self.conf),
                         mock.patch.object(
-                            panelauth, "session_token_valid",
-                            side_effect=lambda token: token == self.VALID)]
+                            panelauth, "principal_for_session",
+                            side_effect=lambda token: (
+                                panelauth.PANEL_PRINCIPAL
+                                if token == self.VALID else None))]
         for p in self.patches:
             p.start()
         d = config.PROJECTS_DIR / "p2-session"
@@ -85,8 +87,8 @@ class SessionTrustTest(unittest.TestCase):
         rec = self._low("bind-invalid")
         prop = self._propose(rec, session=self.VALID)
         # Exact session ID but the panel authority reports it invalid/expired.
-        with mock.patch.object(panelauth, "session_token_valid",
-                               return_value=False):
+        with mock.patch.object(panelauth, "principal_for_session",
+                               return_value=None):
             with self.assertRaisesRegex(ri.RequestError, "session-invalid"):
                 self._confirm(rec, prop["confirm_token"], session=self.VALID)
 

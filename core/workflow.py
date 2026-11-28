@@ -293,9 +293,15 @@ def run_stage(project: str, stage_id: str, token: str = "", executor=None,
     if g.get("status") != "ok":
         return g
     wid = g["wid"]
+    # Atomic claim: guard() checked _ACTIVE before this line, so two callers
+    # could both pass. Claim the stage under the same lock before any work.
+    with _LOCK:
+        if wid in _ACTIVE:
+            return {"status": opstatus.BLOCKED,
+                    "error": "stage-already-running"}
+        _ACTIVE.add(wid)
     rec = get(wid)
     s = _stage(rec, stage_id)
-    _ACTIVE.add(wid)
     def begin(r, items):
         st = _stage(r, stage_id)
         st["status"] = RUNNING

@@ -769,7 +769,8 @@ def _validate_execution(rec: dict, project: str, goal: str,
     if ex.get("steps_hash") != canonical_hash({"steps": plan["steps"]}):
         return {"allowed": False, "reason": "execution-steps-mismatch",
                 "status": status}
-    if actor and ex.get("actor") != str(actor):
+    declared = str(ex.get("declared_actor") or ex.get("actor") or "")
+    if actor and str(actor) != declared and str(actor) != ex.get("actor"):
         return {"allowed": False, "reason": "execution-actor-mismatch",
                 "status": status}
     bound_session = str(ex.get("bound_session") or ex.get("session_id") or "")
@@ -781,10 +782,10 @@ def _validate_execution(rec: dict, project: str, goal: str,
         if str(session_id) != bound_session:
             return {"allowed": False, "reason": "execution-session-mismatch",
                     "status": status}
-        if not panelauth.session_token_valid(str(session_id)):
+        if not panelauth.principal_for_session(str(session_id)):
             return {"allowed": False, "reason": "execution-session-invalid",
                     "status": status}
-    elif session_id and not panelauth.session_token_valid(str(session_id)):
+    elif session_id and not panelauth.principal_for_session(str(session_id)):
         # An anonymous proposal never grants trust through a bare session string.
         return {"allowed": False, "reason": "execution-session-invalid",
                 "status": status}
@@ -846,7 +847,8 @@ def propose_execution(request_id: str, actor: str, scope: str,
                                   payload, "تأیید صریح اجرای محدود لازم است",
                                   session_id=bound_session)
         rec["execution"] = {"state": "PROPOSED", "authorized": False,
-                            "actor": actor, "actor_trusted": False,
+                            "actor": actor, "declared_actor": actor,
+                            "actor_trusted": False,
                             "consent_confirmed": False,
                             "identity_mode": "pending",
                             "scope": scope, "bindings": bindings,
@@ -898,11 +900,13 @@ def confirm_execution(request_id: str, token: str, actor: str, scope: str,
                 from exc
         bound_session = str(v.get("session_id") or
                             ex.get("bound_session") or "")
+        principal = ""
         if bound_session:
             if not session_id or str(session_id) != bound_session:
                 raise RequestError("execution-session-binding-required")
             from core import panelauth
-            if not panelauth.session_token_valid(str(session_id)):
+            principal = str(panelauth.principal_for_session(str(session_id)) or "")
+            if not principal:
                 raise RequestError("execution-session-invalid")
         payload = v.get("payload") or {}
         expected = _execution_bindings(rec, project, goal,
@@ -911,17 +915,18 @@ def confirm_execution(request_id: str, token: str, actor: str, scope: str,
         for key, value in expected.items():
             if payload.get(key) != value:
                 raise RequestError("execution-confirmation-binding:" + key)
-        # Consent and authenticated identity are distinct: the token proves
-        # explicit consent; only a validated session bound to the proposal
-        # makes the supplied actor an authenticated identity.
-        trusted = False
-        if bound_session:
-            from core import panelauth
-            trusted = bool(panelauth.session_token_valid(str(session_id)))
+        # Consent and authenticated identity are distinct. The token proves
+        # explicit consent. Identity comes ONLY from the authoritative panel
+        # principal resolved from the bound session — never from the caller's
+        # actor string. When no session exists, the label stays self-declared.
+        trusted = bool(principal)
+        authoritative_actor = principal if trusted else actor
         confirmations.consume(str(token), str(project),
                               session_id=bound_session)
         ex.update({"state": "AUTHORIZED", "authorized": True,
-                   "actor": actor, "actor_trusted": trusted,
+                   "actor": authoritative_actor, "declared_actor": actor,
+                   "authenticated_principal": principal,
+                   "actor_trusted": trusted,
                    "consent_confirmed": True,
                    "identity_mode": "authenticated" if trusted else "self-declared",
                    "scope": scope, "project": str(project),

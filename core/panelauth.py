@@ -175,6 +175,26 @@ def login(password: str) -> tuple[str, str]:
     return session, csrf
 
 
+# Single-admin panel: an authenticated session always represents this
+# canonical account. It is the authoritative identity for audit attribution.
+PANEL_PRINCIPAL = "panel_admin"
+
+
+def principal_for_session(token: str) -> str | None:
+    """Return the authenticated principal for a valid panel session.
+
+    Never derives identity from a caller-supplied label; only from the
+    server-side session store.
+    """
+    with _lock:
+        s = _sessions.get(token or "")
+        if not s or s["exp"] < time.time():
+            if s:
+                _sessions.pop(token, None)
+            return None
+        return PANEL_PRINCIPAL
+
+
 def session_token_valid(token: str) -> bool:
     with _lock:
         s = _sessions.get(token or "")
