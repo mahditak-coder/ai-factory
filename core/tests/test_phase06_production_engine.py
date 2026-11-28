@@ -131,8 +131,15 @@ class ProductionEngineTest(unittest.TestCase):
                               "models": {"paid-model": {}}}]}
         est = {"ok": True, "amount_usd": 0.25, "free": False,
                "source": "operator-configured"}
+        bound = pp.gov.request_hash(pp._payload(
+            PROJECT, "paid-x", "paid-model", "standard", "generate",
+            "", "", [], ""))
+        info = {"ok": True, "expired": False, "project": PROJECT,
+                "provider": "paid-x", "model": "paid-model",
+                "estimated_cost_usd": 0.25, "request_hash": bound}
         with mock.patch.object(pp, "_cfg", return_value=cfg), \
              mock.patch.object(pp.gov, "estimate", return_value=est), \
+             mock.patch.object(pp.gov, "approval_info", return_value=info), \
              mock.patch.object(ip, "get", return_value=FakeProvider()), \
              mock.patch.dict(os.environ, {"P06_TEST_KEY": "SUPERSECRET-VALUE"}):
             no_approval = pp.decide(PROJECT, "paid-x", "paid-model")
@@ -239,18 +246,24 @@ class ProductionEngineTest(unittest.TestCase):
                 paths.project_path(PROJECT, rel)
         blocked = vr.capture(PROJECT, "https://example.com/x.png")
         self.assertFalse(blocked["ok"])
-        self.assertIn("target", blocked["reason"])
+        self.assertTrue("network-isolation-unavailable" in blocked["reason"]
+                        or "target" in blocked["reason"])
 
     def test_12_screenshot_is_evidence_only(self):
-        cap = {"status": "AVAILABLE", "tool": "chromium", "path": "/fake",
-               "limits": ["mock"]}
+        browser = {"status": "AVAILABLE", "tool": "chromium", "path": "/fake",
+                   "limits": ["mock"]}
+        iso = {"status": "AVAILABLE", "mechanism": "unshare -n",
+               "path": "/fake-unshare", "limits": ["mock"]}
         def fake_run(cmd, **kw):
+            self.assertEqual(cmd[:2], ["/fake-unshare", "-n"])
             out = cmd[-2].split("=", 1)[1]
             Path(out).write_bytes(self._png("evidence/shot.png").read_bytes())
             self.assertTrue(all("SECRET" not in str(v) for v in
                                 kw.get("env", {}).values()))
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch.object(vr, "capability", return_value=cap), \
+        with mock.patch.object(vr, "browser_capability", return_value=browser), \
+             mock.patch.object(vr, "network_isolation_capability",
+                               return_value=iso), \
              mock.patch.object(vr.subprocess, "run", side_effect=fake_run):
             r = pe.capture_evidence(PROJECT, "about:blank",
                                     "evidence/shot.png")

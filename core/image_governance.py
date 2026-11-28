@@ -107,6 +107,30 @@ def spent_today() -> float:
                      if str(e.get("at", "")).startswith(today)), 4)
 
 
+APPROVAL_TTL_SECONDS = 900  # 15 minutes; expired approvals are never consumed
+
+
+def approval_info(approval_id: str) -> dict:
+    """READ-ONLY inspection of one approval, including expiry. No mutation."""
+    aid = str(approval_id or "")
+    if not aid:
+        return {"ok": False, "error": "approval-id-required"}
+    with _LOCK:
+        rec = _load().get("approvals", {}).get(aid)
+    if not isinstance(rec, dict):
+        return {"ok": False, "error": "unknown-approval"}
+    try:
+        at = time.strptime(str(rec.get("at") or ""), "%Y-%m-%dT%H:%M:%S")
+        age = max(0.0, time.time() - time.mktime(at))
+    except (ValueError, OverflowError):
+        age = float(APPROVAL_TTL_SECONDS + 1)
+    out = dict(rec)
+    out.update({"ok": True, "age_seconds": round(age, 2),
+                "expired": age > APPROVAL_TTL_SECONDS,
+                "ttl_seconds": APPROVAL_TTL_SECONDS})
+    return out
+
+
 def request_approval(project: str, payload: dict, actor: str = "") -> dict:
     """Create a pending approval; it NEVER auto-grants anything."""
     est = estimate(str(payload.get("provider") or ""),

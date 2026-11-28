@@ -195,5 +195,12 @@
 - Tests: targeted Phase 06 `Ran 15 tests ... OK` (exit 0); Phase 04 `Ran 57 tests ... OK`; Phase 05 `Ran 71 tests ... OK`; full suite `Ran 617 tests in 58.930s — OK`; real Android build `Ran 1 test ... OK`; `py_compile` and `git diff --check` PASS. CI, live paid provider calls, live free OpenRouter generation, interactive 2.5D runtime and 3D paths NOT TESTED.
 - Details: `docs/rebuild/evidence/PHASE-06-PRODUCTION-ENGINE.md`.
 
+## Phase 06 focused remediation (same branch, additive)
+- Exact user-selected provider/model/quality now reach the adapter unchanged; OpenRouter supports explicitly selected free and paid models from the current catalog with verified price and returned-model check; no automatic selection or fallback.
+- Paid approval consumed exactly once under cross-process flock before the single external call; one-time adapter token prevents a second consume; replay, concurrent reuse, mismatched prompt/cost/model and expired approvals fail closed.
+- Chromium screenshot requires a real OS network namespace (`unshare -n`); on this host the probe fails (`Operation not permitted`) so screenshots are BLOCKED before any browser starts. The earlier screenshot evidence is historical/superseded under this policy.
+- Evidence: MOCKED provider/transport tests only (no live provider call and no paid spend); full suite `Ran 630 tests in 58.673s — OK`; focused 13/13, Phase 06 15/15, OpenRouter 9/9, image_remote 9/9. LIVE OpenRouter generation, real paid spend and isolated screenshots NOT TESTED.
+- No Phase 01–05 file was reopened; ToolExecutor, SecurityPolicy and governance contracts preserved.
+
 ## Next action
-Phase 06 is **DONE** against the stated acceptance criteria; Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **(Historical entry, PRESERVED and SUPERSEDED by the Phase 06 AUTHORIZED / ACTIVE record above: "Phase 06 has NOT started and is NOT authorized.")** Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 06 focused remediation is complete; Phase 06 is NOT marked ACCEPTED by this agent and awaits independent review. Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **(Historical entry, PRESERVED and SUPERSEDED by the Phase 06 AUTHORIZED / ACTIVE record above: "Phase 06 has NOT started and is NOT authorized.")** Historical provisional/superseded status entries are preserved above, not deleted.

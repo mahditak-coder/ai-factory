@@ -66,9 +66,12 @@ def produce_image(project: str, prompt: str, provider: str, model: str,
                   rel_path: str = "assets/generated/image.png",
                   production_ready: bool = False, **kwargs) -> dict:
     """Explicit provider/model only; single call; validated and recorded."""
-    decision = provider_policy.decide(project, provider, model, operation,
-                                      quality, approval_id,
-                                      confirmed_cost_usd)
+    decision = provider_policy.decide(
+        project, provider, model, operation, quality, approval_id,
+        confirmed_cost_usd, prompt=prompt,
+        size=str(kwargs.get("size") or ""),
+        references=list(kwargs.get("references") or []),
+        region=str(kwargs.get("region") or ""))
     if not decision.get("ok"):
         return {"ok": False, "status": decision["status"],
                 "reason": decision["reason"],

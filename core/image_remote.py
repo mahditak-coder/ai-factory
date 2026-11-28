@@ -85,8 +85,27 @@ class _RemoteBase(_Base):
         if not self._key():
             return deny("missing-credential:" + self.env_name)
         model = str(req.get("model") or "")
-        if model not in self.models:
+        supported = set(self.models)
+        cfg = next((p for p in self._cfg().get("providers", [])
+                    if p.get("id") == self.id), {})
+        supported.update((cfg.get("models") or {}).keys())
+        if model not in supported:
             return deny("model-not-supported:" + model)
+        token = str(req.get("consumption_token") or "")
+        if token:
+            # The policy layer already consumed the approval ONCE (or verified
+            # a free selection). NEVER consume it again inside the adapter.
+            from core import provider_policy as policy
+            check = policy.take_consumption(
+                token, str(req.get("approval_id") or ""),
+                str(req.get("provider") or self.id), model,
+                gov.request_hash(gov.payload_from(
+                    str(req.get("project") or ""), req)), None)
+            if not check.get("ok"):
+                return deny(str(check.get("error")))
+            return ImageResult(status="PASS", ok=True, provider=self.id,
+                evidence={"cost_usd": check["cost_usd"],
+                          "approval_consumed_once": True})
         if not req.get("approval_id"):
             return deny("approval-required")
         if not req.get("confirmed_cost_usd"):
@@ -368,11 +387,21 @@ class OpenRouterImageProvider(_RemoteBase):
         st["eu_routing"] = "BLOCKED (official model descriptor)"
         return st
 
+    def selected_model(self, model: str) -> str:
+        """The EXACT user-selected model, if it exists in the current catalog."""
+        model = str(model or "")
+        cfg = next((p for p in self._cfg().get("providers", [])
+                    if p.get("id") == self.id), {})
+        allowed = set((cfg.get("models") or {}).keys())
+        allowed.update(self.models)
+        return model if model in allowed else ""
+
     def _authorize(self, req: dict) -> ImageResult:
-        model = str(req.get("model") or "")
-        if model != OPENROUTER_MODEL:
-            return ImageResult.fail("non-free-or-invalid-model-rejected:" + model[:80],
-                                    BLOCKED, provider=self.id)
+        requested = str(req.get("model") or "")
+        model = self.selected_model(requested)
+        if not model:
+            return ImageResult.fail("non-free-or-invalid-model-rejected:" +
+                                    requested[:80], BLOCKED, provider=self.id)
         if str(req.get("operation") or "generate") != "generate":
             return ImageResult.fail("editing-not-supported-by-free-model", BLOCKED,
                                     provider=self.id)
@@ -387,7 +416,10 @@ class OpenRouterImageProvider(_RemoteBase):
             return auth
         est = gov.estimate(self.id, model)
         amount = est.get("amount_usd")
-        if not est.get("ok") or amount is None or float(amount) != 0.0:
+        if not est.get("ok") or amount is None:
+            return ImageResult.fail("price-not-verified", BLOCKED,
+                                    provider=self.id)
+        if float(amount) == 0.0 and not est.get("free"):
             return ImageResult.fail("zero-cost-estimate-required", BLOCKED,
                                     provider=self.id)
         return auth
@@ -406,7 +438,11 @@ class OpenRouterImageProvider(_RemoteBase):
         if aspect not in OPENROUTER_ASPECTS:
             return ImageResult.fail("aspect-ratio-not-supported:" + aspect, "FAIL",
                                     provider=self.id)
-        payload = {"model": OPENROUTER_MODEL, "prompt": prompt, "n": 1,
+        model = self.selected_model(str(req.get("model") or ""))
+        if not model:
+            return ImageResult.fail("non-free-or-invalid-model-rejected", BLOCKED,
+                                    provider=self.id)
+        payload = {"model": model, "prompt": prompt, "n": 1,
                    "aspect_ratio": aspect, "response_format": "b64_json"}
         try:
             # ONE call only: no retry, no fallback, no second provider.
@@ -439,8 +475,8 @@ class OpenRouterImageProvider(_RemoteBase):
             obj = json.loads(raw.decode("utf-8", "replace"))
         except (ValueError, UnicodeDecodeError):
             return ImageResult.fail("malformed-json-response", "FAIL", provider=self.id)
-        returned = str(obj.get("model") or OPENROUTER_MODEL)
-        if returned != OPENROUTER_MODEL:
+        returned = str(obj.get("model") or model)
+        if returned != model:
             return ImageResult.fail("returned-model-mismatch:" + returned[:80], "FAIL",
                                     provider=self.id)
         usage = obj.get("usage") or {}
@@ -448,7 +484,12 @@ class OpenRouterImageProvider(_RemoteBase):
             cost = float(usage.get("cost") or 0)
         except (TypeError, ValueError):
             return ImageResult.fail("invalid-billing-information", "FAIL", provider=self.id)
-        if cost != 0.0:
+        try:
+            approved = float(req.get("confirmed_cost_usd") or
+                             (auth.evidence or {}).get("cost_usd") or 0)
+        except (TypeError, ValueError):
+            approved = 0.0
+        if cost > approved + 0.0001:
             return ImageResult.fail("unexpected-nonzero-charge:%.4f" % cost, "BLOCKED",
                                     provider=self.id)
         items = obj.get("data") or []
@@ -486,7 +527,7 @@ class OpenRouterImageProvider(_RemoteBase):
                         diagnostics.get("media_type"), diagnostics["decoded_magic"],
                         diagnostics["decoded_text"][:80]), "FAIL", provider=self.id,
                     evidence={"diagnostics": diagnostics})
-        meta = {"provider": self.id, "model": OPENROUTER_MODEL, "operation": "generate",
+        meta = {"provider": self.id, "model": model, "operation": "generate",
                 "prompt_sha256": gov.request_hash({"prompt": prompt}),
                 "reference_hashes": [], "usage": usage, "billing_cost_usd": cost,
                 "billing_verified": True, "response_model": returned,

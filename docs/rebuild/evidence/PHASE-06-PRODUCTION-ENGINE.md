@@ -106,3 +106,29 @@ delivery message; the parent is `8209449e6d32a5e6368faae8365e07114b915e45`.
 
 Phase 06 is **DONE** against the stated acceptance criteria. Phase 07 is NOT
 started and requires explicit user authorization.
+
+## FOCUSED REMEDIATION — ADR-012 dispatch / one-time approval / ADR-013 isolation
+
+Continues from the remote Phase 06 HEAD `bc1bba91958c84ee04422254404a42390167f96a`, in an isolated clone. Only the three verified issues were touched; Phase 01–05 work was not reopened.
+
+### A — exact selection reaches the adapter
+- Defect: `provider_policy.dispatch()` never forwarded the selected `model` or `quality` to the provider adapter. OpenRouter hardcoded `OPENROUTER_MODEL` in both authorization and the outbound payload, and the request hash omitted `quality`, so the selected model did not reach the adapter unchanged.
+- Fix: identity (`provider`, `model`, `quality`, `operation`, `prompt`, `size`, `references`, `region`) comes exclusively from the validated decision; the adapter uses the exact selected model, validates it against the provider's CURRENT config catalog (free or paid), sends that model in the single request, and verifies the returned model matches it. No `active()`/`select()` fallback is called.
+
+### B — one-time paid approval
+- Defect: `provider_policy` consumed the approval and the remote adapter consumed it again; the bound payload omitted prompt/size, so changed prompts could pass the gate.
+- Fix: paid approval is consumed ONCE under a cross-process `fcntl.flock` in `provider_policy`, after checking expiry (15 min TTL), project/provider/model binding, exact cost and request hash. The adapter receives a single-use, binding-checked token issued by that gate and NEVER consumes governance again; direct adapter calls without a token keep the prior governance contract. Replay, concurrent reuse, changed prompt/cost/model and expired approvals fail closed.
+
+### C — real Chromium network isolation
+- Defect: only the initial URL was checked; subresources/redirects/WebSockets/service workers/navigation were not denied.
+- Fix: `unshare -n` is probed at runtime. Only when the OS namespace is actually available is Chromium launched inside it, with resolver/proxy/background-network hardening. On this host the probe returns `Operation not permitted`; screenshots are therefore BLOCKED before any browser starts. No tool was installed and no security control was weakened.
+
+### Evidence classification (MOCKED / REAL / PASS / FAIL / NOT TESTED)
+- **MOCKED**: 13 focused tests use an injected `_http` transport and a fake browser; they prove model preservation, single call, no fallback, one-time consumption, replay/concurrent rejection, expiry, isolated command construction and no external target. No real provider request, no paid call, no credits spent.
+- **REAL**: OS probe `unshare -n` → `Operation not permitted`; screenshot refused with `no network-exposed browser was started`. `ffprobe`/Pillow/Android toolchain detection unchanged.
+- **PASS**: focused 13/13; Phase 06 suite 15/15; OpenRouter 9/9; image_remote 9/9; full suite 630/630 (58.673s); `py_compile` and `git diff --check` clean.
+- **FAIL**: none in final runs.
+- **NOT TESTED**: live OpenRouter generation (free or paid), real paid spend, real screenshot with OS isolation (blocked in this environment), CI.
+- **SUPERSEDED historical evidence**: the earlier screenshot PNG sha256 `8c231f9a...` recorded in this file was produced BEFORE OS-level isolation was required; it is preserved as history and is NOT valid evidence under the current policy. No production claim rests on it.
+
+Logs: `…/p6r-focused-final.log`, `…/p6r-p06-final.log`, `…/p6r-or-final.log`, `…/p6r-remote-final.log`, `…/p6r-full2.log`, `…/p6r-realblock.log`.
