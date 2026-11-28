@@ -146,3 +146,40 @@ Continues from remote HEAD `200801002765ab8fa5222d3048f6df6b8dc5fb26` in an isol
 - **NOT TESTED:** live OpenRouter generation (free or paid), real paid spend, CI, and isolated screenshots (still blocked in this environment).
 
 Logs: `…/p6f-s1.log`, `…/p6f-s2.log`, `…/p6f-s3.log`, `…/p6f-s4.log`, `…/p6f-s5.log`, `…/p6f-full.log`.
+
+## FINAL COMPREHENSIVE CLOSURE GATE — findings and one consolidated fix
+
+Starting HEAD `2d93ce0a92027d799dcab9e53f8ac78ea1093fdd`; all work in an isolated clone. Phase 01–05 files were not reopened.
+
+### Consolidated defect list (all findings reviewed together)
+| # | Severity | Defect | Status |
+|---|---|---|---|
+| 1 | HIGH | Free decision replay: no consumed state, unlimited tokens | FIXED |
+| 2 | HIGH | Caller kwargs could raise the free billing cap (`confirmed_cost_usd`) | FIXED |
+| 3 | HIGH | Expired approval consumable via `gov.consume` / direct adapter | FIXED |
+| 4 | MED | Governance store thread-safe only, not cross-process | FIXED |
+| 5 | MED | `production_engine.build()` crashed for 4/5 declared modes | FIXED |
+| 6 | MED | Missing required engine tools treated as satisfied | FIXED in Phase 06 capability path (baseline helper untouched) |
+| 7 | MED | JPEG/WebP marked production-verified by extension alone | FIXED |
+| 8 | MED | ffprobe accepted non-audio streams | FIXED |
+| 9 | LOW | OpenRouter accepted a response with no `model` | FIXED |
+| 10 | LOW | Provider provenance `version` always empty | FIXED |
+| 11 | LOW | Non-generate ops silently used local Pillow | FIXED |
+| 12 | LOW | Cached capability probes could report stale AVAILABLE | FIXED in Phase 06 |
+
+### Consolidated fix
+- **One-shot decisions for ALL paths:** server-side file store `data/provider_decisions.json` under cross-process `flock`; `consumed` flag persisted BEFORE token issuance; TTL 300 s; unknown/expired/consumed/mutated handles rejected. Free and paid decisions are equally one-shot; replay after a provider failure cannot obtain a second token.
+- **Provider call hardening:** allowlisted forwarded kwargs; provider/model/cost/approval always overwritten from freshly verified values; non-generate operations restricted to `local-pillow`; OpenRouter requires an exact present returned model; caller cost overrides rejected before transport.
+- **Governance:** expiry enforced inside `consume()` and shared `flock` on every store mutation — direct and policy paths both protected.
+- **Honesty gates:** real JPEG/WebP decode, `codec_type=audio` for ffprobe, honest engine capability with missing tools treated as unsatisfied, catalog engine ids + `None` guard, fresh capability probes, provenance version from the real asset record.
+
+### Evidence classification
+- **MOCKED:** all provider transport calls and browser invocations in the new/updated tests are injected fakes; a real network attempt raises AssertionError. **No live OpenRouter call, no paid spend.**
+- **REAL:** real Android toolchain build; real `unshare -n` probe → `Operation not permitted`; screenshot execution BLOCKED before any browser starts; real ffprobe/Pillow validation; real local config/governance files under isolated `AI_FACTORY_TEST_ROOT`.
+- **PASS:** acceptance gate 13/13; forgery 7/7; focused remediation 13/13; Phase 06 15/15; OpenRouter 9/9; image_remote 9/9; Phase 04 57/57; Phase 05 71/71; full suite 650/650 (67.254s); real Android build 1/1; `py_compile` and `git diff --check` clean.
+- **FAIL:** none in final runs. Two pre-existing fixtures lacked the now-required provider `model` field and one older test passed prompt only at dispatch; all were strengthened and suites rerun green.
+- **NOT TESTED:** live OpenRouter generation (free or paid), real paid spend, CI, isolated screenshots (blocked by the OS in this environment), interactive 2.5D runtime, 3D paths.
+
+Logs: `…/p6c-s1.log` … `…/p6c-s6.log`, `…/p6c-p04.log`, `…/p6c-p05.log`, `…/p6c-full2.log`, `…/p6c-realbuild.log`, `…/p6c-iso.log`.
+
+**Proposed decision: NOT ACCEPTED by the implementing agent** — submitted for final independent review only. Phase 07 NOT started.

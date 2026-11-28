@@ -79,7 +79,8 @@ class AdapterTest(unittest.TestCase):
 
     def test_success_and_provider_error_through_governed_tool(self):
         def ok_http(method, url, headers, body, timeout):
-            return 200, {}, json_response({"data": [{"b64_json": B64}],
+            return 200, {}, json_response({"model": MODEL,
+                                           "data": [{"b64_json": B64}],
                                            "usage": {"cost": 0}})
         def json_response(obj):
             import json

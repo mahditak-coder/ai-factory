@@ -7,11 +7,13 @@ or automatic approval exists. Usage is recorded after the call only.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import core.config as config
@@ -131,6 +133,24 @@ def approval_info(approval_id: str) -> dict:
     return out
 
 
+@contextmanager
+def _store_lock():
+    """Shared POSIX lock: all governance mutations are cross-process atomic."""
+    _STORE.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(_STORE) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        os.close(fd)
+
+
 def request_approval(project: str, payload: dict, actor: str = "") -> dict:
     """Create a pending approval; it NEVER auto-grants anything."""
     est = estimate(str(payload.get("provider") or ""),
@@ -152,7 +172,7 @@ def request_approval(project: str, payload: dict, actor: str = "") -> dict:
     rh = request_hash(payload)
     aid = "ap-img-" + hashlib.sha256(
         (rh + str(time.time())).encode()).hexdigest()[:16]
-    with _LOCK:
+    with _store_lock(), _LOCK:
         data = _load()
         data.setdefault("approvals", {})[aid] = {
             "id": aid, "project": project, "request_hash": rh,
@@ -169,7 +189,7 @@ def decide(approval_id: str, decision: str, actor: str = "") -> dict:
     """Explicit human decision: 'approve' or 'reject'. No default approval."""
     if str(decision).strip().lower() not in ("approve", "reject"):
         return {"status": opstatus.FAIL, "error": "invalid-decision"}
-    with _LOCK:
+    with _store_lock(), _LOCK:
         data = _load()
         rec = data.get("approvals", {}).get(approval_id)
         if rec is None:
@@ -185,7 +205,7 @@ def decide(approval_id: str, decision: str, actor: str = "") -> dict:
 
 def consume(approval_id: str, payload: dict) -> dict:
     """One-shot: verify exact request binding and mark the approval spent."""
-    with _LOCK:
+    with _store_lock(), _LOCK:
         data = _load()
         rec = data.get("approvals", {}).get(approval_id)
         if rec is None:
@@ -194,6 +214,13 @@ def consume(approval_id: str, payload: dict) -> dict:
             return {"status": opstatus.BLOCKED, "error": "approval-not-granted"}
         if rec.get("consumed"):
             return {"status": opstatus.BLOCKED, "error": "approval-already-used"}
+        try:
+            made = time.strptime(str(rec.get("at") or ""), "%Y-%m-%dT%H:%M:%S")
+            age = time.time() - time.mktime(made)
+        except (ValueError, OverflowError):
+            age = APPROVAL_TTL_SECONDS + 1
+        if age > APPROVAL_TTL_SECONDS:
+            return {"status": opstatus.BLOCKED, "error": "approval-expired"}
         if rec.get("request_hash") != request_hash(payload):
             return {"status": opstatus.FAIL, "error": "approval-request-mismatch"}
         if spent_today() + float(rec["estimated_cost_usd"]) > limits()["daily_usd"]:
@@ -207,7 +234,7 @@ def consume(approval_id: str, payload: dict) -> dict:
 def record_usage(approval_id: str, provider: str, model: str,
                  actual: dict | None = None) -> dict:
     """Records real provider usage when available; never claims a guarantee."""
-    with _LOCK:
+    with _store_lock(), _LOCK:
         data = _load()
         rec = data.get("approvals", {}).get(approval_id) or {}
         entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"),

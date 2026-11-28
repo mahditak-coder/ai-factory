@@ -41,13 +41,15 @@ from core import opstatus
 
 _CONFIG = config.PROJECT_ROOT / "config" / "image_providers.json"
 _CONSUME_LOCK = config.PROJECT_ROOT / "data" / "image_approval_consume.lock"
+_DECISIONS_STORE = config.PROJECT_ROOT / "data" / "provider_decisions.json"
+_DECISION_SCHEMA = "af-provider-decisions-1.0"
 _AUTO = ("", "auto", "none", "default")
 _TOKEN_TTL_SECONDS = 60
+_DECISION_TTL_SECONDS = 300
+_FORWARDED_KWARGS = ("size", "aspect_ratio", "n", "timeout_s", "output",
+                     "region", "references")
 _tokens: dict[str, dict] = {}
-_decisions: dict[str, dict] = {}
 _token_lock = threading.Lock()
-_decision_lock = threading.Lock()
-_MAX_DECISIONS = 512
 
 _PUBLIC_KEYS = (
     "project", "provider", "model", "operation", "quality", "prompt",
@@ -125,6 +127,8 @@ def _validate_request(req: dict) -> tuple[dict | None, dict | None]:
     if operation not in ("generate", "inspect", "resize", "white_to_alpha",
                          "sprite_sheet"):
         return None, _blocked("unsupported-operation:" + operation[:80])
+    if operation != "generate" and pid != "local-pillow":
+        return None, _blocked("non-generate-operations-are-local-only")
     provider = ip.get(pid)
     if provider is None:
         return None, _blocked("unknown-provider:" + pid[:80])
@@ -217,6 +221,88 @@ def _validate_request(req: dict) -> tuple[dict | None, dict | None]:
     return verified, None
 
 
+@contextmanager
+def _decision_file_lock():
+    """Cross-process lock for the decision ONE-SHOT consumption record."""
+    _DECISIONS_STORE.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(_DECISIONS_STORE) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        os.close(fd)
+
+
+def _load_decisions() -> dict:
+    try:
+        text = _DECISIONS_STORE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"schema": _DECISION_SCHEMA, "decisions": {}}
+    except OSError as exc:
+        raise RuntimeError("decision-store-unreadable:%s" %
+                           type(exc).__name__) from exc
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("decision-store-corrupt-json") from exc
+    if (not isinstance(data, dict) or
+            data.get("schema") != _DECISION_SCHEMA or
+            not isinstance(data.get("decisions"), dict)):
+        raise RuntimeError("decision-store-invalid-root")
+    for key, rec in data["decisions"].items():
+        if (not isinstance(key, str) or not isinstance(rec, dict) or
+                not isinstance(rec.get("request"), dict) or
+                not isinstance(rec.get("fingerprint"), str) or
+                not isinstance(rec.get("created_at"), (int, float)) or
+                not isinstance(rec.get("consumed"), bool)):
+            raise RuntimeError("decision-store-invalid-entry")
+    return data
+
+
+def _save_decisions(data: dict) -> None:
+    tmp = Path("%s.%d.%d.%s.tmp" % (_DECISIONS_STORE, os.getpid(),
+                                    threading.get_ident(),
+                                    secrets.token_hex(6)))
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1,
+                                  sort_keys=True), encoding="utf-8")
+        tmp.replace(_DECISIONS_STORE)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _peek_decision(decision: dict) -> tuple[dict | None, dict | None]:
+    """Read-only handle check; no token and no consumption side effect."""
+    if not isinstance(decision, dict):
+        return None, _blocked("decision-not-a-dict")
+    did = str(decision.get("decision_id") or "")
+    try:
+        with _decision_file_lock():
+            data = _load_decisions()
+            rec = data["decisions"].get(did)
+    except RuntimeError as exc:
+        return None, _blocked("decision-store-unavailable:" + str(exc))
+    if rec is None:
+        return None, _blocked("decision-not-registered")
+    if rec["consumed"]:
+        return None, _blocked("decision-already-consumed")
+    if time.time() - rec["created_at"] > _DECISION_TTL_SECONDS:
+        return None, _blocked("decision-expired")
+    if _fingerprint(decision) != rec["fingerprint"]:
+        return None, _blocked("decision-mutated-after-validation")
+    return dict(rec), None
+
+
 def _fingerprint(decision: dict) -> str:
     blob = json.dumps({k: decision.get(k) for k in _PUBLIC_KEYS},
                       ensure_ascii=False, sort_keys=True, default=str)
@@ -241,14 +327,22 @@ def decide(project: str, provider_id: str, model_id: str,
     decision = {"ok": True, "status": opstatus.PASS, **verified}
     decision_id = "dec-" + secrets.token_urlsafe(18)
     decision["decision_id"] = decision_id
-    with _decision_lock:
-        if len(_decisions) >= _MAX_DECISIONS:
-            oldest = next(iter(_decisions))
-            _decisions.pop(oldest, None)
-        _decisions[decision_id] = {
-            "request": {k: (list(v) if k == "references" and isinstance(v, list)
-                            else v) for k, v in request.items()},
-            "fingerprint": _fingerprint(decision)}
+    record = {"decision_id": decision_id, "request": {
+        k: (list(v) if k == "references" and isinstance(v, list) else v)
+        for k, v in request.items()},
+        "fingerprint": _fingerprint(decision),
+        "created_at": time.time(), "consumed": False, "consumed_at": 0}
+    try:
+        with _decision_file_lock():
+            data = _load_decisions()
+            now = time.time()
+            for old in [k for k, v in data["decisions"].items()
+                        if now - v.get("created_at", 0) > _DECISION_TTL_SECONDS]:
+                data["decisions"].pop(old, None)
+            data["decisions"][decision_id] = record
+            _save_decisions(data)
+    except RuntimeError as exc:
+        return _blocked("decision-registration-failed:" + str(exc))
     return decision
 
 
@@ -265,24 +359,20 @@ def _issue_token(approval_id: str, provider: str, model: str,
 
 
 def consume_approval(decision: dict) -> dict:
-    """Revalidate the server snapshot and issue ONE authorization token.
+    """Revalidate, mark the decision consumed ONCE, THEN issue one token.
 
-    No authorization field in the caller's dictionary is trusted: the handle
-    is only a lookup key, and every value below is freshly derived from the
-    current provider configuration and governance records.
+    The consumed flag is persisted under a cross-process flock BEFORE the
+    token is created, so replay, concurrent use and post-failure retries can
+    never obtain a second authorization. Every value used here comes from the
+    server-side request snapshot and CURRENT configuration, never from fields
+    in the caller's dictionary.
     """
-    if not isinstance(decision, dict):
-        return _blocked("decision-not-a-dict")
-    did = str(decision.get("decision_id") or "")
-    with _decision_lock:
-        snapshot = _decisions.get(did)
-    if snapshot is None:
-        return _blocked("decision-not-registered")
-    if _fingerprint(decision) != snapshot["fingerprint"]:
-        return _blocked("decision-mutated-after-validation")
-    verified, problem = _validate_request(snapshot["request"])
+    rec, problem = _peek_decision(decision)
     if problem is not None:
-        return problem  # config/price/approval changed since decide()
+        return problem
+    verified, problem = _validate_request(rec["request"])
+    if problem is not None:
+        return problem  # current config/price/approval no longer authorizes it
     verified = dict(verified)
     payload = _payload(verified["project"], verified["provider"],
                        verified["model"], verified["quality"],
@@ -290,28 +380,47 @@ def consume_approval(decision: dict) -> dict:
                        verified["size"], verified["references"],
                        verified["region"])
     expected_hash = gov.request_hash(payload)
+    did = str(decision.get("decision_id") or "")
+    verdict = None
+    try:
+        with _decision_file_lock():
+            data = _load_decisions()
+            current = data["decisions"].get(did)
+            if current is None:
+                return _blocked("decision-not-registered")
+            if current["consumed"]:
+                return _blocked("decision-already-consumed")
+            if time.time() - current["created_at"] > _DECISION_TTL_SECONDS:
+                return _blocked("decision-expired")
+            if not verified["free"]:
+                # Paid governance consumption ALSO happens inside this
+                # critical section, before the decision is marked consumed.
+                with _consume_lock():
+                    verdict = gov.consume(verified["approval_id"], payload)
+                if verdict.get("status") != "PASS":
+                    return _blocked("approval-not-consumed:" +
+                                    str(verdict.get("error")))
+            current["consumed"] = True
+            current["consumed_at"] = time.time()
+            _save_decisions(data)   # PERSISTED BEFORE TOKEN ISSUANCE
+    except RuntimeError as exc:
+        return _blocked("decision-store-unavailable:" + str(exc))
+    cost = 0.0 if verified["free"] else float(verdict.get("cost_usd") or 0)
+    token = _issue_token("" if verified["free"] else verified["approval_id"],
+                         verified["provider"], verified["model"],
+                         expected_hash, cost)
+    gate = {"ok": True, "status": opstatus.PASS,
+            "consumption_token": token, "verified": verified,
+            "decision_consumed_once": True}
     if verified["free"]:
-        token = _issue_token("", verified["provider"], verified["model"],
-                             expected_hash, 0.0)
-        return {"ok": True, "status": opstatus.PASS,
-                "consumption_token": token, "free_authorization": True,
-                "verified": verified,
-                "note": "explicit selection + verified zero cost; "
-                        "no payment approval needed"}
-    with _consume_lock():
-        # The flock plus governance's consumed flag makes reuse fail closed
-        # across threads AND processes. Governance is touched exactly once.
-        verdict = gov.consume(verified["approval_id"], payload)
-        if verdict.get("status") != "PASS":
-            return _blocked("approval-not-consumed:" +
-                            str(verdict.get("error")))
-        token = _issue_token(verified["approval_id"], verified["provider"],
-                             verified["model"], expected_hash,
-                             float(verdict.get("cost_usd") or 0))
-    return {"ok": True, "status": opstatus.PASS,
-            "consumption_token": token, "cost_usd": verdict.get("cost_usd"),
-            "approval_id": verified["approval_id"], "consumed_once": True,
-            "verified": verified}
+        gate["free_authorization"] = True
+        gate["note"] = ("explicit selection + verified zero cost; "
+                        "no payment approval needed")
+    else:
+        gate["cost_usd"] = verdict.get("cost_usd")
+        gate["approval_id"] = verified["approval_id"]
+        gate["consumed_once"] = True
+    return gate
 
 
 def take_consumption(token: str, approval_id: str, provider: str,
@@ -335,29 +444,37 @@ def take_consumption(token: str, approval_id: str, provider: str,
 
 def dispatch(decision: dict, prompt: str = "", **kwargs) -> dict:
     """Call the SELECTED provider once using only freshly verified identity."""
+    rec, problem = _peek_decision(decision)
+    if problem is not None:
+        return problem
+    req0 = rec["request"]
+    if prompt and str(prompt) != str(req0.get("prompt") or ""):
+        return _blocked("call-prompt-changed-after-validation")
+    for key in ("size", "region"):
+        if key in kwargs and str(kwargs[key]) != str(req0.get(key) or ""):
+            return _blocked("call-" + key + "-changed-after-validation")
+    if "references" in kwargs and             list(kwargs["references"]) != list(req0.get("references") or []):
+        return _blocked("call-references-changed-after-validation")
+    if any(k in kwargs for k in ("approval_id", "confirmed_cost_usd",
+                                 "consumption_token", "model", "provider")):
+        return _blocked("caller-authorization-kwargs-rejected")
     gate = consume_approval(decision)
     if not gate.get("ok"):
         return gate
     v = gate["verified"]          # server-derived, never caller-derived
-    if prompt and str(prompt) != v["prompt"]:
-        return _blocked("call-prompt-changed-after-validation")
-    for key in ("size", "region"):
-        if key in kwargs and str(kwargs[key]) != v[key]:
-            return _blocked("call-" + key + "-changed-after-validation")
-    if "references" in kwargs and list(kwargs["references"]) != v["references"]:
-        return _blocked("call-references-changed-after-validation")
     provider = ip.get(v["provider"])
     if provider is None:
         return _blocked("selected-provider-vanished")
-    req = dict(kwargs)
+    req = {k: kwargs[k] for k in _FORWARDED_KWARGS if k in kwargs}
     req.update({"project": v["project"], "provider": v["provider"],
                 "model": v["model"], "operation": v["operation"],
                 "quality": v["quality"], "prompt": v["prompt"],
                 "size": v["size"], "references": list(v["references"]),
                 "region": v["region"]})
-    if v["approval_id"]:
-        req["approval_id"] = v["approval_id"]
-        req["confirmed_cost_usd"] = str(v["confirmed_cost_usd"])
+    req["approval_id"] = v["approval_id"] or ""
+    req["confirmed_cost_usd"] = (str(v["confirmed_cost_usd"])
+                                 if v["confirmed_cost_usd"] is not None
+                                 else "0")
     req["consumption_token"] = gate["consumption_token"]
     if v["operation"] in ("generate",):
         result = provider.generate(req.pop("prompt"), **req)
@@ -369,5 +486,6 @@ def dispatch(decision: dict, prompt: str = "", **kwargs) -> dict:
                      "credential_source": v["credential_source"],
                      "approval_id": v["approval_id"] or "",
                      "approval_consumed_once": bool(gate.get("consumed_once")),
+                     "decision_consumed_once": True,
                      "calls": 1, "fallback": False}
     return out

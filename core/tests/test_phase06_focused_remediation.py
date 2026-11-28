@@ -183,7 +183,8 @@ class FocusedRemediationTest(unittest.TestCase):
         self.assertTrue(out["policy"]["approval_consumed_once"])
         replay = pp.consume_approval(d)
         self.assertFalse(replay["ok"])
-        self.assertIn("approval-already-used", replay["reason"])
+        self.assertIn(replay["reason"],
+                      ("decision-already-consumed", "approval-already-used"))
         self.assertEqual(counts["n"], 1)
 
     def test_B2_adapter_replay_of_consumed_approval_is_blocked(self):
@@ -257,7 +258,6 @@ class FocusedRemediationTest(unittest.TestCase):
                 return mock.Mock(returncode=1, stdout="", stderr="Operation not permitted")
             raise AssertionError("BROWSER STARTED WITHOUT ISOLATION")
 
-        vr.network_isolation_capability.cache_clear()
         with mock.patch.object(vr.subprocess, "run", side_effect=probe_or_browser):
             cap = vr.network_isolation_capability()
             self.assertEqual(cap["status"], "BLOCKED")

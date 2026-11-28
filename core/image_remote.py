@@ -475,7 +475,7 @@ class OpenRouterImageProvider(_RemoteBase):
             obj = json.loads(raw.decode("utf-8", "replace"))
         except (ValueError, UnicodeDecodeError):
             return ImageResult.fail("malformed-json-response", "FAIL", provider=self.id)
-        returned = str(obj.get("model") or model)
+        returned = str(obj.get("model") or "")
         if returned != model:
             return ImageResult.fail("returned-model-mismatch:" + returned[:80], "FAIL",
                                     provider=self.id)

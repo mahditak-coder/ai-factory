@@ -207,5 +207,10 @@
 - Evidence: MOCKED forgery tests only (no live provider call, no paid spend); forgery 7/7, focused 13/13, Phase 06 15/15, full suite 637/637. LIVE provider generation, real spend and isolated screenshots NOT TESTED.
 - No Phase 01–05 file was reopened.
 
+## Phase 06 final comprehensive closure gate (same branch, additive)
+- One consolidated package closed 12 reviewed findings: one-shot decisions for free AND paid paths with the consumed flag persisted before token issuance (cross-process flock + 300 s TTL), caller-kwargs hardening, expiry inside governance, cross-process governance locking, honest engine/asset/capability checks, exact returned-model validation and provenance version.
+- Phase 01–05 files were not reopened; no automatic provider/model selection; no live provider call and no paid spend.
+- Evidence: MOCKED provider/browser tests; REAL Android build and REAL `unshare -n` probe (blocked here); full suite 650/650; Phase 04 57/57; Phase 05 71/71. Live provider generation, real spend, CI and isolated screenshots NOT TESTED.
+
 ## Next action
-Phase 06 final focused security fix is complete; Phase 06 is NOT marked ACCEPTED by this agent and awaits independent review. Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **(Historical entry, PRESERVED and SUPERSEDED by the Phase 06 AUTHORIZED / ACTIVE record above: "Phase 06 has NOT started and is NOT authorized.")** Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 06 is submitted for final independent review; the implementing agent does NOT mark it ACCEPTED. Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **(Historical entry, PRESERVED and SUPERSEDED by the Phase 06 AUTHORIZED / ACTIVE record above: "Phase 06 has NOT started and is NOT authorized.")** Historical provisional/superseded status entries are preserved above, not deleted.

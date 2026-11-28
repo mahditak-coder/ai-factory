@@ -15,11 +15,37 @@ from core import (engine_adapter, engine_discovery, image_assets,
                   production_assets, provider_policy, tool_registry,
                   visual_review)
 
-ENGINE_MODES = ("android", "web", "backend", "ai-agent", "game-2d")
+ENGINE_MODES = ("android", "web_saas", "backend_api", "ai_agent", "game")
+_ENGINE_ALIASES = {"web": "web_saas", "backend": "backend_api",
+                   "ai-agent": "ai_agent", "game-2d": "game"}
+
+
+def _engine_capability(engine_type: str) -> dict:
+    """Honest capability check: a MISSING required tool is never satisfied."""
+    from core import engine_catalog, engine_discovery
+    engine_discovery.report.cache_clear()   # no stale AVAILABLE status
+    profile = engine_catalog.get(engine_type)
+    if profile is None:
+        return {"status": "BLOCKED", "reason": "unknown-engine:" +
+                str(engine_type)[:60], "missing": []}
+    if profile.status == engine_discovery.BLOCKED:
+        return {"status": "BLOCKED", "reason": "engine-catalog-blocked",
+                "missing": []}
+    report = engine_discovery.report()
+    missing = []
+    for tool in profile.tools:
+        info = report["tools"].get(tool)
+        if info is None or info.get("status") != engine_discovery.AVAILABLE:
+            missing.append(tool)
+    if missing:
+        return {"status": engine_discovery.NOT_VERIFIED,
+                "reason": "required-tools-not-detected", "missing": missing}
+    return {"status": engine_discovery.AVAILABLE, "missing": []}
 
 
 def capabilities() -> dict:
     """Read-only, honest capability snapshot of the real environment."""
+    engine_discovery.report.cache_clear()
     base = engine_discovery.report()
     media = {
         "ffprobe": production_assets.audio_capability(),
@@ -85,7 +111,9 @@ def produce_image(project: str, prompt: str, provider: str, model: str,
     try:
         rec = _record(project, rel, out.get("provider") or provider,
                       out.get("model") or model,
-                      str((out.get("evidence") or {}).get("version") or ""),
+                      str(((out.get("evidence") or {}).get("asset") or {})
+                          .get("version") or
+                          (out.get("evidence") or {}).get("version") or ""),
                       decision["estimated_cost_usd"], decision["limits"],
                       production_ready,
                       {"prompt_sha256": out.get("prompt_sha256", ""),
@@ -160,14 +188,23 @@ def capture_evidence(project: str, url: str,
 
 def build(project: str, engine_type: str, opts: dict | None = None) -> dict:
     """Real build only through a DETECTED, SUPPORTED engine adapter."""
-    if engine_type not in ENGINE_MODES:
+    etype = _ENGINE_ALIASES.get(str(engine_type), str(engine_type))
+    if etype not in ENGINE_MODES:
         return {"ok": False, "status": "BLOCKED",
                 "reason": "unknown-engine-mode:" + str(engine_type)[:60]}
+    cap = _engine_capability(etype)
+    if cap["status"] != "AVAILABLE":
+        return {"ok": False, "status": "BLOCKED",
+                "reason": "engine-capability-not-detected",
+                "capability": cap}
     try:
-        adapter = engine_adapter.adapter_for(engine_type)
+        adapter = engine_adapter.adapter_for(etype)
     except (ValueError, KeyError, OSError) as exc:
         return {"ok": False, "status": "BLOCKED",
                 "reason": "engine-adapter-unavailable:%s" % type(exc).__name__}
+    if adapter is None:
+        return {"ok": False, "status": "BLOCKED",
+                "reason": "engine-adapter-not-registered:" + etype}
     try:
         support = adapter.supported(project)
     except (OSError, ValueError) as exc:

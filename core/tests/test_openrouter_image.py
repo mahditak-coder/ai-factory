@@ -41,7 +41,8 @@ class OpenRouterTest(unittest.TestCase):
 
     def http_ok(self, method, url, headers, body, timeout):
         self.calls.append((method, url, headers, body))
-        payload = {"created": 1, "data": [{"b64_json": B64, "media_type": "image/png"}],
+        payload = {"created": 1, "model": MODEL,
+                   "data": [{"b64_json": B64, "media_type": "image/png"}],
                    "usage": {"cost": 0, "total_tokens": 10}}
         return 200, {}, json.dumps(payload).encode()
 
@@ -126,11 +127,14 @@ class OpenRouterTest(unittest.TestCase):
 
     def test_malformed_responses_and_no_url_fallback(self):
         for raw, expected in ((b"not-json", "malformed-json"),
-                              (json.dumps({"data": [{"b64_json": "!!!"}]}).encode(),
+                              (json.dumps({"model": MODEL,
+                                           "data": [{"b64_json": "!!!"}]}).encode(),
                                "malformed-base64"),
-                              (json.dumps({"data": [{"url": "https://x/y.png"}]}).encode(),
+                              (json.dumps({"model": MODEL,
+                                           "data": [{"url": "https://x/y.png"}]}).encode(),
                                "no-inline-b64"),
-                              (json.dumps({"data": [{"b64_json": B64}],
+                              (json.dumps({"model": MODEL,
+                                           "data": [{"b64_json": B64}],
                                            "usage": {"cost": 0.04}}).encode(),
                                "unexpected-nonzero-charge")):
             req = self.approve()
@@ -142,7 +146,8 @@ class OpenRouterTest(unittest.TestCase):
         req = self.approve()
         def http(method, url, headers, body, timeout):
             self.calls.append((method, url, headers, body))
-            payload = {"data": [{"b64_json": JB64, "media_type": "image/jpeg"}],
+            payload = {"model": MODEL,
+                       "data": [{"b64_json": JB64, "media_type": "image/jpeg"}],
                        "usage": {"cost": 0}}
             return 200, {}, json.dumps(payload).encode()
         r = self.run_provider(req, http)
@@ -161,7 +166,8 @@ class OpenRouterTest(unittest.TestCase):
         text = b'{"error":{"message":"model busy"}}'
         def http(method, url, headers, body, timeout):
             self.calls.append((method, url, headers, body))
-            payload = {"data": [{"b64_json": base64.b64encode(text).decode(),
+            payload = {"model": MODEL,
+                       "data": [{"b64_json": base64.b64encode(text).decode(),
                                  "media_type": "application/json"}],
                        "usage": {"cost": 0}}
             return 200, {}, json.dumps(payload).encode()

@@ -134,8 +134,8 @@ def validate_audio(path: Path) -> dict:
         try:
             proc = subprocess.run(
                 [probe, "-v", "error", "-show_entries",
-                 "format=format_name,duration:stream=codec_name,sample_rate,"
-                 "channels", "-of", "json", str(path)],
+                 "format=format_name,duration:stream=codec_type,codec_name,"
+                 "sample_rate,channels", "-of", "json", str(path)],
                 capture_output=True, text=True, timeout=15, shell=False,
                 env=boundary.clean_env())
         except (OSError, subprocess.SubprocessError) as exc:
@@ -148,9 +148,11 @@ def validate_audio(path: Path) -> dict:
         except ValueError as exc:
             raise ValueError("ffprobe-invalid-output") from exc
         fmt = (parsed.get("format") or {})
-        stream = (parsed.get("streams") or [{}])[0]
-        if not fmt and not stream:
+        streams = [s for s in (parsed.get("streams") or [])
+                   if str((s or {}).get("codec_type") or "").lower() == "audio"]
+        if not streams:
             raise ValueError("not-an-audio-file")
+        stream = streams[0]
         info.update({"status": "AVAILABLE", "validator": "ffprobe",
                      "format": str(fmt.get("format_name") or ""),
                      "duration_s": float(fmt.get("duration") or 0),
@@ -219,8 +221,21 @@ def record(project: str, rel_path: str, provenance: dict,
         validated.update(image_assets.validate_png(path.read_bytes()))
     elif suffix in (".wav", ".mp3", ".ogg", ".flac", ".m4a"):
         validated.update(validate_audio(path))
+    elif suffix in (".jpg", ".jpeg", ".webp"):
+        try:
+            from PIL import Image
+            with Image.open(path) as im:
+                im.verify()
+            with Image.open(path) as im:
+                dims = list(im.size)
+            validated = {"validated": True, "validator": "pillow",
+                         "dimensions": dims, "sha256": sha256_file(path)}
+        except Exception as exc:  # noqa: BLE001 — corrupt/mislabelled image
+            validated = {"validated": False, "validator": "pillow",
+                         "error": type(exc).__name__,
+                         "sha256": sha256_file(path)}
     else:
-        validated = {"validated": suffix in (".jpg", ".jpeg", ".webp"),
+        validated = {"validated": False, "validator": "none",
                      "sha256": sha256_file(path)}
     sha = validated["sha256"]
     dec = dict(declared or {})

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from functools import lru_cache
 from pathlib import Path
 
 from core import boundary, paths
@@ -36,7 +35,6 @@ def browser_capability() -> dict:
                        "screenshot is evidence, NOT production artwork"]}
 
 
-@lru_cache(maxsize=1)
 def network_isolation_capability() -> dict:
     """Prove the WHOLE Chromium process can be denied network access."""
     exe = shutil.which("unshare")
