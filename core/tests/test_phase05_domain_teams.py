@@ -276,6 +276,74 @@ class DomainTeamsTest(unittest.TestCase):
         self.assertTrue(dt.validate_team([item])["ok"])
 
 
+    # --------------------------------- Finding: exact scope-list validation
+    def _contract_item(self, role_id):
+        contract = se.get(role_id)
+        return {"role_id": role_id,
+                "inputs": list(contract["inputs"]),
+                "expected_artifacts": list(contract["artifacts"]),
+                "dependencies": [se.resolve_id(d)
+                                 for d in contract["depends_on"]],
+                "allowed_scopes": list(contract["allowed_scopes"]),
+                "acceptance": list(contract["acceptance"])}
+
+    def test_23_exact_canonical_scope_list_passes(self):
+        item = self._contract_item("product-architect")
+        self.assertEqual(item["allowed_scopes"],
+                         se.get("product-architect")["allowed_scopes"])
+        self.assertTrue(dt.validate_team([item])["ok"])
+
+    def test_24_removing_one_valid_scope_fails(self):
+        item = self._contract_item("developer")
+        item["allowed_scopes"] = item["allowed_scopes"][:-1]
+        report = dt.validate_team([item])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("omitted-scope" in p for p in report["problems"]))
+
+    def test_25_removing_all_scopes_fails(self):
+        item = self._contract_item("product-architect")
+        item["allowed_scopes"] = []
+        report = dt.validate_team([item])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("missing-scopes" in p for p in report["problems"]))
+
+    def test_26_unauthorized_scope_fails(self):
+        item = self._contract_item("product-architect")
+        item["allowed_scopes"] = item["allowed_scopes"] + ["network:admin"]
+        report = dt.validate_team([item])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("unauthorized-scope" in p
+                            for p in report["problems"]))
+
+    def test_27_duplicate_scope_fails(self):
+        item = self._contract_item("product-architect")
+        item["allowed_scopes"] = item["allowed_scopes"] + \
+            [item["allowed_scopes"][0]]
+        report = dt.validate_team([item])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("duplicate-scope" in p
+                            for p in report["problems"]))
+
+    def test_28_reordered_scopes_fail(self):
+        item = self._contract_item("developer")
+        self.assertGreater(len(item["allowed_scopes"]), 1)
+        item["allowed_scopes"] = list(reversed(item["allowed_scopes"]))
+        report = dt.validate_team([item])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("scope-order-mismatch" in p
+                            for p in report["problems"]))
+
+    def test_29_malformed_scopes_fail(self):
+        item = self._contract_item("product-architect")
+        item["allowed_scopes"] = "project:read"
+        report = dt.validate_team([item])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("malformed-scopes" in p
+                            for p in report["problems"]))
+        item["allowed_scopes"] = None
+        self.assertFalse(dt.validate_team([item])["ok"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -167,5 +167,9 @@
 - `validate_team()` compares every sensitive field (role_id, artifacts, inputs, dependencies, scopes, acceptance) to the exact canonical contract; arbitrary out-of-contract scopes and forged fields are rejected. ToolExecutor/SecurityPolicy unchanged.
 - Tests: targeted Phase 05 `Ran 22 tests ... OK` (exit 0); full suite `Ran 553 tests in 61.394s — OK` (553 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-025 remains PROPOSED.
 
+## Phase 05 final scope-contract repair (same branch)
+- `validate_team()` now requires `allowed_scopes` to equal the exact canonical contract list (membership, completeness, no duplicates, canonical ordering), with deterministic diagnostics for each failure mode. Alias, artifact, input, dependency and acceptance validation unchanged; ToolExecutor/SecurityPolicy untouched.
+- Tests: targeted Phase 05 `Ran 29 tests ... OK` (exit 0); full suite `Ran 560 tests in 52.822s — OK` (560 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR statuses unchanged.
+
 ## Next action
 Phase 05 implementation is complete and ready for final independent review; Phase 04 is **ACCEPTED**. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 06 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.

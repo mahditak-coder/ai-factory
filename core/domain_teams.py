@@ -413,15 +413,29 @@ def validate_team(team: list) -> dict:
             problems.append("dependency-mismatch:" + rid)
         if item.get("acceptance") != contract["acceptance"]:
             problems.append("acceptance-mismatch:" + rid)
+        # allowed_scopes must match the canonical contract EXACTLY: same
+        # members, complete, no duplicates and the same canonical ordering.
+        canonical_scopes = list(contract["allowed_scopes"])
         scopes = item.get("allowed_scopes")
-        allowed = set(contract["allowed_scopes"])
-        if not isinstance(scopes, list) or not scopes:
+        if not isinstance(scopes, list):
+            problems.append("malformed-scopes:" + rid)
+        elif not scopes:
             problems.append("missing-scopes:" + rid)
         else:
+            if len(scopes) != len(set(scopes)):
+                problems.append("duplicate-scope:" + rid)
+            allowed = set(canonical_scopes)
             for scope in scopes:
                 if scope not in allowed:
                     problems.append("unauthorized-scope:" + rid + ":" +
                                     str(scope))
+            for scope in canonical_scopes:
+                if scope not in scopes:
+                    problems.append("omitted-scope:" + rid + ":" + str(scope))
+            if (scopes != canonical_scopes and len(scopes) ==
+                    len(canonical_scopes) and set(scopes) == allowed and
+                    len(scopes) == len(set(scopes))):
+                problems.append("scope-order-mismatch:" + rid)
         for dep in canonical_deps:
             if dep not in ids:
                 problems.append("unresolved-dependency:" + rid + ":" + dep)
