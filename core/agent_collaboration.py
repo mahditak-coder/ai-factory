@@ -252,11 +252,10 @@ def run_specialist(project: str, role_id: str, goal: str,
     from core import specialist_engine as _se
     canonical = _se.engine_mode() == "canonical"
     run = None
-    if canonical:
-        try:
-            run = _se.start_run(project, role_id)
-        except _se.EngineError as exc:
-            return {"status": opstatus.BLOCKED, "error": str(exc)[:200]}
+    try:
+        run = _se.start_run(project, role_id)
+    except _se.EngineError as exc:
+        return {"status": opstatus.BLOCKED, "error": str(exc)[:200]}
 
     def _terminal(status, artifacts=None, evidence=None, note=""):
         try:
@@ -345,8 +344,7 @@ def run_specialist(project: str, role_id: str, goal: str,
                 write_failed = True
                 continue
             wr = write_artifact(project, art.path, content, role_id,
-                                run_token=(run or {}).get("token", "") if
-                                canonical else "")
+                                run_token=(run or {}).get("token", ""))
             if wr.get("status") != opstatus.PASS:
                 write_failed = True
                 problems.append("write-failed:" + art.path + ":" +

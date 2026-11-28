@@ -10,6 +10,7 @@ import core.config as config
 from core import (agent_collaboration as ac, confirmations, opstatus, paths,
                   specialist_engine as se, tool_events, tool_executor,
                   tool_identity, tool_registry)
+from core.tests import specialist_run_token
 
 VALID_SESSION = "valid-panel-session"
 
@@ -124,7 +125,8 @@ class FinalSecurityTest(unittest.TestCase):
         ok = tool_executor.ToolRequest(
             tool_id="project.read_file", project=self.project,
             inputs={"path": "sample.txt"}, scopes=["project:read"],
-            role_id="developer", enforce_role=True, call_id="p4-final-role")
+            role_id="developer", enforce_role=True,
+            run_token=specialist_run_token(self.project, "developer"), call_id="p4-final-role")
         self.assertEqual(tool_executor.execute(ok).status, opstatus.PASS)
         denied = tool_executor.ToolRequest(
             tool_id="project.write_file", project=self.project,

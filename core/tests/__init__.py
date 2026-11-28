@@ -42,3 +42,15 @@ def trusted_session() -> str:
                                       "created": _time.time()}
         _TEST_SESSION = token
     return _TEST_SESSION
+
+
+_RUN_TOKENS: dict = {}
+
+
+def specialist_run_token(project: str, role: str) -> str:
+    """Create/reuse a real canonical lease token for test role requests."""
+    from core import specialist_engine as se
+    key = (str(se._STORE), str(project), str(role))
+    if key not in _RUN_TOKENS:
+        _RUN_TOKENS[key] = se.start_run(project, role)["token"]
+    return _RUN_TOKENS[key]

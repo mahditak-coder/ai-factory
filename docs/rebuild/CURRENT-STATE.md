@@ -141,5 +141,11 @@
 - Whole-repository audit confirmed four tool entry points, all identity-bound; no test-only authority bypass.
 - Tests: targeted Phase 04 `Ran 83 tests ... OK` (exit 0); full suite `Ran 509 tests in 45.439s — OK` (509 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
 
+## Phase 04 absolute final authorization & lease closure (same branch)
+- Service identities have exact `(tool, scope)` operation allowlists; `quality_gate._call` and `workflow_executor._call` reject unauthorized delegation before capability issuance. No raw issuer secret and no caller-expandable authority.
+- Specialist role requests MUST carry a current `run_token`; missing/stale/wrong-project tokens are blocked before adapters, and every specialist side effect executes inside `lease_fence()` with no fallback.
+- Real ToolExecutor + registered adapter + canonical store concurrency tests prove supersession is fenced; QA cannot write or return PASS on a stale lease; artifact hash and terminal persistence remain verified.
+- Tests: targeted Phase 04 `Ran 99 tests ... OK` (exit 0); full suite `Ran 525 tests in 55.824s — OK` (525 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
 ## Next action
 Phase 04 is **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.

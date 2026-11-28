@@ -6,6 +6,7 @@ from unittest import mock
 import core.config as config
 from core import (action_gate, agent_collaboration as collab, opstatus,
                   orchestrator, specialists, tool_events)
+from core.tests import specialist_run_token
 
 
 def fixture(name="afp3-unit"):
@@ -69,7 +70,9 @@ class ArtifactTest(unittest.TestCase):
         # role that actually owns project:write (product-architect is read-only).
         r = collab.write_artifact("afp3-unit", "spec/product-brief.md",
                                  "## Target User\nx\n## Scope\ny\n## Success Criteria\nz\n",
-                                 "developer")
+                                 "developer",
+                                 run_token=specialist_run_token("afp3-unit",
+                                                                "developer"))
         self.assertEqual(r["status"], opstatus.PASS)
         first = collab.record("afp3-unit", "product-architect", opstatus.PASS,
                               artifacts=[r])

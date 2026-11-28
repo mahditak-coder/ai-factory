@@ -22,16 +22,37 @@ _DEFAULT_TTL_S = 300
 
 # Canonical service identities with bounded scopes. Project/tool are bound per
 # issued capability and revalidated at the tool boundary.
-_SERVICES: dict[str, dict] = {
-    "infrastructure": {"scopes": frozenset((
-        "project:read", "project:write", "tests:run", "security:read",
-        "shell:execute", "image:generate", "image:write", "media:write"))},
-    "quality-gate": {"scopes": frozenset((
-        "project:read", "project:write", "tests:run", "security:read",
-        "shell:execute"))},
-    "workflow-executor": {"scopes": frozenset((
-        "project:read", "project:write", "tests:run", "shell:execute"))},
+# Exact service -> (tool_id, scope) operation allowlists. A module name is
+# NEVER enough authority: the delegated operation must be declared here.
+_SERVICE_OPERATIONS: dict[str, frozenset] = {
+    "quality-gate": frozenset((
+        ("project.read_file", "project:read"),
+        ("project.inspect", "project:read"),
+        ("project.write_file", "project:write"),
+        ("tests.run", "tests:run"),
+        ("security.scan", "security:read"),
+        ("shell.safe_run", "shell:execute"))),
+    "workflow-executor": frozenset((
+        ("project.write_file", "project:write"),
+        ("project.read_file", "project:read"),
+        ("tests.run", "tests:run"),
+        ("security.scan", "security:read"),
+        ("shell.safe_run", "shell:execute"),
+        ("media.generate_wav", "media:write"))),
+    "infrastructure": frozenset((
+        ("project.read_file", "project:read"),
+        ("project.inspect", "project:read"),
+        ("project.write_file", "project:write"),
+        ("tests.run", "tests:run"),
+        ("security.scan", "security:read"),
+        ("shell.safe_run", "shell:execute"),
+        ("image.generate", "image:generate"),
+        ("image.write", "image:write"),
+        ("media.generate_wav", "media:write"))),
 }
+_SERVICES = {name: {"scopes": frozenset(s for _, s in ops)}
+             for name, ops in _SERVICE_OPERATIONS.items()}
+
 _TRUSTED_MODULES = frozenset((
     "core.quality_gate", "core.workflow_executor", "core.agent_collaboration"))
 
@@ -40,9 +61,10 @@ class IdentityError(RuntimeError):
     pass
 
 
-def registered_services() -> dict[str, list[str]]:
-    """Read-only view of service identities (no authority is exposed)."""
-    return {k: sorted(v["scopes"]) for k, v in _SERVICES.items()}
+def registered_services() -> dict[str, list[list[str]]]:
+    """Read-only view of exact service operations (no authority exposed)."""
+    return {k: [list(op) for op in sorted(v)]
+            for k, v in _SERVICE_OPERATIONS.items()}
 
 
 def issue_service_capability(service_id: str, project: str, tool_id: str,
@@ -50,10 +72,11 @@ def issue_service_capability(service_id: str, project: str, tool_id: str,
                              ttl_s: int = _DEFAULT_TTL_S) -> str:
     """Mint a bounded capability from a trusted server-side path only."""
     service = _SERVICES.get(str(service_id or ""))
-    if service is None or scope not in service["scopes"]:
+    if service is None or str(scope) not in service["scopes"]:
         raise IdentityError("service-scope-denied")
     if not project or not tool_id:
         raise IdentityError("capability-bindings-required")
+
     caller = ""
     frame = inspect.currentframe()
     try:
@@ -67,6 +90,22 @@ def issue_service_capability(service_id: str, project: str, tool_id: str,
         principal = str(panelauth.principal_for_session(session_id) or "")
     if not trusted_module and not principal:
         raise IdentityError("untrusted-capability-issuance")
+
+    if trusted_module:
+        # Module-trusted services can only use their declared exact operations.
+        if (str(tool_id), str(scope)) not in _SERVICE_OPERATIONS[str(service_id)]:
+            raise IdentityError("service-operation-denied:%s:%s" %
+                                (tool_id, scope))
+    else:
+        # A validated panel session may use only registered tools whose real
+        # declared scope matches the requested scope; no caller-supplied tool
+        # string can expand this authority.
+        from core.tool_registry import registry
+        spec = registry().get(str(tool_id))
+        if spec is None or spec.scope != str(scope):
+            raise IdentityError("service-operation-denied:%s:%s" %
+                                (tool_id, scope))
+
     token = secrets.token_urlsafe(24)
     with _LOCK:
         _CAPS[token] = {"project": str(project), "tool_id": str(tool_id),

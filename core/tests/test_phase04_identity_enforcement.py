@@ -11,6 +11,7 @@ from core import (agent_collaboration as ac, confirmations, opstatus, paths,
                   specialist_engine as se, tool_events, tool_executor,
                   tool_identity)
 from core.tests import trusted_session
+from core.tests import specialist_run_token
 
 
 class IdentityEnforcementTest(unittest.TestCase):
@@ -109,7 +110,8 @@ class IdentityEnforcementTest(unittest.TestCase):
 
     def test_07_valid_role_within_contract(self):
         result = tool_executor.execute(self._req(
-            role_id="developer", enforce_role=True, call_id="id-role-ok"))
+            role_id="developer", enforce_role=True,
+            run_token=specialist_run_token(self.project, "developer"), call_id="id-role-ok"))
         self.assertEqual(result.status, opstatus.PASS)
 
     def test_08_role_scope_denied(self):
@@ -117,7 +119,9 @@ class IdentityEnforcementTest(unittest.TestCase):
             tool="project.write_file",
             inputs={"path": "x.txt", "content": "x"},
             scopes=["project:write"], role_id="product-architect",
-            enforce_role=True, call_id="id-role-deny"))
+            enforce_role=True,
+            run_token=specialist_run_token(self.project, "product-architect"),
+            call_id="id-role-deny"))
         self.assertEqual(result.status, opstatus.BLOCKED)
         self.assertIn("role-authorization-denied", result.error)
 
@@ -134,6 +138,7 @@ class IdentityEnforcementTest(unittest.TestCase):
     def test_10_ambiguous_identity_blocked(self):
         result = tool_executor.execute(self._req(
             role_id="developer", enforce_role=True,
+            run_token=specialist_run_token(self.project, "developer"),
             capability_token=self._cap(), call_id="id-ambiguous"))
         self.assertEqual(result.status, opstatus.BLOCKED)
         self.assertIn("ambiguous-identity", result.error)

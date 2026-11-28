@@ -121,6 +121,11 @@ def execute(req: ToolRequest) -> ToolResult:
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
             error="incomplete-role-identity", duration_ms=0),
             started, finalize_receipt=False)
+    if has_role and not str(req.run_token or ""):
+        return _record(req, call_id, ToolResult(
+            status=opstatus.BLOCKED, decision="none", call_id=call_id,
+            error="run-token-required", duration_ms=0),
+            started, finalize_receipt=False)
     if has_role and has_cap:
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
@@ -211,8 +216,10 @@ def execute(req: ToolRequest) -> ToolResult:
                           name="tool-%s-%s" % (spec.id, call_id[:8]))
     from contextlib import nullcontext
     from core import specialist_engine as _lease_se
+    # Specialist role requests are ALWAYS fenced; there is no unfenced
+    # fallback. Infrastructure capability requests are a separate model.
     _fence = (_lease_se.lease_fence(req.project, req.role_id, req.run_token)
-              if (has_role and str(req.run_token or "")) else nullcontext())
+              if has_role else nullcontext())
     try:
         with _fence:
             th.start()

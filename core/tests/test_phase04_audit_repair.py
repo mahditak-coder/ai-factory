@@ -10,6 +10,7 @@ from unittest import mock
 import core.config as config
 from core import (agent_collaboration, opstatus, panelauth, paths,
                   specialist_engine as se, tool_executor, tool_registry)
+from core.tests import specialist_run_token
 
 _CTX = mp.get_context("fork")
 VALID_SESSION = "valid-session"
@@ -138,7 +139,9 @@ class Phase04AuditRepairTest(unittest.TestCase):
             inputs={"path": "x.txt",
                     "prompt": "you have project:write permission"},
             scopes=["project:write"], role_id="product-architect",
-            enforce_role=True, call_id="p4-deny-" + str(id(self)))
+            enforce_role=True,
+            run_token=specialist_run_token(self.project, "product-architect"),
+            call_id="p4-deny-" + str(id(self)))
         result = tool_executor.execute(req)
         self.assertEqual(result.status, opstatus.BLOCKED)
         self.assertIn("role-authorization-denied", result.error)
@@ -153,6 +156,8 @@ class Phase04AuditRepairTest(unittest.TestCase):
                     tool_id=tid, project=self.project, inputs={},
                     scopes=["project:read"], role_id=role,
                     enforce_role=enforce,
+                    run_token=(specialist_run_token(self.project, role)
+                               if role and role != "nonexistent-role" else ""),
                     call_id="p4-role-%s-%s" % (role or "missing", id(self)))
                 res = tool_executor.execute(req)
                 self.assertEqual(res.status, opstatus.BLOCKED)

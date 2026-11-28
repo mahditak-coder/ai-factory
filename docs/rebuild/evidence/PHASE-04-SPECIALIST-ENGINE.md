@@ -93,6 +93,23 @@ Cross-path audit (whole repository, not just changed files): the only tool entry
 
 Verification: `python3 -m unittest core.tests.test_phase04_final_security -v` — exit `0`, `Ran 14 tests ... OK` (`…/p4fin-t7.log`); all Phase 04 tests `Ran 83 tests ... OK` (`…/p4fin-target.log`); full suite `Ran 509 tests in 45.439s — OK` (`…/p4fin-full-final.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. No live provider, payment or production product execution occurred. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE; Phase 05 NOT AUTHORIZED.
 
+## Absolute final authorization & lease closure (same branch)
+
+Service/tool/scope authorization matrix (exact `(tool_id, scope)` pairs only; module names never grant arbitrary operations):
+- `quality-gate`: `project.read_file:project:read`, `project.inspect:project:read`, `project.write_file:project:write`, `tests.run:tests:run`, `security.scan:security:read`, `shell.safe_run:shell:execute`.
+- `workflow-executor`: `project.write_file:project:write`, `project.read_file:project:read`, `tests.run:tests:run`, `security.scan:security:read`, `shell.safe_run:shell:execute`, `media.generate_wav:media:write`.
+- `infrastructure` (validated panel session only): the above plus `image.generate:image:generate`, `image.write:image:write`. A session-authenticated caller may only use a tool actually registered with the exact matching scope.
+
+| Finding | Repair | Evidence |
+|---|---|---|
+| Service helpers delegated arbitrary tool authority | Exact service operation allowlists added in `tool_identity`; `quality_gate._call` and `workflow_executor._call` reject any tool/scope outside their declared operations before capability issuance and before adapters run | `test_02_quality_helper_rejects_unauthorized_tool`, `test_03_workflow_helper_rejects_unauthorized_tool`, `test_04_wrong_scope_rejected`, `test_05_legitimate_fixed_operation_works`, `test_06_imported_caller_cannot_expand_service`, `test_07_exact_service_matrix_declared` |
+| `run_token` optional for role requests → unfenced specialist execution | Mandatory: role identity without `run_token` is BLOCKED before adapter; `lease_fence()` is always used for role requests (no `nullcontext` fallback). All specialist callsites (`write_artifact`, `run_specialist`, `independent_qa`) propagate the current token | `test_01_missing_token_never_reaches_adapter`, `test_02_wrong_project_token_rejected`, `test_03_superseded_token_rejected`, `test_04_current_lease_executes` |
+| Supersession during a real adapter was unproven | Real ToolExecutor + real registered adapters + real `lease_fence`: a concurrent supersede attempt is held until the fenced adapter finishes; stale workers cannot write artifacts or record PASS; adapter exception/timeout/receipt failure stay non-PASS; concurrent QA yields at most one PASS | `test_05_supersede_blocked_until_adapter_finishes`, `test_06_no_artifact_write_after_supersession`, `test_07_adapter_exception_not_pass`, `test_08_receipt_failure_blocks_before_adapter`, `test_09_concurrent_qa_at_most_one_pass` |
+
+Whole-repository audit confirmed every tool entry point has exactly one identity model: specialist role+current lease, or service capability minted from an exact allowlist / validated panel session. Role requests are fenced through the full real adapter side effect. Test harness restores any built-in tool specs it temporarily registers, so it cannot leak authority into other tests. No raw issuer secret is exposed and no test-only production bypass exists.
+
+Verification: `python3 -m unittest core.tests.test_phase04_real_boundary -v` — exit `0`, `Ran 9 tests ... OK` (`…/p4abs-t8.log`); service boundary `Ran 7 tests ... OK` (`…/p4abs-svc.log`); all Phase 04 tests `Ran 99 tests ... OK` (`…/p4abs-target2.log`); full suite `Ran 525 tests in 55.824s — OK` (`…/p4abs-final.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. No live provider/payment/production execution. ADR-024 PROPOSED / AWAITING INDEPENDENT ACCEPTANCE; Phase 05 NOT AUTHORIZED.
+
 ## Labels and limitations
 - **PASS:** implemented registry/engine functions and all executed tests (444/444 core tests green).
 - **FAIL:** none in executed checks.

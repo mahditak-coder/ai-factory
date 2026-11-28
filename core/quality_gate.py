@@ -28,7 +28,18 @@ DIMENSIONS = {
 _SEV_SCORE = {CRITICAL: 0, HIGH: 40, MEDIUM: 70, LOW: 85}
 
 
+_ALLOWED_OPERATIONS = frozenset((
+    ("project.read_file", "project:read"), ("project.inspect", "project:read"),
+    ("project.write_file", "project:write"), ("tests.run", "tests:run"),
+    ("security.scan", "security:read"), ("shell.safe_run", "shell:execute")))
+
+
 def _call(project, tool_id, inputs, scopes, task_id="quality-gate"):
+    scope = (scopes or ["project:read"])[0]
+    if (str(tool_id), str(scope)) not in _ALLOWED_OPERATIONS:
+        return {"status": opstatus.BLOCKED, "ok": False, "output": {},
+                "error": "service-operation-denied:%s:%s" % (tool_id, scope),
+                "call_id": "", "duration_ms": 0}
     cid = "p5-" + secrets.token_hex(8)
     r = tool_executor.execute(tool_executor.ToolRequest(
         tool_id=tool_id, project=project, inputs=inputs, scopes=scopes,

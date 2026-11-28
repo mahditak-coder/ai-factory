@@ -13,7 +13,19 @@ from core import opstatus, tool_executor, tool_identity
 _CID = 0
 
 
+_ALLOWED_OPERATIONS = frozenset((
+    ("project.write_file", "project:write"),
+    ("project.read_file", "project:read"), ("tests.run", "tests:run"),
+    ("security.scan", "security:read"), ("shell.safe_run", "shell:execute"),
+    ("media.generate_wav", "media:write")))
+
+
 def _call(project, tool_id, inputs, scopes):
+    scope = (scopes or ["project:read"])[0]
+    if (str(tool_id), str(scope)) not in _ALLOWED_OPERATIONS:
+        return {"status": opstatus.BLOCKED, "ok": False, "output": {},
+                "error": "service-operation-denied:%s:%s" % (tool_id, scope),
+                "call_id": "", "duration_ms": 0}
     global _CID
     _CID += 1
     cid = "wfex-" + secrets.token_hex(6) + "-%d" % _CID

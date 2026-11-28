@@ -11,6 +11,7 @@ import core.config as config
 from core import (agent_collaboration as ac, confirmations, opstatus, paths,
                   specialist_engine as se, tool_events, tool_executor,
                   tool_identity)
+from core.tests import specialist_run_token
 
 VALID_SESSION = "panel-session"
 
@@ -112,13 +113,17 @@ class Phase04IntegrationTest(unittest.TestCase):
     def test_01_write_artifact_denies_unauthorized_role(self):
         result = ac.write_artifact(self.project, "src/evil.py",
                                    "def evil(): pass", "product-architect",
-                                   session_id=VALID_SESSION)
+                                   session_id=VALID_SESSION,
+                                   run_token=specialist_run_token(
+                                       self.project, "product-architect"))
         self.assertEqual(result["status"], opstatus.BLOCKED)
         self.assertIn("scope-denied", result["error"])
 
     def test_02_write_artifact_with_valid_role_and_session(self):
         result = ac.write_artifact(self.project, "src/ok.py", "def ok(): pass",
-                                   "developer", session_id=VALID_SESSION)
+                                   "developer", session_id=VALID_SESSION,
+                                   run_token=specialist_run_token(self.project,
+                                                                  "developer"))
         self.assertEqual(result["status"], opstatus.PASS)
 
     def test_03_non_specialist_context_still_works(self):
@@ -136,6 +141,7 @@ class Phase04IntegrationTest(unittest.TestCase):
             tool_id="project.read_file", project=self.project,
             inputs={"path": "sample.txt"}, scopes=["project:read"],
             role_id="developer", enforce_role=True,
+            run_token=specialist_run_token(self.project, "developer"),
             capability_token=tool_identity.issue_service_capability(
                 "infrastructure", self.project, "project.read_file",
                 "project:read", session_id=VALID_SESSION),
