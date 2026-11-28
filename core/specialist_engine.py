@@ -522,6 +522,24 @@ def start_run(project: str, role_id: str, run_token: str = "",
         return result
 
 
+@contextmanager
+def lease_fence(project: str, role_id: str, run_token: str):
+    """Hold the canonical lock while a specialist side effect executes.
+
+    Supersession requires the same lock, so a lease cannot become stale while
+    the fenced tool adapter runs. The fence is released only after the side
+    effect completes.
+    """
+    with _engine_lock():
+        data = _load_unlocked()
+        rid = resolve_id(role_id)
+        expected = "%s:%s:%s" % (project, rid, run_token)
+        current = _current_run_key(data, project, rid)
+        if current != expected:
+            raise EngineError("lease-fence-rejected:stale-run")
+        yield
+
+
 def reject_stale(project: str, role_id: str, run_token: str) -> dict:
     """Only the authoritative current lease may produce a result."""
     with _engine_lock():

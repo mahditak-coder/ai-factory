@@ -127,7 +127,8 @@ def revalidate_handoff(project: str, role_id: str,
 
 
 def write_artifact(project: str, rel: str, content: str, role: str,
-                   call_id: str = "", session_id: str = "") -> dict:
+                   call_id: str = "", session_id: str = "",
+                   run_token: str = "") -> dict:
     """Write through the governed Tool Registry with MANDATORY role auth."""
     from core import specialist_engine as _se
     rid = _se.resolve_id(role)
@@ -137,6 +138,7 @@ def write_artifact(project: str, rel: str, content: str, role: str,
     r = execute_tool(ToolRequest(tool_id="project.write_file", project=project,
         inputs={"path": rel, "content": content}, scopes=["project:write"],
         task_id=rid, role_id=rid, enforce_role=True, session_id=session_id,
+        run_token=run_token,
         call_id=call_id or ("sp-" + hashlib.sha256(
             (role + rel + str(time.time())).encode()).hexdigest()[:12])))
     return {"status": r.status, "path": rel, "sha256": _sha(content),
@@ -342,7 +344,9 @@ def run_specialist(project: str, role_id: str, goal: str,
                 problems.append("no-completed-artifact-turn:" + art.path)
                 write_failed = True
                 continue
-            wr = write_artifact(project, art.path, content, role_id)
+            wr = write_artifact(project, art.path, content, role_id,
+                                run_token=(run or {}).get("token", "") if
+                                canonical else "")
             if wr.get("status") != opstatus.PASS:
                 write_failed = True
                 problems.append("write-failed:" + art.path + ":" +
@@ -385,7 +389,7 @@ def run_specialist(project: str, role_id: str, goal: str,
 
 
 def independent_qa(project: str, role_id: str = "qa-engineer") -> dict:
-    """QA runs its OWN tools under the canonical specialist lifecycle."""
+    """QA runs its OWN tools under a fenced canonical run lease."""
     from core import specialist_engine as _se
     role = specialists.get(role_id)
     if role is None:
@@ -400,18 +404,24 @@ def independent_qa(project: str, role_id: str = "qa-engineer") -> dict:
             run = _se.start_run(project, role_id)
         except _se.EngineError as exc:
             return {"status": opstatus.BLOCKED, "error": str(exc)[:200]}
+    token = (run or {}).get("token", "")
+
+    def _lease_ok():
+        return (not canonical) or \
+            _se.reject_stale(project, role_id, token)["accepted"]
+
     def _terminal(status, artifacts=None):
         try:
             if canonical and run is not None:
-                return _se.record_result(project, role_id, run["token"],
-                                         status, artifacts or [])
+                return _se.record_result(project, role_id, token, status,
+                                         artifacts or [])
             return record(project, role_id, status, artifacts=artifacts,
                           note="independent tool execution")
         except Exception as exc:  # noqa: BLE001
             return {"status": opstatus.BLOCKED,
                     "error": "terminal-persistence-failed:" + str(exc)[:120]}
-    if canonical and not _se.reject_stale(
-            project, role_id, run["token"])["accepted"]:
+
+    if not _lease_ok():
         _terminal(opstatus.BLOCKED)
         return {"status": opstatus.BLOCKED, "error": "stale-qa-run"}
     checks = []
@@ -419,27 +429,53 @@ def independent_qa(project: str, role_id: str = "qa-engineer") -> dict:
         ("tests.run", {}, "tests:run"),
         ("security.scan", {"mode": "export"}, "security:read"),
     ):
-        if canonical and not _se.reject_stale(
-                project, role_id, run["token"])["accepted"]:
+        if not _lease_ok():
             _terminal(opstatus.BLOCKED)
             return {"status": opstatus.BLOCKED, "error": "stale-qa-run"}
         r = execute_tool(ToolRequest(tool_id=tool_id, project=project,
             inputs=inputs, scopes=[scope], task_id=_se.resolve_id(role_id),
             role_id=_se.resolve_id(role_id), enforce_role=True,
+            run_token=token if canonical else "",
             call_id="qa-" + tool_id.replace(".", "-") + "-" + str(int(time.time()))))
         checks.append({"tool": tool_id, "status": r.status,
                        "error": r.error, "call_id": r.call_id})
+        if not _lease_ok():  # revalidate after tool returns
+            _terminal(opstatus.BLOCKED)
+            return {"status": opstatus.BLOCKED, "error": "stale-qa-run"}
+    if not _lease_ok():  # revalidate immediately before artifact write
+        _terminal(opstatus.BLOCKED)
+        return {"status": opstatus.BLOCKED, "error": "stale-qa-run"}
     lines = ["## Results"] + ["- %s: %s" % (c["tool"], c["status"]) for c in checks]
     lines += ["## Evidence", "- ToolEvent call_ids: " +
               ", ".join(c["call_id"] for c in checks)]
     wr = write_artifact(project, "spec/test-report.md", "\n".join(lines) + "\n",
-                        role_id)
+                        role_id, run_token=token if canonical else "")
+    if not _lease_ok():  # supersession during the write must not be accepted
+        _terminal(opstatus.BLOCKED)
+        return {"status": opstatus.BLOCKED, "error": "stale-qa-run-after-write"}
+    problems = []
+    verified = None
+    if wr.get("status") == opstatus.PASS:
+        try:
+            fp = paths.project_path(project, "spec/test-report.md")
+            text = fp.read_text(encoding="utf-8")
+            sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            verified = {"path": "spec/test-report.md", "sha256": sha,
+                        "length": len(text)}
+            if sha != wr.get("sha256"):
+                problems.append("hash-mismatch:spec/test-report.md")
+                verified = None
+        except (OSError, ValueError):
+            problems.append("missing:spec/test-report.md")
+    else:
+        problems.append("write-failed:" + str(wr.get("error") or "")[:120])
+    if not verified:
+        problems.append("report-not-verified")
     status = opstatus.PASS if (all(c["status"] == opstatus.PASS
-                                   for c in checks) and
-                               wr.get("status") == opstatus.PASS) \
+                                   for c in checks) and verified) \
         else opstatus.FAIL
-    terminal = _terminal(status, artifacts=[wr])
+    terminal = _terminal(status, artifacts=[verified] if verified else [])
     if terminal.get("status") != status:
         status = opstatus.BLOCKED
     return {"status": status, "checks": checks, "artifact": wr,
-            "record": terminal}
+            "verified": verified, "problems": problems, "record": terminal}

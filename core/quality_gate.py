@@ -33,9 +33,8 @@ def _call(project, tool_id, inputs, scopes, task_id="quality-gate"):
     r = tool_executor.execute(tool_executor.ToolRequest(
         tool_id=tool_id, project=project, inputs=inputs, scopes=scopes,
         task_id=task_id, call_id=cid,
-        capability_token=tool_identity.issue_infrastructure_capability(
-            project, tool_id, (scopes or ["project:read"])[0],
-            issuer_key=tool_identity.server_issuer_key())))
+        capability_token=tool_identity.issue_service_capability(
+            "quality-gate", project, tool_id, (scopes or ["project:read"])[0])))
     return {"status": r.status, "ok": r.ok, "output": r.output or {},
             "error": r.error, "call_id": r.call_id, "duration_ms": r.duration_ms}
 

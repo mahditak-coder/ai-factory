@@ -134,5 +134,12 @@
 - `independent_qa()` uses canonical run leases with stale rejection and `record_result()` terminal persistence; failed tool, failed artifact write or failed persistence never return PASS.
 - Tests: targeted Phase 04 `Ran 69 tests ... OK` (exit 0); full suite `Ran 495 tests in 42.563s — OK` (495 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
 
+## Phase 04 final consolidated repair (same branch)
+- No public issuer secret exists; infrastructure authority is minted only by allowlisted server modules with registered service identities or validated panel sessions, bound to project/tool/scope/expiry.
+- Every ToolRequest has exactly one valid identity; forged/missing/expired/misbound/dual identities are blocked before adapter side effects.
+- Specialist tool side effects are fenced by the current run lease (`run_token` + lock-held fence); QA revalidates after every tool and before/after artifact write, verifies the real report hash, and never returns PASS on blocked write, hash mismatch, stale lease or failed persistence.
+- Whole-repository audit confirmed four tool entry points, all identity-bound; no test-only authority bypass.
+- Tests: targeted Phase 04 `Ran 83 tests ... OK` (exit 0); full suite `Ran 509 tests in 45.439s — OK` (509 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
 ## Next action
 Phase 04 is **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.

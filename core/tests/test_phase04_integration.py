@@ -125,9 +125,9 @@ class Phase04IntegrationTest(unittest.TestCase):
         req = tool_executor.ToolRequest(
             tool_id="project.read_file", project=self.project,
             inputs={"path": "sample.txt"}, scopes=["project:read"],
-            capability_token=tool_identity.issue_infrastructure_capability(
-                self.project, "project.read_file", "project:read",
-                issuer_key=tool_identity.server_issuer_key()),
+            capability_token=tool_identity.issue_service_capability(
+                "infrastructure", self.project, "project.read_file",
+                "project:read", session_id=VALID_SESSION),
             call_id="p4-nonspec")
         self.assertEqual(tool_executor.execute(req).status, opstatus.PASS)
 
@@ -136,9 +136,9 @@ class Phase04IntegrationTest(unittest.TestCase):
             tool_id="project.read_file", project=self.project,
             inputs={"path": "sample.txt"}, scopes=["project:read"],
             role_id="developer", enforce_role=True,
-            capability_token=tool_identity.issue_infrastructure_capability(
-                self.project, "project.read_file", "project:read",
-                issuer_key=tool_identity.server_issuer_key()),
+            capability_token=tool_identity.issue_service_capability(
+                "infrastructure", self.project, "project.read_file",
+                "project:read", session_id=VALID_SESSION),
             call_id="p4-ambiguous")
         self.assertEqual(tool_executor.execute(req).status, opstatus.BLOCKED)
 

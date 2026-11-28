@@ -35,6 +35,8 @@ class ToolRequest:
     # Exactly one identity is mandatory: canonical role contract OR a bounded
     # server-issued infrastructure capability. Caller strings are never trusted.
     capability_token: str = ""
+    # Specialist lease token; validated and fenced at the side-effect boundary.
+    run_token: str = ""
 
 
 @dataclass
@@ -207,36 +209,50 @@ def execute(req: ToolRequest) -> ToolResult:
 
     th = threading.Thread(target=runner, daemon=True,
                           name="tool-%s-%s" % (spec.id, call_id[:8]))
-    th.start()
-    th.join(timeout)
-    if th.is_alive():
-        cancel.set()
+    from contextlib import nullcontext
+    from core import specialist_engine as _lease_se
+    _fence = (_lease_se.lease_fence(req.project, req.role_id, req.run_token)
+              if (has_role and str(req.run_token or "")) else nullcontext())
+    try:
+        with _fence:
+            th.start()
+            th.join(timeout)
+            if th.is_alive():
+                cancel.set()
+                with _seen_lock:
+                    _running.pop(call_id, None)
+                return _record(req, call_id, ToolResult(
+                    status=opstatus.BLOCKED, decision=decision, call_id=call_id,
+                    error="tool-timeout", duration_ms=int((time.time()-started)*1000),
+                    evidence={"timeout_s": timeout, "cancel_requested": True,
+                              "cancel_acknowledged": False}), started)
+            with _seen_lock:
+                _running.pop(call_id, None)
+            if cancel.is_set():
+                return _record(req, call_id, ToolResult(
+                    status=opstatus.BLOCKED, decision=decision, call_id=call_id,
+                    error="tool-cancelled", duration_ms=int((time.time()-started)*1000),
+                    evidence={"cancel_requested": True, "cancel_acknowledged": True}), started)
+            if "err" in box:
+                return _record(req, call_id, ToolResult(
+                    status=opstatus.FAIL, decision=decision, call_id=call_id,
+                    error=box["err"][:600],
+                    duration_ms=int((time.time()-started)*1000)), started)
+            evidence = {"validator": spec.output, "source": spec.source,
+                        "scope": spec.scope}
+            return _record(req, call_id, ToolResult(
+                status=opstatus.PASS, ok=True, output=box.get("out"),
+                decision=decision, call_id=call_id,
+                duration_ms=int((time.time()-started)*1000),
+                evidence=evidence), started)
+
+    except Exception as exc:  # noqa: BLE001 — lease fence failure fails closed
         with _seen_lock:
             _running.pop(call_id, None)
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision=decision, call_id=call_id,
-            error="tool-timeout", duration_ms=int((time.time()-started)*1000),
-            evidence={"timeout_s": timeout, "cancel_requested": True,
-                      "cancel_acknowledged": False}), started)
-    with _seen_lock:
-        _running.pop(call_id, None)
-    if cancel.is_set():
-        return _record(req, call_id, ToolResult(
-            status=opstatus.BLOCKED, decision=decision, call_id=call_id,
-            error="tool-cancelled", duration_ms=int((time.time()-started)*1000),
-            evidence={"cancel_requested": True, "cancel_acknowledged": True}), started)
-    if "err" in box:
-        return _record(req, call_id, ToolResult(
-            status=opstatus.FAIL, decision=decision, call_id=call_id,
-            error=box["err"][:600],
-            duration_ms=int((time.time()-started)*1000)), started)
-    evidence = {"validator": spec.output, "source": spec.source,
-                "scope": spec.scope}
-    return _record(req, call_id, ToolResult(
-        status=opstatus.PASS, ok=True, output=box.get("out"),
-        decision=decision, call_id=call_id,
-        duration_ms=int((time.time()-started)*1000),
-        evidence=evidence), started)
+            error="lease-fence-failed:" + str(exc)[:120],
+            duration_ms=int((time.time() - started) * 1000)), started)
 
 
 def cancel(call_id: str) -> bool:

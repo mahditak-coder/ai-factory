@@ -80,6 +80,19 @@ Trusted issuance boundary: `tool_identity.server_issuer_key()` is generated in s
 
 Verification: `python3 -m unittest core.tests.test_phase04_identity_enforcement -v` — exit `0`, `Ran 15 tests ... OK` (`…/p4ident-t3.log`); all Phase 04 tests `Ran 69 tests ... OK` (`…/p4ident-target.log`); full suite `Ran 495 tests in 42.563s — OK` (`…/p4ident-full2.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. No live provider/model/paid operation or product generation occurred. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
 
+## Final consolidated security & lease repair (same branch)
+
+| Finding | Repair | Evidence |
+|---|---|---|
+| Public issuer key exposure | `server_issuer_key()` and `_ISSUER_KEY` removed. `tool_identity` now mints capabilities only from an allowlisted server module with a registered service identity or a validated panel session; no raw key is returned or accepted. `quality_gate`/`workflow_executor` migrated to `issue_service_capability()` | `test_01_no_public_issuer_getter`, `test_02_imported_caller_cannot_mint`, `test_05_valid_service_scoped` |
+| Unauthorized/ambiguous tool requests | Mandatory single identity at ToolExecutor; no identity, forged/expired/wrong-project/wrong-tool/wrong-scope capability and dual identity are BLOCKED before adapter execution (verified with adapter call counters) | `test_03_no_identity_rejected_before_adapter`, `test_04_forged_capability_rejected_before_adapter`, `test_06_role_authorization_still_enforced` |
+| Specialist side effects not fenced by lease | `ToolRequest.run_token` added; `lease_fence()` holds the canonical lock across adapter execution; `write_artifact()` and `independent_qa()` propagate the same token; supersession during a tool or write cannot produce PASS | `test_07_qa_superseded_during_tests_run`, `test_08_qa_superseded_during_security_scan`, `test_09_qa_superseded_before_write` |
+| QA result integrity | QA revalidates its lease after each tool, before and after the report write, verifies the actual report file and SHA-256, and records terminal state via `record_result()`; failed write/hash/persistence yields FAIL or BLOCKED, never PASS | `test_10_qa_failed_write_not_pass`, `test_11_qa_hash_mismatch_not_pass`, `test_12_qa_terminal_failure_not_pass`, `test_13_concurrent_qa_one_pass` |
+
+Cross-path audit (whole repository, not just changed files): the only tool entry points are `agent_collaboration.write_artifact`, `agent_collaboration.independent_qa` tool calls, `quality_gate._call` and `workflow_executor._call`; each supplies exactly one valid identity model. No `server_issuer_key`/`issue_infrastructure_capability` reference remains outside negative assertions. No test-only authority bypass was introduced: the test helper provisions a real server-side panel session and calls the production issuance API.
+
+Verification: `python3 -m unittest core.tests.test_phase04_final_security -v` — exit `0`, `Ran 14 tests ... OK` (`…/p4fin-t7.log`); all Phase 04 tests `Ran 83 tests ... OK` (`…/p4fin-target.log`); full suite `Ran 509 tests in 45.439s — OK` (`…/p4fin-full-final.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. No live provider, payment or production product execution occurred. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE; Phase 05 NOT AUTHORIZED.
+
 ## Labels and limitations
 - **PASS:** implemented registry/engine functions and all executed tests (444/444 core tests green).
 - **FAIL:** none in executed checks.

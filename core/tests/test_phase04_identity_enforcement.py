@@ -10,6 +10,7 @@ import core.config as config
 from core import (agent_collaboration as ac, confirmations, opstatus, paths,
                   specialist_engine as se, tool_events, tool_executor,
                   tool_identity)
+from core.tests import trusted_session
 
 
 class IdentityEnforcementTest(unittest.TestCase):
@@ -54,9 +55,9 @@ class IdentityEnforcementTest(unittest.TestCase):
 
     def _cap(self, project=None, tool="project.read_file", scope="project:read",
              ttl=300):
-        return tool_identity.issue_infrastructure_capability(
-            project or self.project, tool, scope,
-            issuer_key=tool_identity.server_issuer_key(), ttl_s=ttl)
+        return tool_identity.issue_service_capability(
+            "infrastructure", project or self.project, tool, scope,
+            session_id=trusted_session(), ttl_s=ttl)
 
     def _req(self, tool="project.read_file", project=None, inputs=None,
              scopes=None, **extra):
@@ -102,8 +103,9 @@ class IdentityEnforcementTest(unittest.TestCase):
 
     def test_06_caller_cannot_mint_capability(self):
         with self.assertRaises(tool_identity.IdentityError):
-            tool_identity.issue_infrastructure_capability(
-                self.project, "project.read_file", "project:read")
+            tool_identity.issue_service_capability(
+                "infrastructure", self.project, "project.read_file",
+                "project:read")
 
     def test_07_valid_role_within_contract(self):
         result = tool_executor.execute(self._req(

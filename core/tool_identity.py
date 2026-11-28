@@ -1,61 +1,78 @@
-"""Server-controlled tool identity and bounded infrastructure capabilities.
+"""Server-controlled tool identity with NO retrievable issuer secret.
 
-The only trusted issuance boundary is server memory: an issuer key generated
-at import time, or a validated authenticated panel session. Untrusted request
-paths (model prompts, caller JSON, scope strings) cannot mint capabilities.
-Capabilities are bound to exact project, tool, scope and expiry.
+Authority is minted only from:
+  * an allowlisted server module calling with a registered service identity; or
+  * a genuinely validated authenticated panel session.
+
+There is no exported key. The trust boundary is server-side code identity
+(call stack) plus server-side session validation, never a caller string.
 """
 from __future__ import annotations
 
+import inspect
 import secrets
 import threading
 import time
 
 from core import panelauth
 
-_ISSUER_KEY = secrets.token_urlsafe(32)
 _CAPS: dict[str, dict] = {}
 _LOCK = threading.RLock()
 _DEFAULT_TTL_S = 300
+
+# Canonical service identities with bounded scopes. Project/tool are bound per
+# issued capability and revalidated at the tool boundary.
+_SERVICES: dict[str, dict] = {
+    "infrastructure": {"scopes": frozenset((
+        "project:read", "project:write", "tests:run", "security:read",
+        "shell:execute", "image:generate", "image:write", "media:write"))},
+    "quality-gate": {"scopes": frozenset((
+        "project:read", "project:write", "tests:run", "security:read",
+        "shell:execute"))},
+    "workflow-executor": {"scopes": frozenset((
+        "project:read", "project:write", "tests:run", "shell:execute"))},
+}
+_TRUSTED_MODULES = frozenset((
+    "core.quality_gate", "core.workflow_executor", "core.agent_collaboration"))
 
 
 class IdentityError(RuntimeError):
     pass
 
 
-def server_issuer_key() -> str:
-    """Server-internal key for trusted infrastructure modules only.
-
-    Never read from requests, prompts, model output or caller-supplied data.
-    """
-    return _ISSUER_KEY
+def registered_services() -> dict[str, list[str]]:
+    """Read-only view of service identities (no authority is exposed)."""
+    return {k: sorted(v["scopes"]) for k, v in _SERVICES.items()}
 
 
-def issue_infrastructure_capability(project: str, tool_id: str, scope: str,
-                                    *, issuer_key: str = "",
-                                    session_id: str = "",
-                                    ttl_s: int = _DEFAULT_TTL_S) -> str:
-    """Mint a bounded capability from a TRUSTED server-side path.
-
-    Trust is established by the in-process issuer key or by a validated
-    authenticated panel session. Caller-supplied principal strings are ignored.
-    """
-    if not project or not tool_id or not scope:
+def issue_service_capability(service_id: str, project: str, tool_id: str,
+                             scope: str, *, session_id: str = "",
+                             ttl_s: int = _DEFAULT_TTL_S) -> str:
+    """Mint a bounded capability from a trusted server-side path only."""
+    service = _SERVICES.get(str(service_id or ""))
+    if service is None or scope not in service["scopes"]:
+        raise IdentityError("service-scope-denied")
+    if not project or not tool_id:
         raise IdentityError("capability-bindings-required")
-    trusted = False
-    if issuer_key and secrets.compare_digest(str(issuer_key), _ISSUER_KEY):
-        trusted = True
-    if not trusted and session_id and panelauth.principal_for_session(session_id):
-        trusted = True
-    if not trusted:
+    caller = ""
+    frame = inspect.currentframe()
+    try:
+        caller = str((frame.f_back.f_globals if frame and frame.f_back else {})
+                     .get("__name__") or "")
+    finally:
+        del frame
+    trusted_module = caller in _TRUSTED_MODULES
+    principal = ""
+    if session_id:
+        principal = str(panelauth.principal_for_session(session_id) or "")
+    if not trusted_module and not principal:
         raise IdentityError("untrusted-capability-issuance")
     token = secrets.token_urlsafe(24)
     with _LOCK:
         _CAPS[token] = {"project": str(project), "tool_id": str(tool_id),
                         "scope": str(scope),
                         "expires": time.time() + max(1, int(ttl_s)),
-                        "principal": ("panel_admin" if session_id else
-                                      "server:infrastructure")}
+                        "principal": principal or "service:" + service_id}
     return token
 
 
@@ -63,9 +80,7 @@ def validate_capability(token: str, project: str, tool_id: str,
                         scope: str) -> bool:
     with _LOCK:
         cap = _CAPS.get(str(token or ""))
-    if cap is None:
-        return False
-    if cap.get("expires", 0) < time.time():
+    if cap is None or cap.get("expires", 0) < time.time():
         return False
     return (cap.get("project") == str(project) and
             cap.get("tool_id") == str(tool_id) and

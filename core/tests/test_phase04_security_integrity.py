@@ -10,7 +10,7 @@ from unittest import mock
 import core.config as config
 from core import (agent_collaboration as ac, confirmations, opstatus, paths,
                   specialist_engine as se, tool_events, tool_executor,
-                  tool_identity)
+                  tool_identity, panelauth)
 
 
 class GoodGateway:
@@ -38,6 +38,9 @@ class GoodGateway:
                               "parts": [{"type": "text", "text": text}]}]}
 
 
+VALID_SESSION = "valid-panel-session"
+
+
 class Phase04SecurityIntegrityTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -59,6 +62,10 @@ class Phase04SecurityIntegrityTest(unittest.TestCase):
             mock.patch.object(confirmations, "_STORE", self.conf),
             mock.patch.object(tool_events, "_STORE", self.ev),
             mock.patch.object(tool_events, "_RECEIPT_STORE", self.rc),
+            mock.patch.object(panelauth, "principal_for_session",
+                              side_effect=lambda t: ("panel_admin"
+                                                     if t == VALID_SESSION
+                                                     else None)),
         ]
         for p in self.patches:
             p.start()
@@ -110,9 +117,9 @@ class Phase04SecurityIntegrityTest(unittest.TestCase):
         req = tool_executor.ToolRequest(
             tool_id="project.read_file", project=self.project,
             inputs={"path": "sample.txt"}, scopes=["project:read"],
-            capability_token=tool_identity.issue_infrastructure_capability(
-                self.project, "project.read_file", "project:read",
-                issuer_key=tool_identity.server_issuer_key()),
+            capability_token=tool_identity.issue_service_capability(
+                "infrastructure", self.project, "project.read_file",
+                "project:read", session_id=VALID_SESSION),
             call_id="p4-infra")
         self.assertEqual(tool_executor.execute(req).status, opstatus.PASS)
 
