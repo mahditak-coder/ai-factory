@@ -29,6 +29,25 @@ No specialist execution, no model/provider call, no product generation, no criti
 
 Coverage: unique registry IDs, contract fields, alias resolution, dynamic selection, goal-based discovery, workflow consistency, scope grant/denial, full-text handoff with hash revalidation and tamper detection, missing artifact fail-closed, stale-run rejection, no stale PASS, current-run PASS, dead-worker stale resolution, final-response selection, failed-turn rejection, explicit feature flag, corrupt store fail-closed.
 
+## Independent-audit repairs (same branch)
+
+| Finding | Repair | Evidence |
+|---|---|---|
+| P0 store collision — engine and `agent_collaboration` shared `data/specialist_runs.json` with incompatible schemas | Canonical engine now uses `data/canonical_specialist_runs.json`; the legacy list store remains for `agent_collaboration`. `migrate_legacy_runs()` is explicit, idempotent, non-destructive; no silent migration on read | `test_01_no_silent_migration_and_legacy_preserved`, `test_02_migration_idempotent_and_restart`, `test_03_concurrent_runs_on_distinct_roles_persist` |
+| P0 role scopes not enforced at tool boundary | `ToolRequest.role_id`/`enforce_role` trigger canonical contract checks inside `ToolExecutor.execute()` before adapter side effects; caller scopes and prompt text are ignored | `test_04_forged_scopes_and_prompt_cannot_grant_permission`, `test_05_missing_and_unknown_role_context_denied`, `test_06_valid_role_scope_and_session` |
+| P0 concurrent run leases | One current lease per project/role under flock; live leases rejected or explicitly superseded; terminal results only from the authoritative current token; PID reuse guarded via `/proc` start time; real thread/two-process races | `test_07_two_threads_cannot_both_get_lease`, `test_08_two_processes_cannot_both_record_pass`, `test_09_supersede_and_pid_reuse_safety` |
+| P0 handoff not verified/integrated | Expected producer hashes mandatory; missing expected hash fails closed; full text (no 4000-char truncation) via `agent_collaboration.verified_handoff()`; revalidated immediately before consumers | `test_10_expected_hash_required`, `test_11_changed_after_verification_and_long_text` |
+| Catalog reconciliation | All `ROLES`, `EXTRA_ROLES`, `agents/*.json` and workflow DAG IDs reconciled to canonical roles or explicit excluded status | `test_12_all_legacy_sources_reconciled` |
+| Final-response ordering | Selection uses trustworthy completion timestamps, never input position; aborted/incomplete turns skipped | `test_13_newest_completed_wins_regardless_of_position` |
+
+Verification after repair (local, isolated `AI_FACTORY_TEST_ROOT`):
+- `python3 -m unittest core.tests.test_phase04_audit_repair -v` — exit `0`, `Ran 13 tests ... OK`; log `/data/data/com.termux/files/usr/tmp/opencode/p4rep-t4.log`.
+- `python3 -m unittest core.tests.test_phase04_specialist_engine core.tests.test_phase04_audit_repair` — exit `0`, `Ran 31 tests ... OK`; 5/5 reruns stable.
+- `python3 -m unittest discover -s core/tests -p 'test_*.py'` — exit `0`, `Ran 457 tests in 45.389s — OK`; log `/data/data/com.termux/files/usr/tmp/opencode/p4rep-full.log`.
+- `python3 -m py_compile` on changed Python files — exit `0`.
+- CI/GitHub Actions: NOT TESTED. No real specialist execution or product generation was performed.
+- ADR-024 is PROPOSED / AWAITING INDEPENDENT ACCEPTANCE, not ACCEPTED.
+
 ## Labels and limitations
 - **PASS:** implemented registry/engine functions and all executed tests (444/444 core tests green).
 - **FAIL:** none in executed checks.

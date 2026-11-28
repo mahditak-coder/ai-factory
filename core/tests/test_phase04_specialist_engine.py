@@ -115,7 +115,8 @@ class SpecialistEngineTest(unittest.TestCase):
         artifact = paths.project_path(self.project, "spec/product-brief.md")
         if artifact.exists():
             artifact.unlink()
-        result = se.verify_handoff(self.project, "software-architect")
+        result = se.verify_handoff(self.project, "software-architect",
+                                   {"spec/product-brief.md": "f" * 64})
         self.assertFalse(result["verified"])
         self.assertTrue(any("missing" in p for p in result["problems"]))
 

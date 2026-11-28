@@ -109,5 +109,13 @@
 - Tests: targeted `Ran 18 tests ... OK` (exit 0); full suite `Ran 444 tests in 45.916s — OK` (444 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`. Details: `docs/rebuild/evidence/PHASE-04-SPECIALIST-ENGINE.md`.
 - CI/GitHub Actions, live providers and specialist execution: NOT TESTED. ADR-011..014 untouched.
 
+## Phase 04 audit repairs (same branch)
+- Store collision fixed: canonical runs use `data/canonical_specialist_runs.json`; the legacy list store `data/specialist_runs.json` remains for `agent_collaboration`. `migrate_legacy_runs()` is explicit, idempotent and non-destructive; no silent migration on read.
+- Tool boundary: `ToolRequest.role_id`/`enforce_role` trigger canonical contract checks inside `ToolExecutor.execute()` before adapter side effects; caller scopes and prompt text cannot grant permissions; SecurityPolicy and confirmations remain intact.
+- Leases: one current token per project/role under flock; live leases reject or explicitly supersede; terminal results only from the current lease; PID reuse guarded by `/proc` start time.
+- Handoff: expected producer hashes mandatory; full text returned (no 4000-char truncation) via `agent_collaboration.verified_handoff()`; revalidated immediately before consumers.
+- Catalog: all ROLES/EXTRA_ROLES/agents/*.json/workflow DAG IDs reconciled; final responses ordered by trustworthy timestamps, not list position.
+- Tests: targeted Phase 04 `Ran 31 tests ... OK` (5/5 reruns); full suite `Ran 457 tests in 45.389s — OK` (457 PASS / 0 FAIL / 0 ERROR). CI/NOT TESTED. ADR-024 is PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
 ## Next action
 Phase 04 is **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.

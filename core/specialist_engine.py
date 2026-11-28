@@ -27,7 +27,10 @@ from core import opstatus, paths, specialists, workflow_roles
 
 SCHEMA_VERSION = "af-specialist-engine-1.0"
 STORE_VERSION = "af-specialist-runs-1"
-_STORE = config.PROJECT_ROOT / "data" / "specialist_runs.json"
+# Phase 04 audit repair: the canonical engine MUST NOT share the legacy
+# list-shaped agent_collaboration store (data/specialist_runs.json).
+_STORE = config.PROJECT_ROOT / "data" / "canonical_specialist_runs.json"
+_LEGACY_STORE = config.PROJECT_ROOT / "data" / "specialist_runs.json"
 _FLAGS = config.PROJECT_ROOT / "data" / "specialist_engine_flags.json"
 _LOCK = threading.RLock()
 
@@ -112,6 +115,47 @@ def _save_unlocked(data: dict) -> None:
                                          sort_keys=True))
     except OSError as exc:
         raise EngineError("store-write-failed:%s" % type(exc).__name__) from exc
+
+
+def migrate_legacy_runs() -> dict:
+    """Explicit, non-destructive migration of legacy list-shaped run records.
+
+    Legacy data is never deleted or rewritten; canonical records are inserted
+    once (idempotent). No automatic migration happens on ordinary reads.
+    """
+    with _engine_lock():
+        legacy = []
+        try:
+            raw = json.loads(_LEGACY_STORE.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                legacy = raw
+        except (OSError, ValueError):
+            legacy = []
+        data = _load_unlocked()
+        runs = data["runs"]
+        migrated, skipped = 0, 0
+        for idx, item in enumerate(legacy):
+            if not isinstance(item, dict):
+                skipped += 1
+                continue
+            ref = str(item.get("id") or item.get("call_id") or
+                      "legacy-%d" % idx)
+            key = "legacy:" + ref
+            if key in runs:
+                skipped += 1
+                continue
+            runs[key] = {"project": str(item.get("project") or ""),
+                         "role_id": resolve_id(str(item.get("role") or "")),
+                         "token": "legacy-" + ref, "status": str(
+                             item.get("status") or "unknown"),
+                         "legacy_ref": ref,
+                         "legacy": dict(item),
+                         "migrated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            migrated += 1
+        if migrated:
+            _save_unlocked(data)
+        return {"migrated": migrated, "skipped": skipped,
+                "total": len(runs)}
 
 
 # ------------------------------------------------------------------- registry
@@ -234,6 +278,45 @@ def registry_consistency() -> dict:
             "role_count": len(registry)}
 
 
+def catalog_reconciliation() -> dict:
+    """Reconcile every legacy role source against the canonical registry."""
+    registry = canonical_registry()
+    sources: dict[str, list[str]] = {"ROLES": [r.id for r in specialists.ROLES],
+                                     "EXTRA_ROLES": [r.id for r in
+                                                     specialists.EXTRA_ROLES]}
+    agents_dir = config.AGENTS_DIR
+    agent_names = []
+    try:
+        for fp in sorted(agents_dir.glob("*.json")):
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("name"):
+                    agent_names.append(str(data["name"]))
+            except (OSError, ValueError):
+                continue
+    except OSError:
+        pass
+    sources["agents/*.json"] = agent_names
+    dag_names = [stage.get("role") for dag in
+                 (workflow_roles.GAME, workflow_roles.WEB,
+                  workflow_roles.ANDROID, workflow_roles.AI)
+                 for stage in dag if stage.get("role")]
+    sources["workflow DAGs"] = sorted(set(dag_names))
+    rows, problems = [], []
+    for source, names in sources.items():
+        for name in names:
+            rid = resolve_id(name)
+            status = ("reconciled" if rid in registry else "excluded-obsolete")
+            if status != "reconciled":
+                problems.append("%s:%s" % (source, name))
+            rows.append({"source": source, "legacy_id": name,
+                         "canonical_id": rid, "status": status})
+    alias_collisions = [k for k, v in LEGACY_ALIASES.items() if v not in registry]
+    problems.extend("alias-collision:" + a for a in alias_collisions)
+    return {"ok": not problems, "sources": sources, "rows": rows,
+            "problems": problems, "registry_count": len(registry)}
+
+
 # ------------------------------------------------------------------ permissions
 
 def require_scope(role_id: str, scope: str) -> bool:
@@ -246,15 +329,47 @@ def require_scope(role_id: str, scope: str) -> bool:
     return True
 
 
+def authorize_tool_request(role_id: str, scope: str,
+                           session_id: str = "") -> dict:
+    """Authoritative role-based gate for a real ToolRequest.
+
+    Caller-supplied scopes are ignored; only the canonical role contract and
+    an authenticated panel session (when supplied) can authorize a tool.
+    """
+    rec = get(role_id) if str(role_id or "") else None
+    if rec is None:
+        reason = "role-context-required" if not str(role_id or "") else \
+            "unknown-role"
+        return {"allowed": False, "reason": reason}
+    if scope not in rec["allowed_scopes"]:
+        return {"allowed": False, "reason": "scope-denied:" + scope,
+                "role_id": rec["id"]}
+    principal = ""
+    if session_id:
+        from core import panelauth
+        principal = str(panelauth.principal_for_session(str(session_id)) or "")
+        if not principal:
+            return {"allowed": False, "reason": "session-invalid",
+                    "role_id": rec["id"]}
+    return {"allowed": True, "role_id": rec["id"], "scope": scope,
+            "principal": principal, "actor_trusted": bool(principal)}
+
+
 # --------------------------------------------------------------------- handoff
 
 def verify_handoff(project: str, role_id: str,
                    expected: dict[str, str] | None = None) -> dict:
-    """Full-text artifact handoff with CURRENT sha256 revalidation."""
+    """Full-text handoff; expected producer hashes are MANDATORY.
+
+    Missing expected hashes fail closed: an unverified artifact is never a
+    valid dependency input. Text is returned in full (no truncation).
+    """
     rec = get(role_id)
     if rec is None:
         raise EngineError("unknown-role:" + role_id)
-    expected = expected or {}
+    if not isinstance(expected, dict) or not expected:
+        return {"role_id": rec["id"], "verified": False, "items": [],
+                "problems": ["expected-hash-required"]}
     items, problems = [], []
     for dep in rec["depends_on"]:
         dep_contract = get(dep)
@@ -263,22 +378,42 @@ def verify_handoff(project: str, role_id: str,
             continue
         for spec in dep_contract["artifacts"]:
             rel = spec["path"]
+            want = expected.get(rel)
+            if not want:
+                problems.append("expected-hash-required:" + rel)
+                continue
             try:
-                fp = paths.project_path(project, rel)
-                text = fp.read_text(encoding="utf-8")
+                text = paths.project_path(project, rel).read_text(encoding="utf-8")
             except (OSError, PermissionError, ValueError):
                 problems.append("missing:" + rel)
                 continue
             sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            if rel in expected and expected[rel] != sha:
+            if sha != want:
                 problems.append("hash-mismatch:" + rel)
-            items.append({"path": rel, "sha256": sha,
+            items.append({"path": rel, "sha256": sha, "expected": want,
                           "text": text, "length": len(text)})
     return {"role_id": rec["id"], "verified": not problems,
             "items": items, "problems": problems}
 
 
+def revalidate_before_consumer(project: str, role_id: str,
+                               expected: dict[str, str] | None) -> dict:
+    """Re-check artifact hashes immediately before a consumer may proceed."""
+    return verify_handoff(project, role_id, expected)
+
+
 # -------------------------------------------------------------- stale runs
+
+def _proc_start(pid) -> str:
+    """Linux process starttime (field 22) — guards against PID reuse."""
+    if not pid:
+        return ""
+    try:
+        data = Path("/proc/%d/stat" % int(pid)).read_text(encoding="utf-8")
+        return data.rsplit(") ", 1)[1].split()[19]
+    except (OSError, ValueError, IndexError, TypeError):
+        return ""
+
 
 def _pid_alive(pid) -> bool:
     if not pid:
@@ -290,7 +425,36 @@ def _pid_alive(pid) -> bool:
         return False
 
 
-def start_run(project: str, role_id: str, run_token: str = "") -> dict:
+def _worker_alive(run: dict) -> bool:
+    return _pid_alive(run.get("pid")) and (
+        not run.get("proc_start") or
+        _proc_start(run.get("pid")) == run["proc_start"])
+
+
+def _current_run_key(data: dict, project: str, role_id: str) -> str | None:
+    """Resolve the single live lease, reopening dead-worker leases."""
+    current = None
+    for key, run in data["runs"].items():
+        if run.get("project") != project or run.get("role_id") != role_id:
+            continue
+        if run.get("status") != "RUNNING":
+            continue
+        if not _worker_alive(run):
+            run["status"] = "REVISION"
+            run["stale_reason"] = "dead-worker-or-pid-reuse"
+            continue
+        if current is not None:
+            # Two live leases is a corruption: fail closed.
+            run["status"] = "REVISION"
+            run["stale_reason"] = "duplicate-live-lease"
+            continue
+        current = key
+    return current
+
+
+def start_run(project: str, role_id: str, run_token: str = "",
+              supersede: bool = False) -> dict:
+    """Atomically claim the single current lease for project+role."""
     rec = get(role_id)
     if rec is None:
         raise EngineError("unknown-role:" + role_id)
@@ -298,20 +462,29 @@ def start_run(project: str, role_id: str, run_token: str = "") -> dict:
     with _engine_lock():
         data = _load_unlocked()
         runs = data["runs"]
-        # Resolve stale RUNNING leases without deleting any record.
-        stale = []
-        for key, r in runs.items():
-            if r.get("project") != project or r.get("role_id") != rec["id"]:
-                continue
-            if r.get("status") == "RUNNING" and not _pid_alive(r.get("pid")):
-                r["status"] = "REVISION"
-                r["stale_reason"] = "dead-worker"
-                stale.append(key)
+        stale_keys = [k for k, r in runs.items()
+                      if r.get("project") == project and
+                      r.get("role_id") == rec["id"] and
+                      r.get("status") == "RUNNING" and not _worker_alive(r)]
+        live = _current_run_key(data, project, rec["id"])
+        superseded = []
+        if live is not None:
+            if not supersede:
+                raise EngineError("run-already-active:%s:%s" %
+                                  (project, rec["id"]))
+            runs[live]["status"] = "SUPERSEDED"
+            runs[live]["superseded_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            superseded.append(live)
         key = "%s:%s:%s" % (project, rec["id"], token)
+        if key in runs:
+            raise EngineError("run-token-replay:" + token)
         runs[key] = {"project": project, "role_id": rec["id"],
                      "token": token, "status": "RUNNING",
-                     "pid": os.getpid(), "started": time.time(),
-                     "stale_resolved": stale}
+                     "pid": os.getpid(), "proc_start": _proc_start(os.getpid()),
+                     "worker_id": "%d:%s:%s" % (os.getpid(),
+                                                _proc_start(os.getpid()), token),
+                     "started": time.time(), "superseded": superseded,
+                     "stale_resolved": stale_keys}
         _save_unlocked(data)
         result = dict(runs[key])
         result["key"] = key
@@ -319,33 +492,32 @@ def start_run(project: str, role_id: str, run_token: str = "") -> dict:
 
 
 def reject_stale(project: str, role_id: str, run_token: str) -> dict:
-    """A result from a non-current run token is rejected (no stale PASS)."""
+    """Only the authoritative current lease may produce a result."""
     with _engine_lock():
         data = _load_unlocked()
-        key = "%s:%s:%s" % (project, resolve_id(role_id), run_token)
-        run = data["runs"].get(key)
-        current = [k for k, v in data["runs"].items()
-                   if v.get("project") == project and
-                   v.get("role_id") == resolve_id(role_id) and
-                   v.get("status") == "RUNNING"]
-        if run is None or run.get("status") != "RUNNING" or key not in current:
+        rid = resolve_id(role_id)
+        key = "%s:%s:%s" % (project, rid, run_token)
+        current = _current_run_key(data, project, rid)
+        if current != key:
             return {"accepted": False, "reason": "stale-run-rejected"}
         return {"accepted": True, "reason": "current-run", "key": key}
 
 
 def record_result(project: str, role_id: str, run_token: str,
                   status: str, artifacts: list | None = None) -> dict:
-    """Persist a result only if the run is still current; stale PASS blocked."""
+    """Persist a result ONLY from the current lease; stale PASS is blocked."""
     if status not in (opstatus.PASS, opstatus.FAIL, opstatus.BLOCKED,
                       opstatus.SKIP):
         raise EngineError("invalid-result-status:" + status)
     with _engine_lock():
         data = _load_unlocked()
-        key = "%s:%s:%s" % (project, resolve_id(role_id), run_token)
-        run = data["runs"].get(key)
-        if run is None or run.get("status") != "RUNNING":
+        rid = resolve_id(role_id)
+        key = "%s:%s:%s" % (project, rid, run_token)
+        current = _current_run_key(data, project, rid)
+        if current != key:
             return {"status": opstatus.BLOCKED,
                     "error": "stale-run-rejected"}
+        run = data["runs"][key]
         run["status"] = status
         run["finished"] = time.time()
         run["artifacts"] = artifacts or []
@@ -355,31 +527,49 @@ def record_result(project: str, role_id: str, run_token: str,
 
 # ------------------------------------------------------- final response pick
 
-def select_final_response(messages: list) -> dict:
-    """Choose the newest COMPLETE assistant message, not the first one.
+def _turn_time(msg: dict):
+    """Trustworthy ordering metadata; never the list position."""
+    value = msg.get("completed")
+    if value is None and isinstance(msg.get("time"), dict):
+        value = msg["time"].get("completed")
+    if value is None:
+        value = msg.get("created") or msg.get("timestamp")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
 
-    Aborted/error/interrupted turns and unfinished assistant nodes are never
-    selected. If none qualifies, return an honest NOT TESTED verdict.
+
+def select_final_response(messages: list) -> dict:
+    """Select the NEWEST completed assistant turn by timestamp metadata.
+
+    Input order is never assumed. Aborted/error/incomplete turns are skipped;
+    if no trustworthy completed turn exists, return an honest failure.
     """
     if not isinstance(messages, list):
         return {"ok": False, "reason": "messages-not-list", "index": None}
+    candidates = []
     for idx, msg in enumerate(messages):
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("type") != "assistant":
+        if not isinstance(msg, dict) or msg.get("type") != "assistant":
             continue
         finish = str(msg.get("finish") or "").lower()
         outcome = str(msg.get("outcome") or "").lower()
         if finish in ("aborted", "error", "interrupted") or \
                 outcome in ("failed", "aborted", "error"):
-            continue  # a failed turn is never a final response
-        completed = msg.get("completed")
-        if not completed and isinstance(msg.get("time"), dict):
-            completed = msg["time"].get("completed")
-        if finish in ("stop", "length") and completed:
-            return {"ok": True, "reason": "completed-assistant",
-                    "index": idx, "message": msg}
-    return {"ok": False, "reason": "no-completed-assistant", "index": None}
+            continue
+        stamp = _turn_time(msg)
+        if finish in ("stop", "length") and stamp is not None:
+            candidates.append((stamp, idx, msg))
+    if not candidates:
+        return {"ok": False, "reason": "no-completed-assistant", "index": None}
+    stamp, idx, msg = max(candidates, key=lambda item: (item[0], -item[1]))
+    return {"ok": True, "reason": "completed-assistant",
+            "index": idx, "message": msg, "completed_at": stamp}
 
 
 # -------------------------------------------------------------- feature flag

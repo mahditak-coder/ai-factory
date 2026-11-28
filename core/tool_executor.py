@@ -29,6 +29,9 @@ class ToolRequest:
     confirm_token: str = ""
     call_id: str = ""
     timeout_s: float | None = None
+    # Phase 04: canonical role context for enforced tool authorization.
+    role_id: str = ""
+    enforce_role: bool = False
 
 
 @dataclass
@@ -103,6 +106,24 @@ def execute(req: ToolRequest) -> ToolResult:
         return _record(req, call_id, ToolResult(
             status=opstatus.BLOCKED, decision="none", call_id=call_id,
             error="tool-disabled", duration_ms=0), started)
+    # Phase 04 — role authorization at the real tool boundary. Caller scopes
+    # are NOT proof of role permission; a canonical contract must allow it.
+    if req.enforce_role or req.role_id:
+        try:
+            from core import specialist_engine as _se
+            role_auth = _se.authorize_tool_request(
+                req.role_id, spec.scope, req.session_id)
+        except Exception as exc:  # noqa: BLE001 — fail closed
+            role_auth = {"allowed": False,
+                         "reason": "role-authorization-error:" +
+                         type(exc).__name__}
+        if not role_auth["allowed"]:
+            return _record(req, call_id, ToolResult(
+                status=opstatus.BLOCKED, decision="none", call_id=call_id,
+                error="role-authorization-denied:" + str(role_auth["reason"]),
+                duration_ms=0,
+                evidence={"role_enforced": True, "role_id": req.role_id}),
+                started, finalize_receipt=False)
     sig = _signature(req)
     # One cross-process atomic operation: read, duplicate/signature check and
     # durable RESERVED write. An adapter may run only if this process won the

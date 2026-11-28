@@ -104,6 +104,27 @@ def handoff(project: str, role_id: str) -> dict:
     return out
 
 
+def verified_handoff(project: str, role_id: str,
+                     expected: dict[str, str]) -> dict:
+    """Canonical full-text handoff with mandatory hash verification."""
+    from core import specialist_engine as _se
+    result = _se.verify_handoff(project, role_id, expected)
+    return {"ok": result["verified"], "role_id": result["role_id"],
+            "texts": {i["path"]: i["text"] for i in result["items"]},
+            "hashes": {i["path"]: i["sha256"] for i in result["items"]},
+            "problems": result["problems"], "full_text": True}
+
+
+def revalidate_handoff(project: str, role_id: str,
+                       expected: dict[str, str]) -> dict:
+    """Re-verify immediately before a consumer uses handed-off artifacts."""
+    from core import specialist_engine as _se
+    result = _se.revalidate_before_consumer(project, role_id, expected)
+    return {"ok": result["verified"], "problems": result["problems"],
+            "hashes": {i["path"]: i["sha256"] for i in result["items"]},
+            "full_text": True}
+
+
 def write_artifact(project: str, rel: str, content: str, role: str,
                    call_id: str = "") -> dict:
     """Write through the governed Tool Registry (never silently direct)."""
