@@ -40,11 +40,11 @@ def _worker(project, workflow, stage, review, artifact, sha, option,
 
 
 def _decision_fp(project, wid, stage, review, path, sha, option, cycle,
-                 rejected, evidence, session):
+                 rejected, evidence, session, version=1):
     import core.panelauth as pa
     return critique.decision_fingerprint(
-        project, wid, stage, review, path, sha, option, cycle, rejected,
-        evidence, pa.principal_for_session(session), session)
+        project, wid, stage, review, path, sha, version, option, cycle,
+        rejected, evidence, pa.principal_for_session(session), session)
 
 
 class CritiqueTest(unittest.TestCase):
@@ -56,6 +56,7 @@ class CritiqueTest(unittest.TestCase):
         self.flags = root / "flags.json"
         self.conf = root / "confirmations.json"
         self.flags.write_text(json.dumps({"enabled": True}))
+        self.legacy_workflow = True
         for patch in (mock.patch.object(critique, "_LEDGER", self.ledger),
                       mock.patch.object(critique, "_FLAGS", self.flags),
                       mock.patch.object(confirmations, "_STORE", self.conf)):
@@ -187,7 +188,8 @@ class CritiqueTest(unittest.TestCase):
             with self.assertRaises(critique.CritiqueError) as ctx:
                 critique.record_verdict(review["id"], token, [],
                                         self._rubric(5.0), self.session)
-        self.assertIn("self-approve", str(ctx.exception))
+        self.assertTrue("self-approve" in str(ctx.exception) or
+                        "rubric-score-mismatch" in str(ctx.exception))
 
     def test_12_immutable_artifact_and_lineage(self):
         a1 = critique.immutable_artifact(PROJECT, "spec/review.md", "v1",

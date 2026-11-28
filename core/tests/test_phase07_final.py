@@ -105,7 +105,7 @@ class FinalTest(unittest.TestCase):
                    "option": option, "cycle": cycle,
                    "decision_fingerprint": fp or critique.decision_fingerprint(
                        PROJECT, self._info()["workflow_id"], STAGE, review_id,
-                       path, sha, option, cycle, rejected, evidence,
+                       path, sha, self._info()["version_no"], option, cycle, rejected, evidence,
                        panelauth.principal_for_session(s), s)}
         return confirmations.create(PROJECT, "critic-decision", payload,
                                      "approve?", s)["confirm_token"]

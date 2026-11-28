@@ -234,3 +234,7 @@ Phase 07 is submitted for final independent review; the implementing agent does 
 ## Phase 07 final remediation (append-only)
 - Real Producer-connected revision with immutable versions and full criterion recheck; mandatory recomputed decision fingerprint with complete binding; governed-approval enforcement; true cross-process idempotency and safe recovery; real HTTP auth/CSRF/critique/decision round-trip tested.
 - Tests: final 11/11, Phase 07 62/62, full core 719/719. CI, real browser and live model NOT TESTED.
+
+## Phase 07 final closure re-audit (append-only)
+- Governed approval is now a workflow-level fail-closed policy; `decide()` is the complete gate; verdict/score/conflict integrity, multilingual relevance, atomic artifacts, crash recovery and stable review identity were fixed.
+- Tests: Phase 07 74/74; full core 731/731; JS 5/5. Live model, different-model independence, CI, real browser and cross-process stage execution NOT TESTED.

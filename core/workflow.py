@@ -132,6 +132,11 @@ def recover_stale(project: str = "") -> list[str]:
     return recovered
 
 
+def _critic_flag_enabled() -> bool:
+    from core import critique
+    return critique.critic_enabled()
+
+
 def create(project: str, product_type: str = "", goal: str = "",
            dag: list[dict] | None = None) -> dict:
     with _LOCK:
@@ -144,6 +149,10 @@ def create(project: str, product_type: str = "", goal: str = "",
         rec = {
             "id": wid, "project": project, "product_type": product_type,
             "goal": str(goal)[:1200], "dag": [dict(s) for s in dag],
+            "critic_required": bool(
+                any(str(st.get("role")) == "independent-critic"
+                    for st in (dag or [])) or
+                _critic_flag_enabled()),
             "stages": [{"id": s["id"], "role": s["role"], "title": s["title"],
                         "kind": s["kind"], "tool": s.get("tool"),
                         "deps": list(s["deps"]), "status": PENDING,
@@ -397,26 +406,25 @@ def _advance(r: dict) -> None:
 
 
 def approve(project: str, stage_id: str, version: int, approval_id: str) -> dict:
-    # Phase 07: once a governed Critic decision exists for this stage, an
-    # approval MUST reference it. No legacy/API caller may bypass it.
-    ledger = config.PROJECT_ROOT / "data" / "decision_ledger.json"
-    try:  # use the active (possibly test-patched) critique ledger
-        from core import critique
-        ledger = critique._LEDGER
-    except (ImportError, AttributeError):
-        pass
-    if ledger.is_file():
+    """Approve ONLY with a governed, version-bound Critic decision."""
+    from core import critique
+    rec = by_project(project)
+    if rec is None:
+        return {"status": opstatus.BLOCKED, "error": "no-workflow"}
+    governed = bool(rec.get("critic_required"))
+    if governed:
         try:
-            rows = json.loads(ledger.read_text(encoding="utf-8")).get("entries", [])
-        except (OSError, ValueError):
-            return {"status": opstatus.BLOCKED, "error": "decision-ledger-unavailable"}
-        governed = [e.get("id") for e in rows if isinstance(e, dict) and
-                    e.get("kind") == "decision" and
-                    e.get("project") == project and e.get("stage_id") == stage_id]
-        if governed and approval_id not in governed:
+            bound = critique.authorize_workflow_approval(
+                project, rec["id"], stage_id, version, approval_id)
+        except critique.CritiqueError as exc:
+            return {"status": opstatus.BLOCKED, "error": str(exc)[:160]}
+        if not bound.get("ok"):
             return {"status": opstatus.BLOCKED,
-                    "error": "approval-requires-governed-decision"}
-    verify_integrity(project)
+                    "error": bound.get("error", "approval-not-authorized")}
+    else:
+        approval_id = str(approval_id or "")
+        if not approval_id:
+            return {"status": opstatus.BLOCKED, "error": "approval-id-required"}
     def op(r, items):
         s = _stage(r, stage_id)
         if r["status"] != AWAIT_REVIEW or not s or s["status"] != AWAIT_REVIEW:
@@ -424,22 +432,33 @@ def approve(project: str, stage_id: str, version: int, approval_id: str) -> dict
         v = int(version)
         cur = len(s["versions"])
         if v != cur:
-            return {"status": opstatus.FAIL, "error": "version-invalidated:%s!=%s" % (v, cur)}
-        if s["versions"][v - 1].get("invalidated"):
-            return {"status": opstatus.FAIL, "error": "version-invalidated:hash-changed"}
+            return {"status": opstatus.FAIL,
+                    "error": "version-invalidated:%s!=%s" % (v, cur)}
+        entry = s["versions"][v - 1]
+        if entry.get("invalidated"):
+            return {"status": opstatus.FAIL,
+                    "error": "version-invalidated:hash-changed"}
+        # Re-hash REAL bytes immediately before approval (no TOCTOU).
+        for art in entry.get("artifacts") or []:
+            try:
+                real = sha256_file(str(art.get("path") or ""), project)
+            except (OSError, PermissionError):
+                real = ""
+            if not real or real != art.get("sha256"):
+                entry["invalidated"] = True
+                return {"status": opstatus.FAIL,
+                        "error": "artifact-changed-before-approval"}
         if any(a.get("id") == approval_id for a in s["approvals"]):
             return {"status": opstatus.BLOCKED, "error": "duplicate-approval"}
-        s["approvals"].append({"id": str(approval_id)[:80], "version": v, "at": _now()})
+        s["approvals"].append({"id": str(approval_id)[:120], "version": v,
+                               "at": _now(), "governed": governed})
         s["approved_version"] = v
         s["status"] = APPROVED
         s["finished_at"] = _now()
         _history(r, "stage-approved", stage_id, "%s v%d" % (approval_id, v))
         _advance(r)
-        return {"status": opstatus.PASS, "ok": True, "workflow_status": r["status"],
-                "next_stage": r["current_stage"]}
-    rec = by_project(project)
-    if rec is None:
-        return {"status": opstatus.BLOCKED, "error": "no-workflow"}
+        return {"status": opstatus.PASS, "ok": True,
+                "workflow_status": r["status"], "next_stage": r["current_stage"]}
     return _mutate(rec["id"], op)
 
 
@@ -503,7 +522,6 @@ def record_external_version(project: str, stage_id: str, rel: str,
         s["status"] = AWAIT_REVIEW
         s["finished_at"] = _now()
         r["status"] = AWAIT_REVIEW
-        r["current_stage"] = stage_id
         _history(r, "revision-version-added", stage_id, "v%d" % version)
         return {"status": opstatus.PASS, "ok": True, "version": version}
     return _mutate(rec["id"], op)

@@ -182,3 +182,25 @@ Tests: final suite 11/11 (includes a REAL HTTP socket round-trip with panel
 login, CSRF and unauthenticated 401), Phase 07 62/62, full core **719/719 PASS**
 (71.798s). `py_compile` and `git diff --check` clean. CI, real browser and live
 model remain NOT TESTED.
+
+## FINAL CLOSURE RE-AUDIT — approval, verdict, multilingual, crash recovery
+
+Continues from `513960c85676456d41bb2cf71c0a53c32c7d01e7`.
+
+Fixed: workflow-level `critic_required` policy and version/SHA-bound governed
+approval in `workflow.approve()` (no ledger decision ⇒ fail closed); `decide()`
+is now a complete gate (review/verdict/PASS/workflow/option/identity/one-shot);
+failed required criteria and unresolved conflicts block PASS; rubric scores are
+recomputed from real artifact bytes; conflict detection no longer compares an
+option id with a finding owner; Persian/mixed relevance with coverage ratio and
+keyword-stuffing rejection; atomic artifact writes with fsync and no short
+writes; durable revision-pending/recovery for every crash point; version/
+criteria/rubric-aware review identity; project-wide series lock; current-stage
+enforcement; decision IDs include review/path/actor.
+
+Tests: new final2 suite 12/12; Phase 07 total 74/74; full core **731/731 PASS**
+(94.901s); JS safe-DOM 5/5; `py_compile` and `git diff --check` clean.
+
+Honest remaining limitations: no live Critic model turn (structural-only review;
+semantic quality NOT VERIFIED); different-model independence NOT claimed; CI,
+real browser and cross-process simultaneous *stage execution* NOT TESTED.

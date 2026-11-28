@@ -117,6 +117,17 @@ class CorrectiveTest(unittest.TestCase):
         s = self._series()
         return s["final"]["review"]["id"], s
 
+    def _current_version(self):
+        with workflow._LOCK:
+            items = workflow._load()
+            rec = items[self._info_workflow_id()]
+            st = next(x for x in rec["stages"] if x["id"] == STAGE)
+            return len(st["versions"])
+
+    def _info_workflow_id(self):
+        with workflow._LOCK:
+            return next(iter(workflow._load()))
+
     def _confirm(self, review_id, sha, option="accept-current", cycle=1,
                  session=None, rejected=None, evidence=None):
         rejected = rejected if rejected is not None else [
@@ -124,12 +135,14 @@ class CorrectiveTest(unittest.TestCase):
              "owner": "user"}]
         evidence = evidence or [self.path]
         return confirmations.create(PROJECT, "critic-decision", {
-            "project": PROJECT, "workflow_id": self._info()["workflow_id"],
+            "project": PROJECT,
+            "workflow_id": self._info_workflow_id(),
             "stage_id": STAGE, "review_id": review_id, "artifact_path": self.path,
             "artifact_sha256": sha, "option": option, "cycle": cycle,
             "decision_fingerprint": critique.decision_fingerprint(
-                PROJECT, self._info()["workflow_id"], STAGE, review_id,
-                self.path, sha, option, cycle, rejected, evidence,
+                PROJECT, self._info_workflow_id(), STAGE, review_id,
+                self.path, sha, self._current_version(), option, cycle,
+                rejected, evidence,
                 panelauth.principal_for_session(session or self.session),
                 session or self.session)}, "q", session or self.session
         )["confirm_token"]
@@ -249,8 +262,9 @@ class CorrectiveTest(unittest.TestCase):
                           "stage_id": STAGE, "status": "HOLD",
                           "review_id": rid, "series_key":
                           critique._series_key(PROJECT, STAGE)})
+        held_sha = self._info()["sha256"]
         workflow.reject(PROJECT, STAGE, "hold")
-        token = self._confirm(rid, self._info()["sha256"])
+        token = self._confirm(rid, held_sha)
         with self.assertRaises(critique.CritiqueError):
             critique.human_decision(PROJECT, STAGE, rid, "accept-current",
                                     token, self.session)

@@ -79,10 +79,13 @@ class E2ETest(unittest.TestCase):
             "review_id": review_id, "artifact_path": path,
             "artifact_sha256": sha, "option": option, "cycle": cycle,
             "decision_fingerprint": critique.decision_fingerprint(
-                project, wid, STAGE, review_id, path, sha, option, cycle,
+                project, wid, STAGE, review_id, path, sha, self._info()["version_no"], option, cycle,
                 rejected, evidence,
                 panelauth.principal_for_session(session), session
             )}, "q", session)["confirm_token"]
+
+    def _info(self):
+        return critique._stage_artifact(PROJECT, STAGE)
 
     def _producer(self):
         def run(project, stage, goal):
@@ -124,7 +127,7 @@ class E2ETest(unittest.TestCase):
             "artifact_sha256": old_sha, "option": "prior-choice", "cycle": 1,
             "decision_fingerprint": critique.decision_fingerprint(
                 PROJECT, "wf-1", STAGE, "prior-review", "spec/proposal.md",
-                old_sha, "prior-choice", 1,
+                old_sha, 1, "prior-choice", 1,
                 [{"option": "other", "reason": "lower", "owner": "user"}], [],
                 panelauth.principal_for_session(self.session), self.session)},
             "q", self.session)
@@ -132,12 +135,17 @@ class E2ETest(unittest.TestCase):
                            "owner": "user"}]
         prior_fp = critique.decision_fingerprint(
             PROJECT, "wf-1", STAGE, "prior-review", "spec/proposal.md",
-            old_sha, "prior-choice", 1, prior_rejected, [],
+            old_sha, 1, "prior-choice", 1, prior_rejected, [],
             panelauth.principal_for_session(self.session), self.session)
+        with workflow._LOCK:
+            items = workflow._load()
+            next(iter(items.values()))["critic_required"] = False
+            workflow._save(items)
         critique.decide(PROJECT, "wf-1", STAGE, "prior-review",
                         "spec/proposal.md", old_sha, "prior-choice",
                         prior_rejected, [], 1, proposal["confirm_token"],
-                        self.session, decision_fp=prior_fp)
+                        self.session, decision_fp=prior_fp,
+                    artifact_version=1)
         out = critique.run_series(PROJECT, STAGE, self._producer())
         self.assertEqual(len(out["rounds"]), 2, out)
         stages = workflow.by_project(PROJECT)["stages"][0]
@@ -184,7 +192,7 @@ class E2ETest(unittest.TestCase):
     def test_05_three_cycles_then_hold_no_fourth(self):
         self._produce("x")
         counter = {"n": 0}
-        def always_revise(rubric, findings):
+        def always_revise(rubric, findings, conflicts=None):
             counter["n"] += 1
             return {"ok": True, "aggregate": 5.0, "blockers": [], "blocked": False,
                     "decision": "revise", "rejected_options": [], "uncertainty": []}
