@@ -17,6 +17,10 @@
 - Phase 06 status: **NOT AUTHORIZED** (historical entry, preserved and SUPERSEDED below).
 - Phase 06 status (SUPERSEDES the historical line above): **AUTHORIZED / ACTIVE** — explicitly authorized by the user in the Phase 06 execution mission dated 2026-11-28, starting from the exact accepted Phase 05 commit `8209449e6d32a5e6368faae8365e07114b915e45`.
 - Last accepted phase (SUPERSEDES the earlier Phase 04 entry above): **05 — Domain Specialist Teams** — ACCEPTED by final independent review dated 2026-11-28.
+- Last accepted phase (SUPERSEDES the Phase 05 entry above): **06 — Professional Production Engine** — ACCEPTED by final independent review dated 2026-11-28. Acceptance commit: `b7182f83771b7af12937acc5e257a5307e34986e` on `rebuild/phase-06-production-engine`. Earlier status records are preserved and NOT rewritten.
+- Phase 06 status (SUPERSEDES all earlier Phase 06 entries above): **ACCEPTED** — final independent review dated 2026-11-28, acceptance commit `b7182f83771b7af12937acc5e257a5307e34986e`.
+- Phase 07 status: **ACTIVE** — explicitly authorized by the user on 2026-11-28 on `rebuild/phase-07-collaboration-critique`, branched from the exact accepted Phase 06 commit `b7182f83771b7af12937acc5e257a5307e34986e`.
+- Phase 08 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 07 acceptance.
 - Phase 03 base: created from the exact accepted Phase 02 commit `075921b5f0b8ebe7638b0d38c6394c6402c94541`, not from `main` or any unrelated branch.
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
 - Phase 01 acceptance-fix commit: 8e292a70d20bc11450f41a03de175b81ef149356
@@ -217,4 +221,4 @@
 - Deterministic Event/Barrier race tests (7) plus all prior Phase 06 suites PASS; full suite 657/657; Phase 04 57/57; Phase 05 71/71. MOCKED transport only; NO live provider call or paid spend. Live generation, real spend, CI and isolated screenshots NOT TESTED.
 
 ## Next action
-Phase 06 is submitted for final independent review; the implementing agent does NOT mark it ACCEPTED. Phase 07 is NOT started and requires explicit user authorization. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **(Historical entry, PRESERVED and SUPERSEDED by the Phase 06 AUTHORIZED / ACTIVE record above: "Phase 06 has NOT started and is NOT authorized.")** Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 06 is **ACCEPTED** by independent review (commit `b7182f83771b7af12937acc5e257a5307e34986e`). Phase 07 is **ACTIVE** on `rebuild/phase-07-collaboration-critique` with explicit user authorization dated 2026-11-28. Phase 08 is NOT authorized. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. Historical provisional/superseded status entries are preserved above, not deleted.

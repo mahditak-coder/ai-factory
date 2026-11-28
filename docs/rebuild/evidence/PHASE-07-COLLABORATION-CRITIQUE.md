@@ -1,0 +1,71 @@
+# Phase 07 — Collaboration, Independent Critique & Bounded Revision (evidence)
+
+Branch `rebuild/phase-07-collaboration-critique`, created from the exact accepted
+Phase 06 commit `b7182f83771b7af12937acc5e257a5307e34986e`. GitHub entry state,
+ancestry (Phase 04/05/06) and clean working tree verified before editing. The
+accepted Phase 05 base `8209449e6d32a5e6368faae8365e07114b915e45` is an ancestor.
+`~/AI-Factory` was never touched.
+
+## Documentation reconciliation (append-only)
+- `CURRENT-STATE.md`: Phase 06 recorded **ACCEPTED** by independent review at
+  `b7182f8…`, Phase 07 **ACTIVE/authorized**, Phase 08 **NOT AUTHORIZED**, with
+  earlier records preserved and superseded — not deleted or rewritten.
+- `CHANGELOG.md`, `CONTINUE-HERE.md`: append-only superseding pointers added.
+- `DECISIONS.md`: ADR-026 recorded PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
+## Pre-implementation audit decisions
+- ONE canonical registry is preserved: `independent-critic` was added to the
+  existing `EXTRA_ROLES` table (40 → 41 registry IDs; `DOMAIN_ROLES` stays 16).
+  No second catalog and no `agents/critic.json` was created.
+- Reused unchanged: `specialist_engine` leases/fences/role authorization,
+  `confirmations` one-shot tokens, `panelauth.principal_for_session`,
+  `paths.project_path` containment, `production_assets.sha256_file`,
+  `image_assets`-style immutable versioning, safe DOM `el()` and the existing
+  CSRF-wrapped `post()` in the workflow UI.
+- `independent_qa()` was NOT relabelled as a Critic decision: it remains a QA
+  execution stage. A Critic verdict requires its own role, lease, version,
+  hash-bound findings and decision ledger row.
+
+## What was built
+- `core/critique.py`: Critic flag (fail-closed), `start_review` (exact artifact
+  version/SHA-256 + own canonical lease), immutable versioned artifacts with
+  sidecars, versioned deterministic rubric (`validate_rubric`/`evaluate`) with
+  Critical findings blocking independently of aggregate score, stable finding
+  IDs and history, conflict detection with explicit reasons/owners, bounded
+  revision (`MAX_CYCLES = 3`, idempotent HOLD on the fourth attempt), and one
+  append-only cross-process decision ledger.
+- Decision ledger schema: `af-critique-1.0`; entries carry stable `id`, `kind`,
+  `seq`, timestamp, project/workflow/stage, artifact path/SHA-256, review ID,
+  selected option, rejected options WITH reasons, evidence refs, authenticated
+  `decision_maker` (never a caller string), cycle and previous-decision links.
+  Storage uses `flock`, unique temp files and atomic replace; corrupt/unreadable
+  stores fail closed without overwrite; duplicate IDs and decisions are rejected.
+- Migration: `migrate_legacy_approvals()` is additive and non-destructive;
+  historical workflow approvals are recorded with
+  `is_critic_approval=False` and their original provenance.
+- Additive API routes inside the existing panel gate:
+  `GET /api/workflow/critique` and `POST /api/workflow/critique/flag`.
+- Existing-workflow UI integration: a compact RTL/Persian review card rendered
+  only with `textContent` through the existing `el()` helper; no `innerHTML`
+  for untrusted text.
+
+## Evidence classification
+- **MOCKED:** confirmation transport, session identity (test helper) and fake DOM
+  in `test_phase07_workflow_js.mjs`. No live provider/model call and no spend.
+- **REAL:** real canonical registry, real leases, real `flock`-guarded ledger,
+  real hashes and files under an isolated `AI_FACTORY_TEST_ROOT`.
+- **PASS:** Phase 07 Python suite 18/18; safe-DOM JS suite 5/5 checks; full core
+  suite 675/675 (68.300s); `py_compile` and `git diff --check` clean.
+- **FAIL:** none in final runs. Regression during development: adding the Critic
+  to `DOMAIN_ROLES` broke the accepted 16-domain contract; it was moved to
+  `EXTRA_ROLES` and the full suite rerun green.
+- **BLOCKED / NOT TESTED:** real HTTP authentication/CSRF round-trip for the
+  two new routes; real browser visual inspection; live specialist/model
+  execution of a Critic turn; different-model independence (NOT claimed);
+  CI; Phase 08 unified evaluator (out of scope); release/publication.
+
+Logs: `…/p7-t7.log` (Phase 07 suite), `…/p7-full2.log` (full core), plus the
+Node JS check output recorded in the delivery report.
+
+**Proposed decision: NOT ACCEPTED by the implementing agent** — submitted for
+independent GitHub review. Phase 08 was NOT started.

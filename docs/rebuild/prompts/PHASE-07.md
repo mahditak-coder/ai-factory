@@ -72,3 +72,13 @@ Critic workflow accepted, tests pass, phase commit.
 ## Completion gate
 This phase is DONE only when all deliverables, tests, evidence, document updates and a separate commit are verified. A written report without implementation and evidence is NOT DONE.
 
+## Execution record (append-only, 2026-11-28)
+- Executed on `rebuild/phase-07-collaboration-critique` from exact accepted
+  Phase 06 commit `b7182f83771b7af12937acc5e257a5307e34986e`.
+- Implemented: canonical Critic contract, `core/critique.py`, append-only
+  decision ledger, bounded 3-cycle revision with HOLD, conflict detection,
+  additive API routes and safe-DOM review card in the existing workflow UI.
+- Tests: Phase 07 Python 18/18 PASS; safe-DOM JS 5/5 checks PASS; full core
+  675/675 PASS. Evidence: `docs/rebuild/evidence/PHASE-07-COLLABORATION-CRITIQUE.md`.
+- NOT TESTED: real HTTP/auth round-trip, real browser visual inspection, live
+  model execution, different-model independence, CI. Phase 08 NOT started.

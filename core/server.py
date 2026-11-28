@@ -490,6 +490,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_workflow_artifact(q)
             elif route == "/api/workflow/events":
                 self._api_workflow_events(q)
+            elif route == "/api/workflow/critique":
+                self._api_workflow_critique(q)
             elif route == "/api/factory/types":
                 self._api_factory_types(q)
             elif route == "/api/deploy/dests":
@@ -654,6 +656,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_workflow_ask()
             elif route == "/api/workflow/answer":
                 self._api_workflow_answer()
+            elif route == "/api/workflow/critique/flag":
+                self._api_workflow_critique_flag()
             elif route == "/api/factory/deps":
                 self._api_factory_deps()
             elif route == "/api/factory/run":
@@ -2481,6 +2485,35 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
+
+    def _api_workflow_critique(self, q: dict) -> None:
+        """Append-only critique/decision history (panel-gated, read-only)."""
+        from core import critique
+        project = str(q.get("project") or "")
+        if not _Name.match(project):
+            self._error(400, "پروژه نامعتبر")
+            return
+        try:
+            rows = critique.entries(project)
+        except critique.CritiqueError as exc:
+            self._error(409, "critique-store-unavailable:" + str(exc)[:80])
+            return
+        self._json({"ok": True, "entries": rows[-120:],
+                    "counts": {"total": len(rows)}})
+
+    def _api_workflow_critique_flag(self) -> None:
+        """Explicit Critic activation toggle; no caller-supplied truth."""
+        from core import critique
+        data = self._read_json()
+        if data is None:
+            self._error(400, "invalid JSON body")
+            return
+        try:
+            out = critique.set_critic_flag(data.get("enabled") is True)
+        except critique.CritiqueError as exc:
+            self._error(400, str(exc)[:120])
+            return
+        self._json({"ok": True, "result": out})
 
     def _api_workflow_events(self, q: dict) -> None:
         from core import workflow

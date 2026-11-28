@@ -46,6 +46,40 @@
     apply(r.result);
   }
 
+  async function loadCritique() {
+    if (!project) return;
+    let d;
+    try { d = await api("/api/workflow/critique?project=" + enc(project)); }
+    catch (_) { return; }
+    const box = $("critiqueBox");
+    if (!box) return;
+    box.replaceChildren();
+    const rows = d.entries || [];
+    $("critiqueCard").hidden = rows.length === 0;
+    for (const e of rows) {
+      const line = el("div", "wf-meta");
+      const title = el("strong", "", "[" + e.kind + "] " + (e.id || ""));
+      line.appendChild(title);
+      line.appendChild(el("span", "", "  •  چرخه " + (e.cycle || 1) + "/" + 3));
+      if (e.severity) line.appendChild(el("span", "", "  •  " + e.severity));
+      if (e.status) line.appendChild(el("span", "", "  •  " + e.status));
+      box.appendChild(line);
+      for (const f of (e.findings || [])) {
+        const item = el("div", "wf-meta");
+        item.appendChild(el("span", "", f.id + " — " + (f.owner || "") +
+          " — " + (f.required_correction || "")));
+        box.appendChild(item);
+      }
+      if (e.selected_option) {
+        box.appendChild(el("div", "wf-meta", "انتخاب: " + e.selected_option));
+        for (const r of (e.rejected_options || []))
+          box.appendChild(el("div", "wf-meta",
+            "ردشده: " + (r.option || "") + " — " + (r.reason || "")));
+      }
+      if (e.reason) box.appendChild(el("div", "wf-meta", e.reason));
+    }
+  }
+
   function watch() {
     if (es) es.close();
     if (poll) { clearInterval(poll); poll = null; }
@@ -60,6 +94,7 @@
 
   function apply(next) {
     st = next;
+    loadCritique().catch(() => {});
     if (!st) { $("stagebar").hidden = true; $("timelineCard").hidden = true;
       $("detailCard").hidden = true; return; }
     $("stagebar").hidden = false; $("timelineCard").hidden = false;

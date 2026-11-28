@@ -169,6 +169,21 @@ ROLES: tuple[SpecialistRole, ...] = (
 # AF NEXT — Human-Gated Workflow roles. Additive: the original nine roles and
 # their tests/planning stay untouched; these roles drive the staged studio DAG.
 EXTRA_ROLES: tuple[SpecialistRole, ...] = (
+    # Phase 07 — ONE canonical registry: independent Critic contract.
+    # Read-only + test/security inspection only; it can NEVER write a producer
+    # artifact or approve its own review.
+    SpecialistRole("independent-critic", "Independent Critic",
+        "Review an exact immutable artifact version against acceptance criteria",
+        ("artifact-path", "artifact-sha256", "artifact-version",
+         "acceptance-criteria", "comparison-rubric"),
+        ("evidence-bound findings", "critical blockers", "lineage"),
+        ("project:read", "tests:run", "security:read"),
+        (ArtifactSpec("spec/critic-verdict.json", "json",
+                      ("findings", "decision", "lineage")),),
+        ("Every finding has evidence, owner and required correction",
+         "Critical findings block independently of aggregate scores",
+         "No producer artifact is written or approved by the Critic"),
+        ("product-architect",)),
     SpecialistRole("product-director", "مدیر محصول", "سند محصول، مخاطب و تجربهٔ موردنظر",
         ("goal", "constraints"), ("Product Brief", "audience", "experience goals"),
         ("project:read",), (ArtifactSpec("spec/product-brief.md", "md",
@@ -286,6 +301,7 @@ def parallel_groups(product_type: str = "") -> list[list[str]]:
 # AF NEXT Phase 05 — domain specialist CAPABILITIES / SUBROLES.
 # These are additive contracts in the single canonical catalog. They are
 # activated only by the Phase 05 activation matrix; never all at once.
+
 DOMAIN_ROLES: tuple[SpecialistRole, ...] = (
     SpecialistRole("backend-specialist", "Backend Specialist",
         "Server-side architecture and data flow (design only in Phase 05)",
