@@ -1,17 +1,18 @@
 # Current State
 
-> خلاصه فارسی: فاز ۰۱ و فاز ۰۲ توسط بازبینی مستقل پذیرفته شدند (ACCEPTED). فاز ۰۳real اجرا شد: موتور تحقیق با provenance، مقایسهٔ گزینهها، ارزیابی امکانپذیری و Product Brief نسخهدار با معیارهای پذیرش ساخته و آزمایش شد. فاز ۰۳ **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW** است؛ فاز ۰۴ مجاز نیست.
+> خلاصه فارسی: فازهای ۰۱، ۰۲ و ۰۳ توسط بازبینی مستقل پذیرفته شدند (ACCEPTED). فاز ۰۴ — Canonical Specialist Engine — با اجازۀ صریح کاربر (۲۰۲۶-۱۱-۲۸) ACTIVE است و در حال پیادهسازی است؛ فاز ۰۵ مجاز نیست.
 
 - Audit snapshot: `2bf75e834d0444ac5cfef767261757324cbefee8` on `audit/full-source-review`
 - Documentation branch: `rebuild/blueprint-v1` created from the exact audit commit
 - Blueprint commit: 95b901d9a4bccb5d96f50c256668c2d2a904423c
 - Rebuild status: **IN PROGRESS**
-- Last accepted phase: **02 — Request Intelligence & Planning** — ACCEPTED by final independent review dated 2026-11-28.
+- Last accepted phase: **03 — Research, Innovation & Product Strategy** — ACCEPTED by final independent review dated 2026-11-28.
 - Phase 01 status: **ACCEPTED**. Basis: final code commit `43bf30818e77b47b4ce23e70bd35738a0eb1db71`, documentation/remote HEAD commit `3dcae0703bee408bc34fdfd83e81807a25c6a2a7`, independent review 2026-11-27.
 - Phase 02 status: **ACCEPTED** (final independent review 2026-11-28). Acceptance basis: final code/documentation commit `075921b5f0b8ebe7638b0d38c6394c6402c94541` on `rebuild/phase-02-request-intelligence`, with the full scope of Phase 02 corrections — durable canonical request model, answer mutation, no auto-approval, fail-closed execution gate, genuine one-shot capability, strict session/project binding and authoritative panel-principal attribution. Earlier `NOT ACCEPTED` entries below are historical and SUPERSEDED by this decision; they are not deleted or rewritten.
-- Active phase: **03 — Research, Innovation & Product Strategy** (implementation complete; awaiting independent review).
-- Phase 03 status: **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**.
-- Phase 04 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 03 acceptance.
+- Phase 03 status: **ACCEPTED** (final independent review 2026-11-28). Basis: final commit `0889056b389632e6af721932db3a6dad31684c6a` on `rebuild/phase-03-research-product-strategy`; scope = canonical research engine, alternatives/feasibility, versioned Product Brief and all accepted audit repairs. Earlier `NOT ACCEPTED` entry below is historical and SUPERSEDED, not deleted.
+- Active phase: **04 — Canonical Specialist Engine** — **ACTIVE and EXPLICITLY AUTHORIZED** by the user on 2026-11-28.
+- Phase 04 status: **ACTIVE — AUTHORIZED** (implementation in progress; NOT accepted until independent review).
+- Phase 05 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 04 acceptance.
 - Phase 03 base: created from the exact accepted Phase 02 commit `075921b5f0b8ebe7638b0d38c6394c6402c94541`, not from `main` or any unrelated branch.
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
 - Phase 01 acceptance-fix commit: 8e292a70d20bc11450f41a03de175b81ef149356
@@ -20,7 +21,8 @@
 - Phase 01 reconciliation atomicity commit: 43bf30818e77b47b4ce23e70bd35738a0eb1db71
 - Historical note (preserved, not rewritten): before the independent decision, this file recorded `Last accepted phase: NONE` and Phase 01 as awaiting acceptance. That status is superseded by the 2026-11-27 independent acceptance recorded above.
 - Historical note (preserved): Phase 02 was recorded as `NOT ACCEPTED — READY FOR INDEPENDENT REVIEW` before the final independent decision; that status is SUPERSEDED by the 2026-11-28 acceptance above.
-- Next allowed action: independent review of Phase 03 on `rebuild/phase-03-research-product-strategy`. Do not start Phase 04 automatically.
+- Historical note (preserved): Phase 03 was recorded as `NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW` before the final independent decision; that status is SUPERSEDED by the 2026-11-28 acceptance above.
+- Next allowed action: implement Phase 04 on `rebuild/phase-04-specialist-engine` from the exact accepted Phase 03 commit. Do not start Phase 05 automatically.
 
 ## Audit status and limitations
 - Audit source state: local `~/AI-Factory` HEAD `3878db271313415656328ec57595d1fe87c5fa3a`, branch `main`, 151 uncommitted items, zero remotes, version `0.47.0`.
@@ -102,4 +104,4 @@
 6. Receipts for call_ids already evicted from the old 600-event history before this fix cannot be reconstructed; no destructive migration was performed. This is a historical audit limitation, not a regression of the new mechanism.
 
 ## Next action
-Phase 03 is **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW**, and its Product Brief/success criteria await explicit user approval. **Phase 04 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
+Phase 04 is authorized and in progress. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
