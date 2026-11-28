@@ -19,7 +19,8 @@ def _call(project, tool_id, inputs, scopes):
     cid = "wfex-" + secrets.token_hex(6) + "-%d" % _CID
     r = tool_executor.execute(tool_executor.ToolRequest(
         tool_id=tool_id, project=project, inputs=inputs, scopes=scopes,
-        task_id="workflow-executor", call_id=cid))
+        task_id="workflow-executor", call_id=cid,
+        execution_context="non-specialist-explicit"))
     return r
 
 

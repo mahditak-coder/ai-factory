@@ -65,9 +65,11 @@ class ArtifactTest(unittest.TestCase):
         self.p1.stop(); self.p2.stop(); self.tf.close(); self.tf2.close()
 
     def test_artifact_written_through_registry_and_versioned(self):
+        # Phase 04: specialist writes now enforce role contracts, so use a
+        # role that actually owns project:write (product-architect is read-only).
         r = collab.write_artifact("afp3-unit", "spec/product-brief.md",
                                  "## Target User\nx\n## Scope\ny\n## Success Criteria\nz\n",
-                                 "product-architect")
+                                 "developer")
         self.assertEqual(r["status"], opstatus.PASS)
         first = collab.record("afp3-unit", "product-architect", opstatus.PASS,
                               artifacts=[r])

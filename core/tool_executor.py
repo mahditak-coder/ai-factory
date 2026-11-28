@@ -32,6 +32,9 @@ class ToolRequest:
     # Phase 04: canonical role context for enforced tool authorization.
     role_id: str = ""
     enforce_role: bool = False
+    # Explicit, validated NON-specialist context. Only workflow infrastructure
+    # that is not a specialist may set this; it never grants role permission.
+    execution_context: str = ""
 
 
 @dataclass
@@ -109,6 +112,11 @@ def execute(req: ToolRequest) -> ToolResult:
     # Phase 04 — role authorization at the real tool boundary. Caller scopes
     # are NOT proof of role permission; a canonical contract must allow it.
     if req.enforce_role or req.role_id:
+        if req.execution_context:
+            return _record(req, call_id, ToolResult(
+                status=opstatus.BLOCKED, decision="none", call_id=call_id,
+                error="ambiguous-execution-context", duration_ms=0),
+                started, finalize_receipt=False)
         try:
             from core import specialist_engine as _se
             role_auth = _se.authorize_tool_request(

@@ -278,6 +278,37 @@ def registry_consistency() -> dict:
             "role_count": len(registry)}
 
 
+def has_accepted_run(project: str, role_id: str) -> bool:
+    rid = resolve_id(role_id)
+    with _engine_lock():
+        data = _load_unlocked()
+    return any(r.get("project") == project and r.get("role_id") == rid and
+               r.get("status") == opstatus.PASS
+               for r in data["runs"].values())
+
+
+def accepted_producer_hashes(project: str, producer_role: str) -> dict:
+    """Artifact hashes from the authoritative accepted producer run record.
+
+    Fail-closed: a missing, non-PASS or unhashed producer yields no evidence.
+    """
+    rid = resolve_id(producer_role)
+    with _engine_lock():
+        data = _load_unlocked()
+        rows = [r for r in data["runs"].values()
+                if r.get("project") == project and r.get("role_id") == rid and
+                r.get("status") == opstatus.PASS]
+    if not rows:
+        return {}
+    accepted = max(rows, key=lambda r: float(r.get("finished") or
+                                             r.get("started") or 0))
+    out = {}
+    for art in accepted.get("artifacts") or []:
+        if isinstance(art, dict) and art.get("path") and art.get("sha256"):
+            out[str(art["path"])] = str(art["sha256"])
+    return out
+
+
 def catalog_reconciliation() -> dict:
     """Reconcile every legacy role source against the canonical registry."""
     registry = canonical_registry()

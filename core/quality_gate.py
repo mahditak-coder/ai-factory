@@ -31,7 +31,8 @@ def _call(project, tool_id, inputs, scopes, task_id="quality-gate"):
     cid = "p5-" + secrets.token_hex(8)
     r = tool_executor.execute(tool_executor.ToolRequest(
         tool_id=tool_id, project=project, inputs=inputs, scopes=scopes,
-        task_id=task_id, call_id=cid))
+        task_id=task_id, call_id=cid,
+        execution_context="non-specialist-explicit"))
     return {"status": r.status, "ok": r.ok, "output": r.output or {},
             "error": r.error, "call_id": r.call_id, "duration_ms": r.duration_ms}
 

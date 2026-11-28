@@ -63,7 +63,7 @@ class SpecialistRole:
         ]
         if ctx:
             lines.append("اطلاعات قبلی (قابل ردیابی): " +
-                         str(ctx)[:1200])
+                         str(ctx))
         for a in self.artifacts:
             secs = ("؛ بخشهای اجباری: " + ", ".join(a.required_sections)
                     if a.required_sections else "")

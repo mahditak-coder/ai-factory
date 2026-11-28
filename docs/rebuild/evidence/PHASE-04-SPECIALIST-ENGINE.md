@@ -48,6 +48,16 @@ Verification after repair (local, isolated `AI_FACTORY_TEST_ROOT`):
 - CI/GitHub Actions: NOT TESTED. No real specialist execution or product generation was performed.
 - ADR-024 is PROPOSED / AWAITING INDEPENDENT ACCEPTANCE, not ACCEPTED.
 
+## Final integration repairs (same branch)
+
+| Finding | Integration fix | Evidence |
+|---|---|---|
+| Role authorization not mandatory on specialist paths | `write_artifact()` and `independent_qa()` now pass canonical `role_id` with `enforce_role=True`; missing/unknown role context and forged scopes are denied before adapter side effects. Explicit `execution_context="non-specialist-explicit"` is the only non-specialist path | `test_01_write_artifact_denies_unauthorized_role`, `test_02_write_artifact_with_valid_role_and_session`, `test_03_non_specialist_context_still_works`, `test_04_ambiguous_context_denied` |
+| Verified handoff not used by `run_specialist()` | Expected hashes come from authoritative accepted producer run records; producer status/artifact path/version/SHA verified; full text passed to the consumer turn and revalidated immediately before it; legacy handoff only under explicit legacy mode | `test_05_run_specialist_uses_verified_handoff`, `test_06_run_specialist_rejects_tampered_producer`, `test_07_long_producer_text_not_truncated`, `test_08_missing_producer_record_blocks`, `test_11_legacy_mode_keeps_legacy_handoff` |
+| Run leases not integrated into `run_specialist()` | `start_run()` claims the lease and every terminal result goes through `record_result()` with the current token; overlapping executions produce exactly one PASS; stale/superseded workers cannot write accepted results | `test_09_overlapping_specialists_only_one_current`, `test_10_stale_lease_cannot_produce_pass` |
+
+Verification: `python3 -m unittest core.tests.test_phase04_integration -v` — exit `0`, `Ran 11 tests ... OK` (`…/p4int-t6.log`); all Phase 04 tests `Ran 42 tests ... OK` (`…/p4int-target.log`); full suite `Ran 468 tests in 44.502s — OK` (`…/p4int-full.log`). `py_compile` exit `0`. CI/GitHub Actions: NOT TESTED. No real provider/model/paid operation or product generation occurred (the gateway was a deterministic local fixture solely for exercising the integration path). ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
 ## Labels and limitations
 - **PASS:** implemented registry/engine functions and all executed tests (444/444 core tests green).
 - **FAIL:** none in executed checks.

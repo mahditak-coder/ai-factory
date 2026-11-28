@@ -80,7 +80,8 @@ def can_start(project: str, role_id: str) -> tuple[bool, str]:
     for dep in role.depends_on:
         accepted = [r for r in runs(project, dep)
                     if r.get("status") == opstatus.PASS]
-        if not accepted:
+        from core import specialist_engine as _se
+        if not accepted and not _se.has_accepted_run(project, dep):
             return False, "dependency-not-accepted:" + dep
     return True, "ok"
 
@@ -126,11 +127,17 @@ def revalidate_handoff(project: str, role_id: str,
 
 
 def write_artifact(project: str, rel: str, content: str, role: str,
-                   call_id: str = "") -> dict:
-    """Write through the governed Tool Registry (never silently direct)."""
+                   call_id: str = "", session_id: str = "") -> dict:
+    """Write through the governed Tool Registry with MANDATORY role auth."""
+    from core import specialist_engine as _se
+    rid = _se.resolve_id(role)
+    if _se.get(rid) is None:
+        return {"status": opstatus.BLOCKED, "path": rel, "sha256": "",
+                "error": "unknown-role:" + role, "call_id": call_id}
     r = execute_tool(ToolRequest(tool_id="project.write_file", project=project,
         inputs={"path": rel, "content": content}, scopes=["project:write"],
-        task_id=role, call_id=call_id or ("sp-" + hashlib.sha256(
+        task_id=rid, role_id=rid, enforce_role=True, session_id=session_id,
+        call_id=call_id or ("sp-" + hashlib.sha256(
             (role + rel + str(time.time())).encode()).hexdigest()[:12])))
     return {"status": r.status, "path": rel, "sha256": _sha(content),
             "error": r.error, "call_id": r.call_id}
@@ -235,14 +242,51 @@ def run_specialist(project: str, role_id: str, goal: str,
     if not ok:
         record(project, role_id, opstatus.BLOCKED, note=why)
         return {"status": opstatus.BLOCKED, "error": why}
+    from core import specialist_engine as _se
+    canonical = _se.engine_mode() == "canonical"
+    run = None
+    if canonical:
+        try:
+            run = _se.start_run(project, role_id)
+        except _se.EngineError as exc:
+            return {"status": opstatus.BLOCKED, "error": str(exc)[:200]}
+    def _terminal(status, artifacts=None, evidence=None, note=""):
+        if canonical and run is not None:
+            return _se.record_result(project, role_id, run["token"], status,
+                                     artifacts or [])
+        return record(project, role_id, status, artifacts=artifacts,
+                      evidence=evidence or {}, note=note)
     try:
         from core import tool_registry
         catalog = tool_registry.registry().catalog_prompt(set(role.allowed_scopes))
         advice = ""
         if role_id in ("product-architect", "software-architect"):
             advice = "\n\n" + engine_advice(project, goal)
+        handoff_text = {}
+        if canonical:
+            expected = {}
+            for dep in role.depends_on:
+                expected.update(_se.accepted_producer_hashes(project, dep))
+            verified = verified_handoff(project, role_id, expected)
+            if not verified["ok"]:
+                _terminal(opstatus.BLOCKED, note="; ".join(verified["problems"]))
+                return {"status": opstatus.BLOCKED,
+                        "error": "verified-handoff-failed",
+                        "problems": verified["problems"]}
+            handoff_text = verified["texts"]
+            rechecked = revalidate_handoff(project, role_id, expected)
+            if not rechecked["ok"]:
+                _terminal(opstatus.BLOCKED, note="; ".join(rechecked["problems"]))
+                return {"status": opstatus.BLOCKED,
+                        "error": "handoff-revalidation-failed",
+                        "problems": rechecked["problems"]}
+        else:
+            handoff_text = handoff(project, role_id)  # explicit legacy mode only
         sid = gateway().create_session(project, "specialist:" + role_id)["id"]
-        resp = gateway().prompt(project, sid, role.instruction(goal, handoff(project, role_id))
+        context_text = {k: v.get("text", "") if isinstance(v, dict) else str(v)
+                        for k, v in handoff_text.items()}
+        resp = gateway().prompt(project, sid,
+                                role.instruction(goal, context_text)
                                 + "\n\n" + catalog + advice, model=model)
         deadline = time.time() + 240
         while time.time() < deadline:
@@ -289,21 +333,22 @@ def run_specialist(project: str, role_id: str, goal: str,
                                                 role_id))
         accepted, problems = acceptance(project, role_id)
         status = opstatus.PASS if accepted and artifacts else opstatus.FAIL
-        rec = record(project, role_id, status, artifacts=artifacts,
-                     evidence={"session_id": sid,
-                               "message_id": resp.get("message_id"),
-                               "model": model or "session-default",
-                               "scopes": list(role.allowed_scopes)},
-                     note="; ".join(problems))
+        rec = _terminal(status, artifacts=artifacts,
+                        evidence={"session_id": sid,
+                                  "message_id": resp.get("message_id"),
+                                  "model": model or "session-default",
+                                  "scopes": list(role.allowed_scopes)},
+                        note="; ".join(problems))
         return {"status": status, "role": role_id, "session_id": sid,
                 "artifacts": artifacts, "problems": problems, "record": rec}
     except Exception as exc:  # noqa: BLE001 — real failure, never fake success
-        record(project, role_id, opstatus.FAIL, note=str(exc)[:300])
+        _terminal(opstatus.FAIL, note=str(exc)[:300])
         return {"status": opstatus.FAIL, "role": role_id, "error": str(exc)[:300]}
 
 
 def independent_qa(project: str, role_id: str = "qa-engineer") -> dict:
     """QA runs its OWN tools; developer claims are not an input to verdicts."""
+    from core import specialist_engine as _se
     role = specialists.get(role_id)
     if role is None:
         return {"status": opstatus.BLOCKED, "error": "unknown-role"}
@@ -316,7 +361,8 @@ def independent_qa(project: str, role_id: str = "qa-engineer") -> dict:
         ("security.scan", {"mode": "export"}, "security:read"),
     ):
         r = execute_tool(ToolRequest(tool_id=tool_id, project=project,
-            inputs=inputs, scopes=[scope], task_id=role_id,
+            inputs=inputs, scopes=[scope], task_id=_se.resolve_id(role_id),
+            role_id=_se.resolve_id(role_id), enforce_role=True,
             call_id="qa-" + tool_id.replace(".", "-") + "-" + str(int(time.time()))))
         checks.append({"tool": tool_id, "status": r.status,
                        "error": r.error, "call_id": r.call_id})

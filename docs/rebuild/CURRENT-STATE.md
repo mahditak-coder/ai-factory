@@ -22,7 +22,7 @@
 - Historical note (preserved, not rewritten): before the independent decision, this file recorded `Last accepted phase: NONE` and Phase 01 as awaiting acceptance. That status is superseded by the 2026-11-27 independent acceptance recorded above.
 - Historical note (preserved): Phase 02 was recorded as `NOT ACCEPTED — READY FOR INDEPENDENT REVIEW` before the final independent decision; that status is SUPERSEDED by the 2026-11-28 acceptance above.
 - Historical note (preserved): Phase 03 was recorded as `NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW` before the final independent decision; that status is SUPERSEDED by the 2026-11-28 acceptance above.
-- Next allowed action: implement Phase 04 on `rebuild/phase-04-specialist-engine` from the exact accepted Phase 03 commit. Do not start Phase 05 automatically.
+- Next allowed action: final independent review of Phase 04 on `rebuild/phase-04-specialist-engine`. Phase 04 implementation is complete; do not start Phase 05 automatically.
 
 ## Audit status and limitations
 - Audit source state: local `~/AI-Factory` HEAD `3878db271313415656328ec57595d1fe87c5fa3a`, branch `main`, 151 uncommitted items, zero remotes, version `0.47.0`.
@@ -116,6 +116,12 @@
 - Handoff: expected producer hashes mandatory; full text returned (no 4000-char truncation) via `agent_collaboration.verified_handoff()`; revalidated immediately before consumers.
 - Catalog: all ROLES/EXTRA_ROLES/agents/*.json/workflow DAG IDs reconciled; final responses ordered by trustworthy timestamps, not list position.
 - Tests: targeted Phase 04 `Ran 31 tests ... OK` (5/5 reruns); full suite `Ran 457 tests in 45.389s — OK` (457 PASS / 0 FAIL / 0 ERROR). CI/NOT TESTED. ADR-024 is PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
+
+## Phase 04 final integration repairs (same branch)
+- Mandatory role authorization: `write_artifact()` and `independent_qa()` now pass canonical role IDs with `enforce_role=True` before adapter side effects; missing/ambiguous role context is denied. Non-specialist workflows opt in with an explicit `execution_context="non-specialist-explicit"` only.
+- Verified handoff integrated into `run_specialist()`: expected hashes come from authoritative accepted producer run records; producer status/path/hash are verified, artifacts revalidated immediately before the consumer turn; full text is preserved (no 4000/1200-char truncation). Legacy handoff remains only under explicit legacy mode.
+- Real run leases integrated into `run_specialist()`: `start_run()` claims the lease and all terminal results use `record_result()` with the current token; superseded/stale workers cannot record PASS; overlapping executions yield exactly one PASS.
+- Tests: targeted Phase 04 `Ran 42 tests ... OK` (exit 0); full suite `Ran 468 tests in 44.502s — OK` (468 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`. CI NOT TESTED. ADR-024 remains PROPOSED / AWAITING INDEPENDENT ACCEPTANCE.
 
 ## Next action
 Phase 04 is **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**. Phase 03 is **ACCEPTED**; its sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 05 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.
