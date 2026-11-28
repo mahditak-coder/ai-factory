@@ -175,5 +175,12 @@
 - `allowed_scopes` elements are validated as strings before set operations; nested lists, dicts, integers, booleans, null and mixed values fail closed with deterministic `malformed-scope:<role>:<index>` diagnostics and never raise. Exact canonical list equality and all prior diagnostics preserved; no authorization boundary changed.
 - Tests: targeted Phase 05 `Ran 36 tests ... OK` (exit 0); full suite `Ran 567 tests in 55.709s — OK` (567 PASS / 0 FAIL / 0 ERROR). CI NOT TESTED. ADR statuses unchanged.
 
+## Phase 05 FINAL CONSOLIDATED repair (same branch)
+- Findings A–H closed together in one commit from parent `aab033bf07d1e5306f152b5460ef3afafff6666f`. Only `core/domain_teams.py`, `core/specialist_engine.py`, `core/tests/test_phase05_domain_teams.py` plus rebuild docs changed; ToolExecutor, SecurityPolicy, capability issuance and Phase 04 lease fencing untouched.
+- Activation: authoritative domain ownership + canonical `product_types` compatibility; game ≠ Android; capability keywords cannot activate domain-incompatible roles; dependency closure adds only eligible/enabled roles and drops consumers of disabled dependencies. `frontend` → `ui-ux-designer`, `front-end` → `frontend-specialist`, `frontend-specialist` canonical.
+- Feature flags: `fcntl.flock` + unique temp files + atomic replace; strict JSON/bool validation; missing file = first run; corrupt/unreadable = fail closed into documented Phase 04 fallback without overwriting data; every domain flag effective including Android roles in software/education/game.
+- `constraints` and `project_context` are metadata only in Phase 05 (validated, preserved, no effect on team hash). Invalid risk fails closed into security-role activation. `validate_team()` requires exact built-in `str` scopes, dependency-before-consumer order and authoritative metadata.
+- Tests: targeted Phase 05 `Ran 64 tests ... OK` (exit 0); Phase 04 regressions `Ran 57 tests ... OK` (exit 0); full suite `Ran 595 tests in 67.507s — OK` (595 PASS / 0 FAIL / 0 ERROR, exit 0); multi-process flag concurrency PASS; `py_compile` and `git diff --check` PASS. CI NOT TESTED. ADR statuses unchanged.
+
 ## Next action
 Phase 05 implementation is complete and ready for final independent review; Phase 04 is **ACCEPTED**. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. **Phase 06 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.

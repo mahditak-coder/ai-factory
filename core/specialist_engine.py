@@ -45,7 +45,7 @@ LEGACY_ALIASES = {
     "security-game": "security-reviewer",
     # Phase 05 domain capability aliases (old/conversational names).
     "backend": "backend-specialist", "back-end": "backend-specialist",
-    "frontend": "frontend-specialist", "front-end": "frontend-specialist",
+    "front-end": "frontend-specialist",
     "database": "database-specialist", "db": "database-specialist",
     "api": "api-specialist", "devops": "devops-specialist",
     "mobile-ux": "mobile-ux-specialist",
@@ -57,6 +57,35 @@ LEGACY_ALIASES = {
     "accessibility": "accessibility-specialist",
     "visual": "visual-designer", "music": "music-sound-specialist",
 }
+
+
+# Intentional legacy aliases that are themselves canonical role IDs (kept so
+# historical workflow DAG IDs still resolve). Any other alias key that is a
+# canonical role ID is an unintended shadowing collision.
+_INTENTIONAL_CANONICAL_ALIASES = frozenset((
+    "product-director", "game-designer-gdd", "ui-game", "audio-game",
+    "qa-game", "security-game",
+))
+
+
+def alias_report() -> dict:
+    """Detect duplicate keys, alias cycles and unexpected canonical shadowing."""
+    registry = canonical_registry()
+    problems = []
+    for key, target in LEGACY_ALIASES.items():
+        seen, node = set(), key
+        while node in LEGACY_ALIASES:
+            if node in seen:
+                problems.append("alias-cycle:" + key)
+                break
+            seen.add(node)
+            node = LEGACY_ALIASES[node]
+        if node not in registry:
+            problems.append("alias-unresolved:" + key)
+        if key in registry and key not in _INTENTIONAL_CANONICAL_ALIASES:
+            problems.append("alias-shadows-canonical:" + key)
+    return {"ok": not problems, "problems": problems,
+            "aliases": dict(LEGACY_ALIASES)}
 
 
 class EngineError(RuntimeError):
@@ -328,7 +357,9 @@ def catalog_reconciliation() -> dict:
     registry = canonical_registry()
     sources: dict[str, list[str]] = {"ROLES": [r.id for r in specialists.ROLES],
                                      "EXTRA_ROLES": [r.id for r in
-                                                     specialists.EXTRA_ROLES]}
+                                                     specialists.EXTRA_ROLES],
+                                     "DOMAIN_ROLES": [r.id for r in
+                                                      specialists.DOMAIN_ROLES]}
     agents_dir = config.AGENTS_DIR
     agent_names = []
     try:
@@ -348,6 +379,16 @@ def catalog_reconciliation() -> dict:
                  for stage in dag if stage.get("role")]
     sources["workflow DAGs"] = sorted(set(dag_names))
     rows, problems = [], []
+    expected_domain = {r.id for r in specialists.DOMAIN_ROLES}
+    present_domain = expected_domain & set(registry)
+    if present_domain != expected_domain:
+        problems.extend("missing-domain-role:" + r
+                        for r in sorted(expected_domain - present_domain))
+    all_ids = [r.id for table in (specialists.ROLES, specialists.EXTRA_ROLES,
+                                  specialists.DOMAIN_ROLES) for r in table]
+    duplicates = sorted({rid for rid in all_ids if all_ids.count(rid) > 1})
+    problems.extend("duplicate-role-id:" + rid for rid in duplicates)
+    problems.extend(alias_report()["problems"])
     for source, names in sources.items():
         for name in names:
             rid = resolve_id(name)

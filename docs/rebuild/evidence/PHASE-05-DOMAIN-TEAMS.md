@@ -64,3 +64,41 @@ Finding: `validate_team()` called `len(set(scopes))` on caller-supplied `allowed
 Fix: elements are checked with `isinstance(scope, str)` BEFORE any set operation or membership check. Non-string elements (nested list, dict, int, bool, None, or mixed lists) return `ok=False` with deterministic `malformed-scope:<role>:<index>` diagnostic and never raise. All existing diagnostics (`missing-scopes`, `malformed-scopes`, `duplicate-scope`, `unauthorized-scope`, `omitted-scope`, `scope-order-mismatch`) and exact canonical list equality including ordering are preserved. ToolExecutor, SecurityPolicy, Phase 04, canonical registry and ADR statuses are unchanged.
 
 Verification: `python3 -m unittest core.tests.test_phase05_domain_teams -v` — exit `0`, `Ran 36 tests ... OK` (`/data/data/com.termux/files/usr/tmp/opencode/p5mal-t2.log`); full suite `Ran 567 tests in 55.709s — OK` (`/data/data/com.termux/files/usr/tmp/opencode/p5mal-full.log`); `py_compile` exit `0`. CI/GitHub Actions NOT TESTED. Phase 05 NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW.
+
+## FINAL CONSOLIDATED REPAIR — findings A–H (one package)
+Parent: `aab033bf07d1e5306f152b5460ef3afafff6666f` (reviewed Phase 05 commit, preserved). Accepted Phase 04 base: `1d53571025812e3cff725c508de62a894ffd37e4`. Final commit SHA is the resulting branch HEAD (a commit cannot contain its own SHA); recorded exactly in the delivery report and verifiable with `git ls-remote`.
+
+### Final activation rules and domain/platform behavior
+- Domain and delivery platform are independent: `game+Android` ≠ `game+Web`; Android alone never implies game; education+Android activates education + Android roles, not game roles.
+- Role ownership is authoritative and reconciled against the single canonical registry: `_GAME_ONLY` → game, `_EDUCATION_ROLES` → education, `_ANDROID_ROLES` → android, `_CROSS_DOMAIN_CREATIVE` (`narrative-designer`, `music-sound-specialist`) → media; all other roles → software. These are cross-domain capabilities, NOT game-only.
+- Product-type compatibility uses canonical contract `product_types` (`*` = universal; delivery-type/domain/platform compatibility otherwise). A capability keyword can never activate a domain-incompatible role (e.g. `level`/`balance` on a web request never activates `level-designer`/`game-balance-specialist`).
+- Dependency closure adds only eligible, enabled roles and drops every consumer of any ineligible/disabled dependency. The algorithm is monotonic (add, then remove only) so cycles/ineligible dependencies terminate deterministically.
+- `frontend` → `ui-ux-designer` (backward compatible); `front-end` → `frontend-specialist`; `frontend-specialist` remains the canonical ID. Alias cycles, unresolved targets and unexpected canonical shadowing are reported by `alias_report()`; intended historical DAG aliases are explicitly listed.
+
+### Feature Flag semantics and failure behavior
+- `core/domain_teams.py` uses `fcntl.flock` on a stable `.lock` file plus unique `pid.thread.random.tmp` files and atomic `replace` for read/modify/write (replacing the former process-local `threading.RLock` + fixed `.tmp` path).
+- JSON root must be an object; every key must be `domain:<known domain>` and every value a real boolean. The string `"false"` is NOT enabled. Unknown keys and wrong types fail closed.
+- Missing file = genuine first run (default enabled); corrupt JSON, wrong root/entry types, or unreadable storage raise `FlagStoreError` and `domain_enabled()` returns `False` (fail closed) without overwriting user data. `set_domain_flag()` raises instead of silently repairing corruption.
+- Every domain flag is checked for owned roles, including Android roles within software, education and game requests. A disabled secondary domain cannot leak roles through capability selection or dependency expansion. Flag-off for the primary domain falls back to the accepted Phase 04 read-only composition; no data deletion, no unsafe legacy execution path.
+
+### Canonical role inventory, metadata and validation guarantees
+- All 16 `DOMAIN_ROLES` contracts are present exactly once in the single canonical registry; `catalog_reconciliation()` now includes `DOMAIN_ROLES`, duplicate contract IDs, missing domain roles and alias problems, and reports `ok=True`.
+- `constraints` and `project_context` are METADATA ONLY in Phase 05: they are type-validated, preserved in the classification context, and provably do not change the composed team hash. No deterministic selection rule is claimed for them.
+- `validate_team()` now requires exact built-in `str` scope elements (`type(scope) is str`, stricter than `isinstance`), checks collection types, dependency-before-consumer ordering, and forged `title`/`domain`/`stage_id`; duplicate alias IDs and all canonical field equality checks remain. Every malformed input returns a deterministic `ok=False` report and never raises.
+- `classify_context()`/`build_team()` validate `product_type`, `goal`, `capabilities`, `constraints`, `risk` and `project_context`; malformed values fail closed. Invalid risk (string or non-string) sets `risk_invalid` and still activates the canonical security role (fail closed into security, never a bypass). Unknown/ambiguous classification remains fail-closed.
+- Scope: Phase 05 only composes and validates teams. No specialist execution, provider/model call, media generation, shell/network/billing/payment/credential/release authority. ToolExecutor, SecurityPolicy, capability issuance and Phase 04 lease fencing are unchanged (`git diff --name-only` confirms only `core/domain_teams.py`, `core/specialist_engine.py`, `core/tests/test_phase05_domain_teams.py` plus docs).
+
+### Tests actually executed (isolated `AI_FACTORY_TEST_ROOT`)
+| Command | Result | Counts | Exit | Evidence |
+|---|---|---|---|---|
+| `python3 -m unittest core.tests.test_phase05_domain_teams -v` | PASS | 64 PASS / 0 FAIL / 0 ERROR | 0 | `/data/data/com.termux/files/usr/tmp/opencode/p5cons-t7.log` |
+| `python3 -m unittest discover -s core/tests -p 'test_*.py'` | PASS | 595 PASS / 0 FAIL / 0 ERROR | 0 | `/data/data/com.termux/files/usr/tmp/opencode/p5cons-full.log` (67.507s) |
+| Phase 04 regressions (`test_phase04_specialist_engine`, `test_phase04_audit_repair`, `test_phase04_final_security`, `test_phase04_security_integrity`) | PASS | 57 PASS / 0 FAIL / 0 ERROR | 0 | `/data/data/com.termux/files/usr/tmp/opencode/p5cons-p04.log` |
+| `python3 -m py_compile` for all changed Python files | PASS | exit 0 | 0 | inline |
+| Multi-process flag concurrency (`test_55_concurrent_process_flag_writes_preserve_all`, 6 real child processes with widened read-modify-write window) | PASS | all 6 flags preserved | 0 | targeted suite log above |
+| `git diff --check` whitespace check | PASS | no errors | 0 | inline |
+
+28 new deterministic tests (37–64) cover custom string subclasses (hashable/unhashable), alias backward compatibility/collisions, product-type and cross-domain eligibility, every domain flag, corrupt/unreadable/concurrent flag storage, invalid classification inputs, invalid risk, metadata-only behavior, dependency ordering, forged metadata, duplicate aliases, malformed collection types and registry completeness. No existing test was weakened or deleted.
+
+### Remaining NOT TESTED limitations
+CI/GitHub Actions, live providers/models, payments, browser/visual inspection, real specialist/provider execution and real product/media generation remain NOT TESTED. Phase 05 is NOT integrated into the Production Engine at runtime. Phase 05 remains **NOT ACCEPTED — READY FOR FINAL INDEPENDENT REVIEW**; Phase 06 was NOT started.

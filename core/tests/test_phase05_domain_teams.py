@@ -389,5 +389,341 @@ class DomainTeamsTest(unittest.TestCase):
 
 
 
+    # ================= GATE 2: consolidated audit regressions (findings A-H)
+    # -------------------------------- Finding A: custom str subclasses
+    def test_37_hashable_str_subclass_scope_rejected(self):
+        class HashableStr(str):
+            pass
+        item = self._contract_item("product-architect")
+        item["allowed_scopes"] = [HashableStr("project:read")]
+        report = dt.validate_team([item])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("malformed-scope" in p
+                            for p in report["problems"]))
+
+    def test_38_unhashable_str_subclass_scope_rejected(self):
+        class UnhashableStr(str):
+            __hash__ = None
+        item = self._contract_item("product-architect")
+        item["allowed_scopes"] = [UnhashableStr("project:read")]
+        report = dt.validate_team([item])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("malformed-scope" in p
+                            for p in report["problems"]))
+
+    # -------------------------------- Finding B: aliases + collisions
+    def test_39_alias_policy_and_backward_compatibility(self):
+        self.assertEqual(se.resolve_id("frontend"), "ui-ux-designer")
+        self.assertEqual(se.resolve_id("front-end"), "frontend-specialist")
+        self.assertEqual(se.resolve_id("frontend-specialist"),
+                         "frontend-specialist")
+        rep = se.alias_report()
+        self.assertTrue(rep["ok"], rep["problems"])
+
+    def test_40_aliases_have_no_cycle_shadow_or_unresolved_target(self):
+        rep = se.alias_report()
+        bad = [p for p in rep["problems"]
+               if p.startswith(("alias-cycle", "alias-unresolved",
+                                "alias-shadows-canonical"))]
+        self.assertEqual(bad, [], rep["problems"])
+        self.assertTrue(se.catalog_reconciliation()["ok"])
+
+    # -------------------------------- Finding C: eligibility / product type
+    def test_41_capability_cannot_activate_game_only_role(self):
+        r = self._team("webpage", "ساخت صفحه وب",
+                       capabilities=["level", "balance"])
+        self.assertTrue(r["ok"], r["problems"])
+        ids = set(self._ids(r))
+        for role in ("level-designer", "game-balance-specialist",
+                     "game-developer", "game-designer"):
+            self.assertNotIn(role, ids)
+
+    def test_42_cross_domain_creative_in_game_request(self):
+        r = self._team("game", "ساخت بازی با داستان و موسیقی",
+                       capabilities=["narrative", "music"])
+        self.assertTrue(r["ok"], r["problems"])
+        ids = set(self._ids(r))
+        self.assertIn("game-designer", ids)
+        self.assertIn("narrative-designer", ids)
+        self.assertIn("music-sound-specialist", ids)
+
+    def test_43_education_role_not_activated_on_software_request(self):
+        r = self._team("webpage", "ساخت صفحه وب",
+                       capabilities=["curriculum", "learning"])
+        self.assertTrue(r["ok"], r["problems"])
+        ids = set(self._ids(r))
+        for role in ("education-specialist", "curriculum-designer",
+                     "learning-experience-specialist"):
+            self.assertNotIn(role, ids)
+
+    def test_44_domain_platform_combinations_are_valid(self):
+        cases = (
+            ("webpage", "ساخت صفحه وب ساده", "software", "Web"),
+            ("android", "اپلیکیشن نرم افزار اندروید", "software", "Android"),
+            ("game", "ساخت بازی اندرویدی", "game", "Android"),
+            ("game", "ساخت بازی وب", "game", "Web"),
+            ("android", "اپلیکیشن آموزشی اندروید", "education", "Android"),
+            ("webapp", "وب اپلیکیشن با backend", "software", "Web"),
+            ("webpage", "طراحی رابط کاربری", "design", "Web"),
+            ("webpage", "ساخت فایل صدا و موسیقی", "media", "Web"),
+        )
+        for ptype, goal, domain, platform in cases:
+            with self.subTest(goal=goal):
+                r = self._team(ptype, goal)
+                self.assertTrue(r["ok"], r["problems"])
+                self.assertEqual(r["context"]["domain"], domain)
+                self.assertEqual(r["context"]["platform"], platform)
+                self.assertTrue(self._ids(r))
+
+    def test_45_ambiguous_and_unknown_fail_closed(self):
+        for goal in ("بازی آموزشی بساز", ""):
+            with self.subTest(goal=goal):
+                r = self._team("", goal)
+                self.assertFalse(r["ok"])
+                self.assertEqual(r["team"], [])
+
+    # -------------------------------- Finding D: every domain flag
+    def test_46_every_domain_flag_is_effective(self):
+        for dom in dt.DOMAINS:
+            with self.subTest(dom=dom):
+                self.assertTrue(dt.domain_enabled(dom))
+                dt.set_domain_flag(dom, False)
+                try:
+                    self.assertFalse(dt.domain_enabled(dom))
+                finally:
+                    dt.set_domain_flag(dom, True)
+                self.assertTrue(dt.domain_enabled(dom))
+
+    def test_47_android_flag_gates_android_roles_in_all_domains(self):
+        dt.set_domain_flag("android", False)
+        try:
+            for ptype, goal in (
+                ("android", "اپلیکیشن نرم افزار اندروید"),
+                ("android", "اپلیکیشن آموزشی اندروید"),
+                ("game", "ساخت بازی اندرویدی"),
+            ):
+                with self.subTest(goal=goal):
+                    r = self._team(ptype, goal)
+                    self.assertTrue(r["ok"], r["problems"])
+                    ids = set(self._ids(r))
+                    self.assertNotIn("android-developer", ids)
+                    self.assertNotIn("mobile-ux-specialist", ids)
+        finally:
+            dt.set_domain_flag("android", True)
+
+    def test_48_media_flag_blocks_cross_domain_roles(self):
+        dt.set_domain_flag("media", False)
+        try:
+            r = self._team("game", "ساخت بازی با داستان",
+                           capabilities=["narrative", "music"])
+            self.assertTrue(r["ok"], r["problems"])
+            ids = set(self._ids(r))
+            self.assertNotIn("narrative-designer", ids)
+            self.assertNotIn("music-sound-specialist", ids)
+        finally:
+            dt.set_domain_flag("media", True)
+
+    def test_49_disabled_secondary_domain_no_dependency_leak(self):
+        dt.set_domain_flag("software", False)
+        try:
+            r = self._team("game", "ساخت بازی اندرویدی")
+            ids = set(self._ids(r))
+            self.assertFalse(any(dt._role_domain(rid) == "software"
+                                 for rid in ids))
+        finally:
+            dt.set_domain_flag("software", True)
+
+    # -------------------------------- Finding E: flag storage
+    def test_50_missing_flag_file_is_first_run_default(self):
+        self.assertFalse(self.flags.exists())
+        self.assertTrue(dt.domain_enabled("game"))
+        self.assertFalse(self.flags.exists())
+
+    def test_51_corrupt_json_fails_closed_without_overwrite(self):
+        self.flags.write_text("{not json", encoding="utf-8")
+        for dom in dt.DOMAINS:
+            self.assertFalse(dt.domain_enabled(dom))
+        with self.assertRaises(dt.FlagStoreError):
+            dt.set_domain_flag("game", False)
+        self.assertEqual(self.flags.read_text(encoding="utf-8"), "{not json")
+
+    def test_52_invalid_root_and_flag_types_fail_closed(self):
+        for payload in ('[]', 'null', '{"domain:game": "false"}',
+                        '{"domain:game": 1}', '{"bad": true}'):
+            with self.subTest(payload=payload):
+                self.flags.write_text(payload, encoding="utf-8")
+                self.assertFalse(dt.domain_enabled("game"))
+                self.assertFalse(dt.domain_enabled("software"))
+
+    def test_53_unreadable_flag_file_fails_closed(self):
+        self.flags.mkdir()
+        try:
+            self.assertFalse(dt.domain_enabled("game"))
+        finally:
+            self.flags.rmdir()
+
+    def test_54_concurrent_thread_flag_writes_preserve_all(self):
+        for dom in dt.DOMAINS:
+            dt.set_domain_flag(dom, False)
+        barrier = threading.Barrier(len(dt.DOMAINS))
+        errors = []
+
+        def work(dom):
+            try:
+                barrier.wait(timeout=10)
+                dt.set_domain_flag(dom, True)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=work, args=(d,))
+                   for d in dt.DOMAINS]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=20)
+        self.assertEqual(errors, [])
+        for dom in dt.DOMAINS:
+            self.assertTrue(dt.domain_enabled(dom), dom)
+
+    def test_55_concurrent_process_flag_writes_preserve_all(self):
+        import subprocess
+        import sys
+        for dom in dt.DOMAINS:
+            dt.set_domain_flag(dom, False)
+        code = '''
+import sys, time
+from pathlib import Path
+import core.domain_teams as dt
+dt._FLAGS = Path(sys.argv[1])
+_orig = dt._load_flags_unlocked
+def _slow():
+    data = _orig()
+    time.sleep(0.05)
+    return data
+dt._load_flags_unlocked = _slow
+dt.set_domain_flag(sys.argv[2], True)
+'''
+        cwd = str(Path(__file__).resolve().parents[2])
+        procs = [subprocess.Popen(
+            [sys.executable, "-c", code, str(self.flags), d],
+            cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for d in dt.DOMAINS]
+        for proc, dom in zip(procs, dt.DOMAINS):
+            _, err = proc.communicate(timeout=60)
+            self.assertEqual(proc.returncode, 0, err.decode(errors="replace"))
+        for dom in dt.DOMAINS:
+            self.assertTrue(dt.domain_enabled(dom), dom)
+
+    # -------------------------------- Finding F: classification inputs
+    def test_56_malformed_classification_inputs_fail_closed(self):
+        cases = (
+            dict(product_type=123),
+            dict(goal={"x": 1}),
+            dict(capabilities="backend"),
+            dict(capabilities={"backend": True}),
+            dict(capabilities=["backend", 7]),
+            dict(constraints="tight"),
+            dict(constraints=["ok", None]),
+            dict(project_context=[1, 2]),
+        )
+        for kw in cases:
+            with self.subTest(kw=kw):
+                args = dict(product_type="webpage", goal="ساخت صفحه وب")
+                args.update(kw)
+                r = dt.build_team(**args)
+                self.assertFalse(r["ok"])
+                self.assertTrue(r["problems"])
+                self.assertEqual(r["team"], [])
+
+    def test_57_invalid_risk_fails_closed_into_security_activation(self):
+        for risk in ("extreme", 42):
+            with self.subTest(risk=risk):
+                r = self._team("webpage", "ساخت صفحه وب", risk=risk)
+                self.assertTrue(r["ok"], r["problems"])
+                self.assertTrue(r["context"]["risk_invalid"])
+                self.assertEqual(r["context"]["risk"], "unknown")
+                self.assertIn("security-reviewer", self._ids(r))
+        game = self._team("game", "ساخت بازی اندرویدی", risk="extreme")
+        self.assertTrue(game["ok"], game["problems"])
+        self.assertIn("security-reviewer", self._ids(game))
+
+    def test_58_metadata_only_constraints_and_context(self):
+        base = self._team("webpage", "ساخت صفحه وب ساده")
+        meta = self._team("webpage", "ساخت صفحه وب ساده",
+                          constraints=["budget"],
+                          project_context={"tenant": "x"})
+        self.assertEqual(base["hash"], meta["hash"])
+        self.assertEqual(meta["context"]["constraints"], ["budget"])
+        self.assertEqual(meta["context"]["project_context"], {"tenant": "x"})
+
+    # -------------------------------- Finding G: validate_team
+    def test_59_dependency_after_consumer_rejected(self):
+        a = self._contract_item("ui-ux-designer")
+        b = self._contract_item("product-architect")
+        bad = dt.validate_team([a, b])
+        self.assertFalse(bad["ok"])
+        self.assertTrue(any("dependency-order" in p
+                            for p in bad["problems"]))
+        self.assertTrue(dt.validate_team([b, a])["ok"])
+
+    def test_60_forged_display_metadata_rejected(self):
+        item = self._contract_item("product-architect")
+        for key, value in (("title", "فورج"), ("domain", "game"),
+                           ("stage_id", "evil")):
+            with self.subTest(key=key):
+                forged = dict(item)
+                forged[key] = value
+                report = dt.validate_team([forged])
+                self.assertFalse(report["ok"])
+                self.assertTrue(any("forged-" in p
+                                    for p in report["problems"]))
+
+    def test_61_duplicate_alias_role_rejected(self):
+        item = self._contract_item("product-architect")
+        alias = dict(item)
+        alias["role_id"] = "product-director"
+        report = dt.validate_team([item, alias])
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("duplicate-role" in p
+                            for p in report["problems"]))
+
+    def test_62_malformed_collection_types_rejected(self):
+        item = self._contract_item("developer")
+        for field in ("expected_artifacts", "inputs", "dependencies",
+                      "acceptance"):
+            with self.subTest(field=field):
+                forged = dict(item)
+                forged[field] = "not-a-list"
+                report = dt.validate_team([forged])
+                self.assertFalse(report["ok"])
+                self.assertTrue(any("malformed-field" in p
+                                    for p in report["problems"]))
+
+    # -------------------------------- Finding H: registry completeness
+    def test_63_domain_roles_present_once_and_reconciled(self):
+        from core import specialists
+        ids = [r.id for r in specialists.DOMAIN_ROLES]
+        self.assertEqual(len(ids), 16)
+        self.assertEqual(len(ids), len(set(ids)))
+        registry = se.canonical_registry()
+        for rid in ids:
+            self.assertIn(rid, registry)
+        rep = se.catalog_reconciliation()
+        self.assertTrue(rep["ok"], rep["problems"])
+        self.assertIn("DOMAIN_ROLES", rep["sources"])
+
+    def test_64_missing_domain_role_detected(self):
+        from core import specialists
+        registry = se.canonical_registry()
+        missing = specialists.DOMAIN_ROLES[0].id
+        registry.pop(missing, None)
+        with mock.patch.object(se, "canonical_registry",
+                               return_value=registry):
+            rep = se.catalog_reconciliation()
+        self.assertFalse(rep["ok"])
+        self.assertTrue(any("missing-domain-role" in p
+                            for p in rep["problems"]))
+
+
 if __name__ == "__main__":
     unittest.main()
