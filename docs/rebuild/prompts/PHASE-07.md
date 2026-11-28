@@ -88,3 +88,6 @@ Real workflow-driven Critic/revision/decision path implemented and proven by 10 
 
 ## Comprehensive corrective record (append-only, 2026-11-28)
 Real critique/revision/decision corrections implemented; 23 new corrective tests and full suite 708 PASS. Real HTTP socket, browser visual and live model NOT TESTED. Phase 07 submitted for independent review; Phase 08 NOT started.
+
+## Final remediation record (append-only, 2026-11-28)
+Real producer-connected revision, mandatory decision fingerprint, true idempotency and real HTTP round-trip implemented; full suite 719 PASS. Phase 07 submitted for independent review; Phase 08 NOT started.

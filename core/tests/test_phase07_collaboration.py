@@ -27,12 +27,24 @@ def _worker(project, workflow, stage, review, artifact, sha, option,
         import core.panelauth as pa
         pa._sessions[session] = {"exp": time.time() + 86400,
                                  "csrf": "test", "created": time.time()}
+        rejected = [{"option": "B", "reason": "x", "owner": "critic"}]
+        evidence = []
         queue.put(("ok", critique.decide(
             project, workflow, stage, review, artifact, sha, option,
-            [{"option": "other", "reason": "lower score", "owner": "critic"}],
-            ["spec/critic-verdict.json"], 1, token, session)))
+            rejected, evidence, 1, token, session,
+            decision_fp=_decision_fp(project, workflow, stage, review,
+                                     artifact, sha, option, 1, rejected,
+                                     evidence, session))))
     except Exception as exc:  # noqa: BLE001
         queue.put(("error", repr(exc)))
+
+
+def _decision_fp(project, wid, stage, review, path, sha, option, cycle,
+                 rejected, evidence, session):
+    import core.panelauth as pa
+    return critique.decision_fingerprint(
+        project, wid, stage, review, path, sha, option, cycle, rejected,
+        evidence, pa.principal_for_session(session), session)
 
 
 class CritiqueTest(unittest.TestCase):
@@ -192,7 +204,11 @@ class CritiqueTest(unittest.TestCase):
         proposal = confirmations.create(PROJECT, "critic-decision", {
             "project": PROJECT, "workflow_id": "wf-1", "stage_id": "s05-produce",
             "review_id": "rv-x", "artifact_path": "spec/proposal.md",
-            "artifact_sha256": self.sha, "option": "A", "cycle": 1},
+            "artifact_sha256": self.sha, "option": "A", "cycle": 1,
+            "decision_fingerprint": _decision_fp(
+                PROJECT, "wf-1", "s05-produce", "rv-x", "spec/proposal.md",
+                self.sha, "A", 1, [{"option": "B", "reason": "weaker",
+                                   "owner": "critic"}], ["e1"], self.session)},
             "approve?", self.session)
         kwargs = dict(project=PROJECT, workflow_id="wf-1",
                       stage_id="s05-produce", review_id="rv-x",
@@ -201,7 +217,12 @@ class CritiqueTest(unittest.TestCase):
                       rejected=[{"option": "B", "reason": "weaker",
                                  "owner": "critic"}], evidence_refs=["e1"],
                       cycle=1, confirm_token=proposal["confirm_token"],
-                      session_id=self.session)
+                      session_id=self.session,
+                      decision_fp=_decision_fp(
+                          PROJECT, "wf-1", "s05-produce", "rv-x",
+                          "spec/proposal.md", self.sha, "A", 1,
+                          [{"option": "B", "reason": "weaker",
+                            "owner": "critic"}], ["e1"], self.session))
         first = critique.decide(**kwargs)
         self.assertEqual(first["decision_maker"], panelauth.PANEL_PRINCIPAL)
         self.assertTrue(first["actor_trusted"])
@@ -215,11 +236,12 @@ class CritiqueTest(unittest.TestCase):
         with self.assertRaises(critique.CritiqueError):
             critique.decide(PROJECT, "wf", "s", "r", "spec/proposal.md",
                             self.sha, "A", [{"reason": "x"}], [], 1,
-                            "bogus", self.session)
+                            "bogus", self.session, decision_fp="x")
         with self.assertRaises(critique.CritiqueError):
             critique.decide("other-project", "wf", "s", "r",
                             "spec/proposal.md", self.sha, "A",
-                            [{"reason": "x"}], [], 1, "bogus", self.session)
+                            [{"reason": "x"}], [], 1, "bogus", self.session,
+                            decision_fp="x")
 
     def test_15_corrupt_store_fails_closed_without_overwrite(self):
         self.ledger.write_text("{corrupt", encoding="utf-8")
@@ -229,10 +251,14 @@ class CritiqueTest(unittest.TestCase):
 
     def test_16_thread_and_process_concurrent_decide_one_winner(self):
         def proposal(option):
+            rejected = [{"option": "B", "reason": "x", "owner": "critic"}]
             return confirmations.create(PROJECT, "critic-decision", {
                 "project": PROJECT, "workflow_id": "wf", "stage_id": "s",
                 "review_id": "r", "artifact_path": "spec/proposal.md",
-                "artifact_sha256": self.sha, "option": option, "cycle": 1},
+                "artifact_sha256": self.sha, "option": option, "cycle": 1,
+                "decision_fingerprint": _decision_fp(
+                    PROJECT, "wf", "s", "r", "spec/proposal.md", self.sha,
+                    option, 1, rejected, [], self.session)},
                 "q", self.session)["confirm_token"]
 
         barrier = threading.Barrier(4)
@@ -246,8 +272,13 @@ class CritiqueTest(unittest.TestCase):
                 barrier.wait(timeout=10)
                 results.append(critique.decide(
                     PROJECT, "wf", "s", "r", "spec/proposal.md", self.sha,
-                    "A", [{"option": "B", "reason": "x"}], [], 1, token,
-                    self.session))
+                    "A", [{"option": "B", "reason": "x",
+                            "owner": "critic"}], [], 1, token,
+                    self.session,
+                    decision_fp=_decision_fp(
+                        PROJECT, "wf", "s", "r", "spec/proposal.md", self.sha,
+                        "A", 1, [{"option": "B", "reason": "x",
+                                  "owner": "critic"}], [], self.session)))
             except Exception as exc:  # noqa: BLE001
                 results.append("ERR:" + type(exc).__name__ + ":" + str(exc)[:400])
 
@@ -279,11 +310,19 @@ class CritiqueTest(unittest.TestCase):
         proposal = confirmations.create(PROJECT, "critic-decision", {
             "project": PROJECT, "workflow_id": "wf", "stage_id": "s",
             "review_id": "r", "artifact_path": "spec/proposal.md",
-            "artifact_sha256": self.sha, "option": "A", "cycle": 1},
+            "artifact_sha256": self.sha, "option": "A", "cycle": 1,
+            "decision_fingerprint": _decision_fp(
+                PROJECT, "wf", "s", "r", "spec/proposal.md", self.sha, "A",
+                1, [{"option": "B", "reason": "x"}], [], self.session)},
             "q", self.session)["confirm_token"]
         critique.decide(PROJECT, "wf", "s", "r", "spec/proposal.md", self.sha,
                         "A", [{"option": "B", "reason": "x"}], [], 1,
-                        proposal, self.session)
+                        proposal, self.session,
+                        decision_fp=_decision_fp(
+                            PROJECT, "wf", "s", "r", "spec/proposal.md",
+                            self.sha, "A", 1,
+                            [{"option": "B", "reason": "x"}], [],
+                            self.session))
         out = critique.invalidate(PROJECT, "spec/proposal.md", "b" * 64)
         self.assertEqual(len(out["invalidated"]), 1)
 

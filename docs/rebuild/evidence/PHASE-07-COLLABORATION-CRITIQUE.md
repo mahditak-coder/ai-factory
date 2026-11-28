@@ -154,3 +154,31 @@ Continues from `edb732d27bd70319875b9603a4ab4bcdb6b8eb2b` on the same branch.
   Critic model turn, different-model independence (NOT claimed), CI.
 
 Logs: `…/p7c-new6.log`, `…/p7c-full.log`.
+
+## FINAL REMEDIATION — real producer, mandatory fingerprint, true idempotency
+
+Continues from `cab0e7998dca30b93c4930e5ddb8c1cd35dec678`.
+
+Fixed root causes:
+1. Revision now calls the real Producer execution path (`workflow_executor.run`,
+   overridable only at the external-model boundary). Generic templates,
+   placeholders, boilerplate and unchanged text are rejected by
+   `is_task_relevant()`. Producer failure or unavailable capability returns a
+   RECOVERABLE/HOLD result with the exact reason, never a fabricated PASS.
+   The original artifact bytes are restored before a new immutable versioned
+   file is written; all criteria are re-evaluated on the new bytes.
+2. `decision_fp` is MANDATORY. `decision_fingerprint()` now binds project,
+   workflow, stage, review, artifact path+SHA, option, rejected options and
+   reasons/owners, evidence, cycle, authenticated principal and session.
+   `decide()` independently recomputes it and rejects omission or alteration.
+   `workflow.approve()` refuses any non-ledger approval once a governed
+   decision exists, closing the direct API bypass.
+3. Review IDs are deterministic; cached verdicts/revisions are returned on
+   repeats; the whole series uses a cross-process flock. Repeated requests
+   produce no duplicate reviews, verdicts, leases, versions or workflow
+   transitions. Recovery marks pending decisions so replay is a no-op.
+
+Tests: final suite 11/11 (includes a REAL HTTP socket round-trip with panel
+login, CSRF and unauthenticated 401), Phase 07 62/62, full core **719/719 PASS**
+(71.798s). `py_compile` and `git diff --check` clean. CI, real browser and live
+model remain NOT TESTED.

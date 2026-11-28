@@ -397,6 +397,25 @@ def _advance(r: dict) -> None:
 
 
 def approve(project: str, stage_id: str, version: int, approval_id: str) -> dict:
+    # Phase 07: once a governed Critic decision exists for this stage, an
+    # approval MUST reference it. No legacy/API caller may bypass it.
+    ledger = config.PROJECT_ROOT / "data" / "decision_ledger.json"
+    try:  # use the active (possibly test-patched) critique ledger
+        from core import critique
+        ledger = critique._LEDGER
+    except (ImportError, AttributeError):
+        pass
+    if ledger.is_file():
+        try:
+            rows = json.loads(ledger.read_text(encoding="utf-8")).get("entries", [])
+        except (OSError, ValueError):
+            return {"status": opstatus.BLOCKED, "error": "decision-ledger-unavailable"}
+        governed = [e.get("id") for e in rows if isinstance(e, dict) and
+                    e.get("kind") == "decision" and
+                    e.get("project") == project and e.get("stage_id") == stage_id]
+        if governed and approval_id not in governed:
+            return {"status": opstatus.BLOCKED,
+                    "error": "approval-requires-governed-decision"}
     verify_integrity(project)
     def op(r, items):
         s = _stage(r, stage_id)

@@ -98,8 +98,20 @@ class CorrectiveTest(unittest.TestCase):
     def _info(self):
         return critique._stage_artifact(PROJECT, STAGE)
 
+    def _producer(self):
+        def run(project, stage, goal):
+            rel = "spec/proposal.md"
+            content = ("# Producer revision\n\n" + str(goal) +
+                       "\n\n## Evidence\nReal content generated from the "
+                       "workflow goal and validated critic findings.\n")
+            p = config.PROJECTS_DIR / project / rel
+            p.write_text(content, encoding="utf-8")
+            return {"status": "PASS", "artifacts": [
+                {"path": rel, "sha256": workflow.sha256_file(rel, project)}]}
+        return run
+
     def _series(self):
-        return critique.run_series(PROJECT, STAGE)
+        return critique.run_series(PROJECT, STAGE, self._producer())
 
     def _verdict(self):
         s = self._series()
@@ -116,8 +128,10 @@ class CorrectiveTest(unittest.TestCase):
             "stage_id": STAGE, "review_id": review_id, "artifact_path": self.path,
             "artifact_sha256": sha, "option": option, "cycle": cycle,
             "decision_fingerprint": critique.decision_fingerprint(
-                PROJECT, self._info()["workflow_id"], STAGE, review_id, sha,
-                option, cycle, rejected, evidence)}, "q", session or self.session
+                PROJECT, self._info()["workflow_id"], STAGE, review_id,
+                self.path, sha, option, cycle, rejected, evidence,
+                panelauth.principal_for_session(session or self.session),
+                session or self.session)}, "q", session or self.session
         )["confirm_token"]
 
     # ---------------------------------------------------------- content truth
@@ -195,7 +209,8 @@ class CorrectiveTest(unittest.TestCase):
         revised = critique.revise_artifact(PROJECT, STAGE,
                                            review["review"]["id"],
                                            review["findings"],
-                                           "real deliverable")
+                                           "real deliverable",
+                                           self._producer())
         self.assertTrue(revised["ok"])
         new_content = (config.PROJECTS_DIR / PROJECT /
                        revised["artifact"]["path"]).read_text(encoding="utf-8")
@@ -203,17 +218,20 @@ class CorrectiveTest(unittest.TestCase):
         self.assertEqual(critique.artifact_hash(PROJECT, self.path), old_sha)
         self.assertNotEqual(revised["artifact"]["sha256"], old_sha)
 
-    def test_09_placeholder_revision_fails_closed(self):
-        finding = {"criterion": "unknown-criterion", "id": "f-x"}
+    def test_09_producer_failure_fails_closed_into_hold(self):
+        def failing_producer(project, stage, goal):
+            return {"status": "FAIL", "error": "producer-unavailable"}
         with self.assertRaises(critique.CritiqueError) as ctx:
-            critique.revise_artifact(PROJECT, STAGE, "r", [finding], "goal")
-        self.assertIn("correction-not-applicable", str(ctx.exception))
+            critique.revise_artifact(PROJECT, STAGE, "r", [], "goal",
+                                    failing_producer)
+        self.assertIn("producer-failed", str(ctx.exception))
 
     def test_10_old_verdict_cannot_approve_new_version(self):
         self._set_content("")
         first = critique.execute_review(PROJECT, STAGE)
         critique.revise_artifact(PROJECT, STAGE, first["review"]["id"],
-                                 first["findings"], "goal")
+                                 first["findings"], "goal",
+                                 self._producer())
         with self.assertRaises(critique.CritiqueError) as ctx:
             critique.human_decision(PROJECT, STAGE, first["review"]["id"],
                                     "accept-current", "x", self.session)

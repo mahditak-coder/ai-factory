@@ -30,3 +30,6 @@ Phase 07 mandatory completion executed on `rebuild/phase-07-collaboration-critiq
 
 ## Current pointer (append-only update, 2026-11-28)
 Phase 07 comprehensive corrective mission executed; full core suite 708/708 PASS. Phase 07 awaits independent review; Phase 08 NOT authorized. Last accepted phase remains 06.
+
+## Current pointer (append-only update, 2026-11-28)
+Phase 07 final remediation executed; full core suite 719/719 PASS including real HTTP auth/CSRF round-trip. Phase 07 awaits independent review; Phase 08 NOT authorized.

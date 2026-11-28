@@ -230,3 +230,7 @@ Phase 07 is submitted for final independent review; the implementing agent does 
 ## Phase 07 comprehensive corrective mission (append-only)
 - Real per-criterion critique; empty/comment-only/placeholder artifacts rejected; verdict-bound finding validation; real content corrections with immutable versions; hardened human decision and recoverable approval; series-wide cross-process locking and stable cycle/HOLD identity.
 - Tests: corrective 23/23, Phase 07 28/28, full core 708/708, JS 5/5, py_compile and diff-check clean. Real HTTP socket, real browser and live model NOT TESTED.
+
+## Phase 07 final remediation (append-only)
+- Real Producer-connected revision with immutable versions and full criterion recheck; mandatory recomputed decision fingerprint with complete binding; governed-approval enforcement; true cross-process idempotency and safe recovery; real HTTP auth/CSRF/critique/decision round-trip tested.
+- Tests: final 11/11, Phase 07 62/62, full core 719/719. CI, real browser and live model NOT TESTED.

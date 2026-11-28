@@ -79,8 +79,22 @@ class E2ETest(unittest.TestCase):
             "review_id": review_id, "artifact_path": path,
             "artifact_sha256": sha, "option": option, "cycle": cycle,
             "decision_fingerprint": critique.decision_fingerprint(
-                project, wid, STAGE, review_id, sha, option, cycle,
-                rejected, evidence)}, "q", session)["confirm_token"]
+                project, wid, STAGE, review_id, path, sha, option, cycle,
+                rejected, evidence,
+                panelauth.principal_for_session(session), session
+            )}, "q", session)["confirm_token"]
+
+    def _producer(self):
+        def run(project, stage, goal):
+            rel = "spec/proposal.md"
+            content = ("# Producer revision\n\n" + str(goal) +
+                       "\n\n## Evidence\nReal content generated from the "
+                       "workflow goal and validated critic findings.\n")
+            p = config.PROJECTS_DIR / project / rel
+            p.write_text(content, encoding="utf-8")
+            return {"status": "PASS", "artifacts": [
+                {"path": rel, "sha256": workflow.sha256_file(rel, project)}]}
+        return run
 
     def _produce(self, content="# real proposal\n"):
         out = workflow.run_stage(PROJECT, STAGE, "tok-producer",
@@ -92,7 +106,7 @@ class E2ETest(unittest.TestCase):
     def test_01_full_series_accepts_a_real_artifact(self):
         self._produce()
         before = workflow.by_project(PROJECT)
-        out = critique.run_series(PROJECT, STAGE)
+        out = critique.run_series(PROJECT, STAGE, self._producer())
         self.assertEqual(out["status"], "READY_FOR_HUMAN_DECISION", out)
         review = out["final"]["review"]
         latest = workflow.by_project(PROJECT)["stages"][0]["versions"][-1]
@@ -107,13 +121,24 @@ class E2ETest(unittest.TestCase):
         proposal = confirmations.create(PROJECT, "critic-decision", {
             "project": PROJECT, "workflow_id": "wf-1", "stage_id": STAGE,
             "review_id": "prior-review", "artifact_path": "spec/proposal.md",
-            "artifact_sha256": old_sha, "option": "prior-choice", "cycle": 1},
+            "artifact_sha256": old_sha, "option": "prior-choice", "cycle": 1,
+            "decision_fingerprint": critique.decision_fingerprint(
+                PROJECT, "wf-1", STAGE, "prior-review", "spec/proposal.md",
+                old_sha, "prior-choice", 1,
+                [{"option": "other", "reason": "lower", "owner": "user"}], [],
+                panelauth.principal_for_session(self.session), self.session)},
             "q", self.session)
+        prior_rejected = [{"option": "other", "reason": "lower",
+                           "owner": "user"}]
+        prior_fp = critique.decision_fingerprint(
+            PROJECT, "wf-1", STAGE, "prior-review", "spec/proposal.md",
+            old_sha, "prior-choice", 1, prior_rejected, [],
+            panelauth.principal_for_session(self.session), self.session)
         critique.decide(PROJECT, "wf-1", STAGE, "prior-review",
                         "spec/proposal.md", old_sha, "prior-choice",
-                        [{"option": "other", "reason": "lower", "owner": "user"}],
-                        [], 1, proposal["confirm_token"], self.session)
-        out = critique.run_series(PROJECT, STAGE)
+                        prior_rejected, [], 1, proposal["confirm_token"],
+                        self.session, decision_fp=prior_fp)
+        out = critique.run_series(PROJECT, STAGE, self._producer())
         self.assertEqual(len(out["rounds"]), 2, out)
         stages = workflow.by_project(PROJECT)["stages"][0]
         self.assertEqual(len(stages["versions"]), 2)
@@ -129,7 +154,7 @@ class E2ETest(unittest.TestCase):
 
     def test_03_human_decision_advances_real_workflow(self):
         self._produce()
-        series = critique.run_series(PROJECT, STAGE)
+        series = critique.run_series(PROJECT, STAGE, self._producer())
         review_id = series["final"]["review"]["id"]
         info = critique._stage_artifact(PROJECT, STAGE)
         token = self._confirm(PROJECT, info["workflow_id"], review_id,
@@ -147,7 +172,7 @@ class E2ETest(unittest.TestCase):
 
     def test_04_forged_decision_inputs_fail_closed(self):
         self._produce()
-        series = critique.run_series(PROJECT, STAGE)
+        series = critique.run_series(PROJECT, STAGE, self._producer())
         rid = series["final"]["review"]["id"]
         with self.assertRaises(critique.CritiqueError):
             critique.human_decision(PROJECT, STAGE, rid, "accept-current",
@@ -163,12 +188,16 @@ class E2ETest(unittest.TestCase):
             counter["n"] += 1
             return {"ok": True, "aggregate": 5.0, "blockers": [], "blocked": False,
                     "decision": "revise", "rejected_options": [], "uncertainty": []}
-        def changing_fix(content, finding, goal):
+        def varying_producer(project, stage, goal):
             counter["n"] += 1
-            return (content + "\n## Real correction %d\n"
-                    "Verified substantive content with inspectable sections "
-                    "and a recorded evidence trail for this deliverable.\n" %
-                    counter["n"])
+            rel = "spec/proposal.md"
+            content = ("# Producer revision %d\n\n" % counter["n"] + goal +
+                       "\n\n## Evidence\nReal task-relevant content generated "
+                       "from the workflow goal and critic findings.\n")
+            path = config.PROJECTS_DIR / project / rel
+            path.write_text(content, encoding="utf-8")
+            return {"status": "PASS", "artifacts": [
+                {"path": rel, "sha256": workflow.sha256_file(rel, project)}]}
         real_execute = critique.execute_review
         def forced_review(project, stage):
             out = real_execute(project, stage)
@@ -182,11 +211,12 @@ class E2ETest(unittest.TestCase):
             out["findings"] = [f]
             return out
         with mock.patch.object(critique, "evaluate", side_effect=always_revise), \
-             mock.patch.object(critique, "apply_correction",
-                               side_effect=changing_fix), \
+             mock.patch.object(critique, "invoke_producer",
+                               side_effect=lambda p, st, g, ex: ex(p, st, g)
+                               if ex else varying_producer(p, st, g)), \
              mock.patch.object(critique, "execute_review",
                                side_effect=forced_review):
-            out = critique.run_series(PROJECT, STAGE)
+            out = critique.run_series(PROJECT, STAGE, varying_producer)
         self.assertEqual(out["status"], "HOLD", out)
         self.assertEqual(len(out["rounds"]), 3, str(out.get("reason")) + " " + str(out.get("hold")))
         self.assertEqual(len(workflow.by_project(PROJECT)["stages"][0]["versions"]),
@@ -194,7 +224,7 @@ class E2ETest(unittest.TestCase):
 
     def test_06_finding_schema_and_evidence_rejected(self):
         self._produce()
-        series = critique.run_series(PROJECT, STAGE)
+        series = critique.run_series(PROJECT, STAGE, self._producer())
         info = critique._stage_artifact(PROJECT, STAGE)
         bad = {"id": "f-forged", "severity": "critical", "description": "x",
                "evidence_ref": "none", "artifact_sha256": info["sha256"],
@@ -211,7 +241,7 @@ class E2ETest(unittest.TestCase):
         self._produce()
         with mock.patch.object(critique, "detect_conflicts", wraps=
                                critique.detect_conflicts) as spy:
-            out = critique.run_series(PROJECT, STAGE)
+            out = critique.run_series(PROJECT, STAGE, self._producer())
         self.assertTrue(spy.called)
         self.assertTrue(out["ok"])
 
@@ -219,8 +249,12 @@ class E2ETest(unittest.TestCase):
     def test_08_api_run_and_decide_handlers(self):
         from core import server
         self._produce()
+        real_invoke = critique.invoke_producer
         h = HandlerHarness({"project": PROJECT, "stage": STAGE})
-        server.Handler._api_workflow_critique_run(h)
+        with mock.patch.object(critique, "invoke_producer",
+                               side_effect=lambda p, st, g, ex: ex(p, st, g)
+                               if ex else self._producer()(p, st, g)):
+            server.Handler._api_workflow_critique_run(h)
         code, payload = h.responses[-1]
         self.assertEqual(code, 200)
         series = payload["result"]
@@ -252,7 +286,7 @@ class E2ETest(unittest.TestCase):
 
     def test_10_restart_recovery_preserves_lineage(self):
         self._produce()
-        out = critique.run_series(PROJECT, STAGE)
+        out = critique.run_series(PROJECT, STAGE, self._producer())
         before = critique.entries(PROJECT)
         # simulate process restart by clearing in-memory active state only
         workflow._ACTIVE.clear()

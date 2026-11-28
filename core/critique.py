@@ -348,11 +348,14 @@ def start_review(project: str, workflow_id: str, stage_id: str,
     sha = artifact_hash(project, artifact_path)
     if sha != artifact_sha256:
         raise CritiqueError("artifact-hash-mismatch")
-    run = se.start_run(project, ROLE, supersede=True)
     rid = "rv-" + hashlib.sha256(("|".join([project, workflow_id, stage_id,
-                                            producer_role, artifact_sha256])
-                                  ).encode()).hexdigest()[:14] + \
-        secrets.token_hex(3)
+                                            producer_role, artifact_path,
+                                            artifact_sha256])
+                                  ).encode()).hexdigest()[:20]
+    existing = _latest(rid)
+    if existing is not None and existing.get("kind") == "review":
+        return dict(existing)
+    run = se.start_run(project, ROLE, supersede=True)
     review = {"id": rid, "kind": "review", "project": project,
               "workflow_id": workflow_id, "stage_id": stage_id,
               "producer_role": producer_role, "critic_role": ROLE,
@@ -384,6 +387,9 @@ def _bound_review(review_id: str, run_token: str) -> dict:
 
 def record_verdict(review_id: str, run_token: str, findings: list,
                    rubric: dict, session_id: str = "") -> dict:
+    prior = _latest_verdict(review_id)
+    if prior is not None:
+        return dict(prior)
     review = _bound_review(review_id, run_token)
     stale = se.reject_stale(review["project"], ROLE, run_token)
     if not stale["accepted"]:
@@ -419,6 +425,8 @@ def record_verdict(review_id: str, run_token: str, findings: list,
                "artifact_version": art["version"], "artifact_sha256": art["sha256"],
                "reviewed_sha256": review["artifact_sha256"],
                "findings": findings, "evaluation": evaluation,
+               "checks": rubric.get("criteria") or [],
+               "artifact_path": review["artifact_path"],
                "decision": evaluation["decision"], "cycle": review["cycle"]}
     _append(verdict)
     se.record_result(review["project"], ROLE, run_token,
@@ -463,11 +471,17 @@ def decide(project: str, workflow_id: str, stage_id: str, review_id: str,
            artifact_path: str, artifact_sha256: str, option: str,
            rejected: list, evidence_refs: list, cycle: int,
            confirm_token: str, session_id: str,
-           decision_fp: str | None = None) -> dict:
-    """Append an authenticated decision; one-shot confirmation is mandatory."""
+           decision_fp: str) -> dict:
+    """Append an authenticated decision; fingerprint is MANDATORY."""
     principal = panelauth.principal_for_session(session_id)
     if not principal:
         raise CritiqueError("authenticated-session-required")
+    recomputed = decision_fingerprint(
+        project, workflow_id, stage_id, review_id, artifact_path,
+        artifact_sha256, option, cycle, rejected, evidence_refs,
+        principal, session_id)
+    if not isinstance(decision_fp, str) or decision_fp != recomputed:
+        raise CritiqueError("decision-fingerprint-required-or-invalid")
     digest = hashlib.sha256(("|".join([project, workflow_id, stage_id,
                                       artifact_sha256, option, str(cycle)])
                              ).encode()).hexdigest()[:20]
@@ -484,8 +498,7 @@ def decide(project: str, workflow_id: str, stage_id: str, review_id: str,
                 "artifact_path": artifact_path,
                 "artifact_sha256": artifact_sha256, "option": option,
                 "cycle": cycle}
-    if decision_fp is not None:
-        expected["decision_fingerprint"] = decision_fp
+    expected["decision_fingerprint"] = recomputed
     for key, value in expected.items():
         if payload.get(key) != value:
             raise CritiqueError("confirmation-binding-mismatch:" + key)
@@ -716,6 +729,47 @@ def _stage_artifact(project: str, stage_id: str) -> dict:
             "version_no": int(version.get("version") or 0)}
 
 
+_BOILERPLATE_MARKERS = ("generic template", "lorem ipsum", "sample text",
+                        "todo", "boilerplate")
+
+
+def invoke_producer(project: str, stage: dict, goal: str,
+                    producer_executor=None) -> dict:
+    """Call the REAL available Producer execution path, never fabricate output."""
+    if producer_executor is not None:
+        result = producer_executor(project, stage, goal)
+    else:
+        from core import workflow_executor
+        result = workflow_executor.run(project, dict(stage), goal)
+    if not isinstance(result, dict):
+        raise CritiqueError("producer-execution-failed:invalid-result")
+    return result
+
+
+def is_task_relevant(content: str, goal: str, findings: list) -> bool:
+    """Real content must reflect the goal and EVERY finding, not boilerplate."""
+    if not isinstance(content, str) or len(content.strip()) < 40:
+        return False
+    low = _strip_comments(content).lower()
+    if any(marker in low for marker in _BOILERPLATE_MARKERS):
+        return False
+    stop = {"the", "and", "for", "with", "this", "that", "from", "into"}
+    words = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", goal)
+             if w.lower() not in stop]
+    if not words or not any(w in low for w in words):
+        return False
+    for f in findings or []:
+        token = str(f.get("criterion") or "").lower()
+        correction = str(f.get("required_correction") or "").lower()
+        if token and token in low:
+            continue
+        words_f = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", correction)
+                   if w.lower() not in stop]
+        if not words_f or not any(w in low for w in words_f):
+            return False
+    return True
+
+
 def apply_correction(content: str, finding: dict, goal: str) -> str | None:
     """Turn ONE finding into a REAL content correction, or refuse."""
     criterion = str(finding.get("criterion") or "")
@@ -764,6 +818,13 @@ def execute_review(project: str, stage_id: str) -> dict:
                           info["stage"].get("role", "producer"),
                           info["path"], info["sha256"], criteria,
                           artifact_version=info["version_no"])
+    cached = _latest_verdict(review["id"])
+    if cached is not None:
+        return {"ok": True, "review": review, "verdict": cached,
+                "findings": cached.get("findings") or [], "conflicts": [],
+                "checks": cached.get("checks") or [],
+                "artifact_path": cached.get("artifact_path") or info["path"],
+                "artifact_sha256": info["sha256"], "version": info["version_no"]}
     try:
         content = paths.project_path(project, info["path"]).read_text(
             encoding="utf-8")
@@ -829,51 +890,89 @@ def execute_review(project: str, stage_id: str) -> dict:
 
 
 def _revise_unlocked(project: str, stage_id: str, review_id: str,
-                     findings: list, goal: str) -> dict:
+                     findings: list, goal: str,
+                     producer_executor=None) -> dict:
     from core import workflow
     info = _stage_artifact(project, stage_id)
     if _series_cycle(project, stage_id) >= MAX_CYCLES:
         raise CritiqueError("critique-cycle-cap-exhausted")
+    source = paths.project_path(project, info["path"])
     try:
-        content = paths.project_path(project, info["path"]).read_text(
-            encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise CritiqueError("source-artifact-unreadable") from exc
+        original = source.read_bytes()
+    except OSError as exc:
+        raise CritiqueError("source-artifact-unreadable:" +
+                            type(exc).__name__) from exc
     criteria = [_criterion_id(c) for c in
                 (info["stage"].get("acceptance_criteria") or
                  ["artifact-exists", "sha256-verified", "non-empty",
                   "meaningful-content", "has-sections"])]
-    new_content = content
-    for f in findings or []:
-        fixed = apply_correction(new_content, f, goal)
-        if fixed is None:
-            raise CritiqueError("correction-not-applicable:" +
-                                str(f.get("criterion"))[:40])
-        new_content = fixed
-    # A revision is only real if the SAME criteria now pass on the NEW bytes.
+    findings_note = "; ".join("%s:%s" % (f.get("id"),
+                              f.get("required_correction"))
+                              for f in (findings or []))
+    producer_goal = (str(goal or "") + "\nCRITIC FINDINGS: " + findings_note)
+    produced = None
+    try:
+        result = invoke_producer(project, info["stage"], producer_goal,
+                                 producer_executor)
+        if result.get("status") not in (opstatus.PASS, "PASS"):
+            raise CritiqueError("producer-failed:" +
+                                str(result.get("error") or "no-producer-artifact"))
+        arts = result.get("artifacts") or []
+        if not arts:
+            raise CritiqueError("producer-failed:no-artifact")
+        candidate = str(arts[0].get("path") or "")
+        produced_path = paths.project_path(project, candidate)
+        produced = produced_path.read_bytes()
+    except CritiqueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — record the REAL failure
+        raise CritiqueError("producer-execution-failed:" +
+                            type(exc).__name__) from exc
+    finally:
+        # The original artifact is immutable: restore its exact bytes even if
+        # the Producer wrote to the canonical path.
+        try:
+            source.write_bytes(original)
+        except OSError as exc:
+            raise CritiqueError("original-artifact-restore-failed") from exc
+    try:
+        text = produced.decode("utf-8")
+    except UnicodeError as exc:
+        raise CritiqueError("producer-output-not-text") from exc
+    if not is_task_relevant(text, str(goal or ""), findings or []):
+        raise CritiqueError("producer-output-not-task-relevant")
     failures = [c for c in criteria
-                if not _check_criterion(c, new_content, project, info["path"],
-                                        info["sha256"])["ok"]
-                and c not in ("sha256-verified",)]
+                if c not in ("sha256-verified",) and
+                not _check_criterion(c, text, project, info["path"],
+                                     info["sha256"])["ok"]]
     if failures:
-        raise CritiqueError("revision-verification-failed:" +
-                            ",".join(failures[:2]))
-    if new_content == content or not new_content.strip():
+        raise CritiqueError("revision-criteria-failed:" + ",".join(failures[:2]))
+    if text.strip() == original.decode("utf-8", "replace").strip():
         raise CritiqueError("revision-made-no-real-change")
     rel = Path(info["path"])
+    cycle_no = _series_cycle(project, stage_id) + 1
     new_rel = str(rel.with_name("%s-rev%d%s" % (
-        rel.stem, _series_cycle(project, stage_id) + 1, rel.suffix)))
-    created = immutable_artifact(project, new_rel, new_content,
+        rel.stem, cycle_no, rel.suffix)))
+    try:
+        existing_sha = artifact_hash(project, new_rel)
+        if existing_sha == hashlib.sha256(text.encode()).hexdigest():
+            sidecar = Path(str(paths.project_path(project, new_rel)) + ".json")
+            return {"ok": True, "artifact": json.loads(
+                sidecar.read_text(encoding="utf-8")),
+                "workflow": {"status": opstatus.PASS, "idempotent": True},
+                "source_sha256": info["sha256"]}
+    except (OSError, ValueError):
+        pass
+    created = immutable_artifact(project, new_rel, text,
                                  {"role": "producer", "review_id": review_id,
                                   "source_sha256": info["sha256"],
                                   "source_version": info["version_no"]})
     wf = workflow.record_external_version(project, stage_id, created["path"],
                                           created["sha256"],
-                                          "critique-revision:%s" % review_id)
+                                          "producer-revision:%s" % review_id)
     if wf.get("status") != opstatus.PASS:
         raise CritiqueError("workflow-version-rejected")
-    _append({"id": "rev-%d-%s" % (_series_cycle(project, stage_id) + 1,
-                                  _series_key(project, stage_id)),
+    _append({"id": "rev-%d-%s" % (cycle_no, _series_key(project, stage_id)),
              "kind": "revision", "project": project,
              "workflow_id": info["workflow_id"], "stage_id": stage_id,
              "series_key": _series_key(project, stage_id),
@@ -885,9 +984,11 @@ def _revise_unlocked(project: str, stage_id: str, review_id: str,
 
 
 def revise_artifact(project: str, stage_id: str, review_id: str,
-                    findings: list, goal: str = "") -> dict:
+                    findings: list, goal: str = "",
+                    producer_executor=None) -> dict:
     with _series_lock(project, stage_id):
-        return _revise_unlocked(project, stage_id, review_id, findings, goal)
+        return _revise_unlocked(project, stage_id, review_id, findings, goal,
+                                producer_executor)
 
 
 def _hold(project: str, stage_id: str, review_id: str, reason: str) -> dict:
@@ -902,7 +1003,7 @@ def _hold(project: str, stage_id: str, review_id: str, reason: str) -> dict:
                     "status": "HOLD", "reason": reason})
 
 
-def run_series(project: str, stage_id: str) -> dict:
+def run_series(project: str, stage_id: str, producer_executor=None) -> dict:
     """Bounded, concurrency-safe Producer→Critic→revision→Critic series."""
     if not critic_enabled():
         raise CritiqueError("critic-not-enabled")
@@ -931,7 +1032,8 @@ def run_series(project: str, stage_id: str) -> dict:
             try:
                 revised = _revise_unlocked(
                     project, stage_id, review["review"]["id"],
-                    review["findings"], str(workflow_goal(project)))
+                    review["findings"], str(workflow_goal(project)),
+                    producer_executor)
             except CritiqueError as exc:
                 hold = _hold(project, stage_id, review["review"]["id"],
                              "revision-failed:" + str(exc)[:80])
@@ -949,21 +1051,28 @@ def workflow_goal(project: str) -> str:
 
 
 def decision_fingerprint(project: str, workflow_id: str, stage_id: str,
-                         review_id: str, artifact_sha256: str, option: str,
-                         cycle: int, rejected: list, evidence_refs: list) -> str:
-    blob = json.dumps({"project": project, "workflow_id": workflow_id,
-                       "stage_id": stage_id, "review_id": review_id,
-                       "artifact_sha256": artifact_sha256, "option": option,
-                       "cycle": cycle, "rejected": rejected,
-                       "evidence_refs": evidence_refs},
-                      ensure_ascii=False, sort_keys=True)
+                         review_id: str, artifact_path: str,
+                         artifact_sha256: str, option: str, cycle: int,
+                         rejected: list, evidence_refs: list,
+                         actor: str, session_id: str) -> str:
+    """Bind EVERY decision-critical field, including authenticated identity."""
+    blob = json.dumps({
+        "project": project, "workflow_id": workflow_id, "stage_id": stage_id,
+        "review_id": review_id, "artifact_path": artifact_path,
+        "artifact_sha256": artifact_sha256, "option": option, "cycle": cycle,
+        "rejected_options": rejected, "evidence_refs": evidence_refs,
+        "decision_maker": actor, "session_id": session_id},
+        ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
 def recover_decision(project: str, stage_id: str) -> dict:
     """Retry workflow approval for a decision committed before a crash."""
+    recovered_ids = {e.get("decision_id") for e in
+                     entries(project, "decision-recovered")}
     pending = next((e for e in reversed(entries(project, "decision-pending"))
-                    if e.get("stage_id") == stage_id), None)
+                    if e.get("stage_id") == stage_id and
+                    e.get("decision_id") not in recovered_ids), None)
     if pending is None:
         return {"ok": False, "reason": "no-pending-decision"}
     from core import workflow
@@ -1008,9 +1117,11 @@ def human_decision(project: str, stage_id: str, review_id: str,
         rejected = [{"option": "revise", "reason": reject_note or
                      "human selected the reviewed option", "owner": "user"}]
         evidence = [info["path"]]
+        principal = panelauth.principal_for_session(session_id)
         fp = decision_fingerprint(project, review["workflow_id"], stage_id,
-                                  review_id, info["sha256"], option,
-                                  _cycle_of(review_id), rejected, evidence)
+                                  review_id, info["path"], info["sha256"],
+                                  option, _cycle_of(review_id), rejected,
+                                  evidence, principal, session_id)
         decision = decide(project, review["workflow_id"], stage_id, review_id,
                           info["path"], info["sha256"], option, rejected,
                           evidence, _cycle_of(review_id), confirm_token,
