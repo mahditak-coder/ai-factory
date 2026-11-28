@@ -118,3 +118,39 @@ Continues from commit `422e894cef41970f295c69794d019bb19dbfcb55` on the same bra
 - CI. No external blocker; all required in-repo criteria implemented.
 
 Logs: `…/p7e-t4.log`, `…/p7e-full.log`, JS check output in delivery report.
+
+## COMPREHENSIVE CORRECTIVE MISSION — real critique, revision and decision
+
+Continues from `edb732d27bd70319875b9603a4ab4bcdb6b8eb2b` on the same branch.
+
+### Root causes fixed
+1. Every acceptance criterion now has its own real predicate. Scores are never
+   defaulted to 5; unknown criteria stay UNKNOWN with score 0. Empty files,
+   HTML-comment-only files and placeholder-only text are rejected.
+2. `revise_artifact()` no longer appends HTML comments. It applies concrete
+   corrections, re-verifies the SAME criteria on the new bytes and refuses
+   FAIL/HOLD when a correction is not applicable or changes nothing. The old
+   version remains immutable; the new version is a real file with a real SHA.
+3. Findings are validated inside `record_verdict()` as well as in direct calls:
+   stable ID bound to review/version/SHA/criterion, review ID, history, evidence
+   path and matching SHA, severity, owner and correction are all required.
+4. Human decisions require a latest valid verdict bound to the CURRENT SHA, an
+   allowed option, confirmation fingerprint, a trusted session and a real
+   `workflow.approve()` result. HOLD/REJECT cannot be approved. Failure between
+   ledger write and workflow approval is recoverable via `recover_decision()`.
+5. The whole series is guarded by a cross-process flock bound to a stable
+   workflow/stage key; cycle counting and HOLD use that same key. Repeated
+   requests are idempotent and a fourth version cannot be created.
+
+### Tests (MOCKED transport / browser only; no live provider or paid call)
+- 23 new corrective tests: content truth, placeholder rejection, per-criterion
+  evaluation, SHA stop, forged findings, real revision, old-verdict rejection,
+  forged/replayed confirmation, invalid session/option, approval failure and
+  recovery, deterministic thread/process races, fourth-cycle block, idempotency,
+  restart lineage, session/CSRF gates and API/decision parity.
+- Phase 07 suites 28/28; full core suite **708/708 PASS** (94.367s); JS safe-DOM
+  5/5; `py_compile` and `git diff --check` clean.
+- NOT TESTED: real HTTP socket round-trip, real browser visual inspection, live
+  Critic model turn, different-model independence (NOT claimed), CI.
+
+Logs: `…/p7c-new6.log`, `…/p7c-full.log`.

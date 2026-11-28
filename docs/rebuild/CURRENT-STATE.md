@@ -226,3 +226,7 @@
 
 ## Next action
 Phase 07 is submitted for final independent review; the implementing agent does NOT mark it ACCEPTED. Phase 08 is NOT authorized. The Phase 03 sample Product Brief remains a DRAFT example awaiting user approval and is not real market research. Historical provisional/superseded status entries are preserved above, not deleted.
+
+## Phase 07 comprehensive corrective mission (append-only)
+- Real per-criterion critique; empty/comment-only/placeholder artifacts rejected; verdict-bound finding validation; real content corrections with immutable versions; hardened human decision and recoverable approval; series-wide cross-process locking and stable cycle/HOLD identity.
+- Tests: corrective 23/23, Phase 07 28/28, full core 708/708, JS 5/5, py_compile and diff-check clean. Real HTTP socket, real browser and live model NOT TESTED.

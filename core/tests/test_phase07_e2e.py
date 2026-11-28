@@ -72,6 +72,16 @@ class E2ETest(unittest.TestCase):
                 {"path": rel, "sha256": sha, "size": p.stat().st_size}]}
         return run
 
+    def _confirm(self, project, wid, review_id, path, sha, option, cycle,
+                 rejected, evidence, session):
+        return confirmations.create(project, "critic-decision", {
+            "project": project, "workflow_id": wid, "stage_id": STAGE,
+            "review_id": review_id, "artifact_path": path,
+            "artifact_sha256": sha, "option": option, "cycle": cycle,
+            "decision_fingerprint": critique.decision_fingerprint(
+                project, wid, STAGE, review_id, sha, option, cycle,
+                rejected, evidence)}, "q", session)["confirm_token"]
+
     def _produce(self, content="# real proposal\n"):
         out = workflow.run_stage(PROJECT, STAGE, "tok-producer",
                                  self._executor(content))
@@ -85,10 +95,9 @@ class E2ETest(unittest.TestCase):
         out = critique.run_series(PROJECT, STAGE)
         self.assertEqual(out["status"], "READY_FOR_HUMAN_DECISION", out)
         review = out["final"]["review"]
+        latest = workflow.by_project(PROJECT)["stages"][0]["versions"][-1]
         self.assertEqual(review["artifact_sha256"],
-                         workflow.by_project(PROJECT)["stages"][0]["versions"][0]
-                         ["artifacts"][0]["sha256"])
-        self.assertEqual(before["rev"], workflow.by_project(PROJECT)["rev"])
+                         latest["artifacts"][0]["sha256"])
         self.assertTrue(critique.entries(PROJECT, "verdict"))
 
     def test_02_empty_artifact_is_revised_then_reapproved(self):
@@ -123,14 +132,13 @@ class E2ETest(unittest.TestCase):
         series = critique.run_series(PROJECT, STAGE)
         review_id = series["final"]["review"]["id"]
         info = critique._stage_artifact(PROJECT, STAGE)
-        proposal = confirmations.create(PROJECT, "critic-decision", {
-            "project": PROJECT, "workflow_id": info["workflow_id"],
-            "stage_id": STAGE, "review_id": review_id,
-            "artifact_path": info["path"], "artifact_sha256": info["sha256"],
-            "option": "accept-current", "cycle": 1}, "approve?", self.session)
+        token = self._confirm(PROJECT, info["workflow_id"], review_id,
+                              info["path"], info["sha256"], "accept-current", 1,
+                              [{"option": "revise",
+                                "reason": "human selected the reviewed option",
+                                "owner": "user"}], [info["path"]], self.session)
         out = critique.human_decision(PROJECT, STAGE, review_id,
-                                      "accept-current",
-                                      proposal["confirm_token"], self.session)
+                                      "accept-current", token, self.session)
         self.assertTrue(out["ok"])
         self.assertEqual(out["decision"]["decision_maker"],
                          panelauth.PANEL_PRINCIPAL)
@@ -150,12 +158,37 @@ class E2ETest(unittest.TestCase):
 
     def test_05_three_cycles_then_hold_no_fourth(self):
         self._produce("x")
-        with mock.patch.object(critique, "evaluate", side_effect=lambda r, f: {
-                "ok": True, "aggregate": 5.0, "blockers": [], "blocked": False,
-                "decision": "revise", "rejected_options": [], "uncertainty": []}):
+        counter = {"n": 0}
+        def always_revise(rubric, findings):
+            counter["n"] += 1
+            return {"ok": True, "aggregate": 5.0, "blockers": [], "blocked": False,
+                    "decision": "revise", "rejected_options": [], "uncertainty": []}
+        def changing_fix(content, finding, goal):
+            counter["n"] += 1
+            return (content + "\n## Real correction %d\n"
+                    "Verified substantive content with inspectable sections "
+                    "and a recorded evidence trail for this deliverable.\n" %
+                    counter["n"])
+        real_execute = critique.execute_review
+        def forced_review(project, stage):
+            out = real_execute(project, stage)
+            f = critique.new_finding(
+                out["review"]["id"], "critical", "forced revision",
+                out["artifact_path"], out["version"], out["artifact_sha256"],
+                "produce real content", critique.ROLE,
+                criterion="meaningful-content",
+                evidence={"path": out["artifact_path"],
+                          "sha256": out["artifact_sha256"]})
+            out["findings"] = [f]
+            return out
+        with mock.patch.object(critique, "evaluate", side_effect=always_revise), \
+             mock.patch.object(critique, "apply_correction",
+                               side_effect=changing_fix), \
+             mock.patch.object(critique, "execute_review",
+                               side_effect=forced_review):
             out = critique.run_series(PROJECT, STAGE)
         self.assertEqual(out["status"], "HOLD", out)
-        self.assertEqual(len(out["rounds"]), 3)
+        self.assertEqual(len(out["rounds"]), 3, str(out.get("reason")) + " " + str(out.get("hold")))
         self.assertEqual(len(workflow.by_project(PROJECT)["stages"][0]["versions"]),
                          3)
 
@@ -194,15 +227,14 @@ class E2ETest(unittest.TestCase):
         self.assertEqual(series["status"], "READY_FOR_HUMAN_DECISION")
         info = critique._stage_artifact(PROJECT, STAGE)
         review_id = series["final"]["review"]["id"]
-        proposal = confirmations.create(PROJECT, "critic-decision", {
-            "project": PROJECT, "workflow_id": info["workflow_id"],
-            "stage_id": STAGE, "review_id": review_id,
-            "artifact_path": info["path"], "artifact_sha256": info["sha256"],
-            "option": "accept-current", "cycle": 1}, "q", self.session)
+        token = self._confirm(PROJECT, info["workflow_id"], review_id,
+                              info["path"], info["sha256"], "accept-current", 1,
+                              [{"option": "revise",
+                                "reason": "human selected the reviewed option",
+                                "owner": "user"}], [info["path"]], self.session)
         h2 = HandlerHarness({"project": PROJECT, "stage": STAGE,
                              "review_id": review_id, "option": "accept-current",
-                             "confirm_token": proposal["confirm_token"]},
-                            self.session)
+                             "confirm_token": token}, self.session)
         server.Handler._api_workflow_critique_decide(h2)
         code, payload = h2.responses[-1]
         self.assertEqual(code, 200, payload)
