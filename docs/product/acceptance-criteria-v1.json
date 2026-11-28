@@ -1,0 +1,30 @@
+{
+ "brief_id": "brief-p3-demo-v1",
+ "brief_hash": "efc67e79d899058b3a22e4ca79a709bf15bf4eeb9068b3ef7dc122e257db7109",
+ "validation": {
+  "valid": true,
+  "errors": [],
+  "unknowns": [
+   "ac-1:status",
+   "ac-2:status"
+  ]
+ },
+ "criteria": [
+  {
+   "id": "ac-1",
+   "description": "جریان اصلی در عرض ۳۹۰px بدون اسکرول افقی قابل استفاده است",
+   "measurable": true,
+   "testable": true,
+   "linked_assumption": "کاربران تمرین کوتاه روزانه میخواهند",
+   "status": "unknown"
+  },
+  {
+   "id": "ac-2",
+   "description": "متن رابط فارسی و RTL است",
+   "measurable": true,
+   "testable": true,
+   "linked_source": "local://request",
+   "status": "unknown"
+  }
+ ]
+}

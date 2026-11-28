@@ -1,23 +1,26 @@
 # Current State
 
-> خلاصه فارسی: فاز ۰۱ توسط بازبینی مستقل پذیرفته شد (ACCEPTED). فاز ۰۲real اجرا شد: لایهٔcanonical هوش درخواست، طبقهبندی فارسی/مختلط، تفکیک حوزه و پلتفرم، clarification ضروری، خطر/پیچیدگی جدا، برنامهٔ محدود و تأیید امن گرهخورده ساخته و آزمایش شد. فاز ۰۲ منتظر بازبینی مستقل است و **پذیرفته نشده است**؛ فاز ۰۳ مجاز نیست.
+> خلاصه فارسی: فاز ۰۱ و فاز ۰۲ توسط بازبینی مستقل پذیرفته شدند (ACCEPTED). فاز ۰۳real اجرا شد: موتور تحقیق با provenance، مقایسهٔ گزینهها، ارزیابی امکانپذیری و Product Brief نسخهدار با معیارهای پذیرش ساخته و آزمایش شد. فاز ۰۳ **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW** است؛ فاز ۰۴ مجاز نیست.
 
 - Audit snapshot: `2bf75e834d0444ac5cfef767261757324cbefee8` on `audit/full-source-review`
 - Documentation branch: `rebuild/blueprint-v1` created from the exact audit commit
 - Blueprint commit: 95b901d9a4bccb5d96f50c256668c2d2a904423c
 - Rebuild status: **IN PROGRESS**
-- Last accepted phase: **01 — Core Foundation and Unified Orchestration** — ACCEPTED by independent review dated 2026-11-27 (prior provisional status recorded historically below was superseded by that decision).
+- Last accepted phase: **02 — Request Intelligence & Planning** — ACCEPTED by final independent review dated 2026-11-28.
 - Phase 01 status: **ACCEPTED**. Basis: final code commit `43bf30818e77b47b4ce23e70bd35738a0eb1db71`, documentation/remote HEAD commit `3dcae0703bee408bc34fdfd83e81807a25c6a2a7`, independent review 2026-11-27.
-- Active phase: **02 — Request Intelligence & Planning** (implementation complete; awaiting independent review).
-- Phase 02 status: **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW** (critical corrections applied after independent review findings; see below).
-- Phase 03 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 02 acceptance.
+- Phase 02 status: **ACCEPTED** (final independent review 2026-11-28). Acceptance basis: final code/documentation commit `075921b5f0b8ebe7638b0d38c6394c6402c94541` on `rebuild/phase-02-request-intelligence`, with the full scope of Phase 02 corrections — durable canonical request model, answer mutation, no auto-approval, fail-closed execution gate, genuine one-shot capability, strict session/project binding and authoritative panel-principal attribution. Earlier `NOT ACCEPTED` entries below are historical and SUPERSEDED by this decision; they are not deleted or rewritten.
+- Active phase: **03 — Research, Innovation & Product Strategy** (implementation complete; awaiting independent review).
+- Phase 03 status: **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW**.
+- Phase 04 status: **NOT AUTHORIZED** — requires explicit user authorization after independent Phase 03 acceptance.
+- Phase 03 base: created from the exact accepted Phase 02 commit `075921b5f0b8ebe7638b0d38c6394c6402c94541`, not from `main` or any unrelated branch.
 - Phase 01 commit: 0465ff2d88fdd90fc5a1039ecf86cc698c9022d1
 - Phase 01 acceptance-fix commit: 8e292a70d20bc11450f41a03de175b81ef149356
 - Phase 01 final hardening commit: e026891a4f9de0d6d3c3e8f1d6a64aa2f170355b
 - Phase 01 multi-process fix commit: d1e801e0e9e63ab9eeda71393b92f746f9b56c39
 - Phase 01 reconciliation atomicity commit: 43bf30818e77b47b4ce23e70bd35738a0eb1db71
 - Historical note (preserved, not rewritten): before the independent decision, this file recorded `Last accepted phase: NONE` and Phase 01 as awaiting acceptance. That status is superseded by the 2026-11-27 independent acceptance recorded above.
-- Next allowed action: independent review of Phase 02 on `rebuild/phase-02-request-intelligence`. Do not start Phase 03 automatically.
+- Historical note (preserved): Phase 02 was recorded as `NOT ACCEPTED — READY FOR INDEPENDENT REVIEW` before the final independent decision; that status is SUPERSEDED by the 2026-11-28 acceptance above.
+- Next allowed action: independent review of Phase 03 on `rebuild/phase-03-research-product-strategy`. Do not start Phase 04 automatically.
 
 ## Audit status and limitations
 - Audit source state: local `~/AI-Factory` HEAD `3878db271313415656328ec57595d1fe87c5fa3a`, branch `main`, 151 uncommitted items, zero remotes, version `0.47.0`.
@@ -76,6 +79,18 @@
 - Tests: targeted Phase 02 suites `Ran 133 tests in 0.935s — OK` (exit 0); full suite `Ran 380 tests in 43.166s — OK` (380 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`; real two-process replay proved exactly one consumption. Legacy orchestrator tests explicitly opt into the documented legacy compatibility switch; no test was deleted or weakened.
 - CI/GitHub Actions and browser/viewport visual inspection: NOT TESTED (no real run available).
 
+## Phase 03 evidence (real, on `rebuild/phase-03-research-product-strategy`)
+- Base: accepted Phase 02 commit `075921b5f0b8ebe7638b0d38c6394c6402c94541`; isolated clone only, clean starting tree.
+- `core/research_product.py` — one canonical Research & Product Strategy store with flock-guarded atomic writes, marker/schema validation and fail-closed corrupt/missing storage. No parallel registry.
+- Research Engine: `add_source()` records URL, title, claim, claim type (`verified_fact`/`hypothesis`/`estimate`/`unknown`), access time, provenance (researcher/method/hash), and idempotent source IDs; untrusted source text is stored as DATA only. `assess_sources()` detects insufficient, unverified and contradictory evidence.
+- Paid research: `propose_paid_research()` requires an explicit confirmation token; `run_paid_research()` fails closed and performs NO paid side effect in Phase 03 (`BLOCKED`, `paid_executed=False`).
+- Alternatives: transparent scoring over cost/complexity/risk/time/feasibility, recorded pros/cons/limits, evidence links, explicit rejection reasons, and blocked auto-selection when evidence or scores are insufficient.
+- Feasibility: technical/operational/economic/practical dimensions evaluated independently; unknown estimates stay unknown; dependencies, risks, environment limits and `requires_human_review` recorded; no fabricated prices, market statistics or provider capability.
+- Product Brief: versioned record with stable ID, request link, schema version, status, timestamps, hash, immutable previous versions in `brief_history`, real artifact file, and acceptance criteria validation (measurable/testable/linked/unknowns). Final scope/success acceptance is reserved to the user via a bound confirmation token; the system never marks its own brief `FINAL/ACCEPTED`.
+- Real artifacts: `docs/product/brief-v1.json` (file SHA-256 `33203151beaff9058f5ea6620bf4f0c11aeb50e18feb8b6d13f7c805e2cdbd`, brief hash `efc67e79d899058b3a22e4ca79a709bf15bf4eeb9068b3ef7dc122e257db7109`) and `docs/product/acceptance-criteria-v1.json` with explicit unknowns `ac-1:status`, `ac-2:status`.
+- Tests: targeted `Ran 27 tests ... OK` (exit 0); full suite `Ran 407 tests in 45.941s — OK` (407 PASS / 0 FAIL / 0 ERROR, exit 0), isolated `AI_FACTORY_TEST_ROOT`. Details: `docs/rebuild/evidence/PHASE-03-RESEARCH-PRODUCT-STRATEGY.md`.
+- CI/GitHub Actions, live providers, payments and browser/viewport visual inspection: NOT TESTED (no real run available). Product scope and success metrics are awaiting USER approval.
+
 ## Open blockers
 1. Checksum mismatch and stale test-status contradiction remain recorded until a separate audit-maintenance change.
 2. Canonical specialist registry and workflow registry are inconsistent (Phase 04).
@@ -85,4 +100,4 @@
 6. Receipts for call_ids already evicted from the old 600-event history before this fix cannot be reconstructed; no destructive migration was performed. This is a historical audit limitation, not a regression of the new mechanism.
 
 ## Next action
-Phase 02 is **READY FOR INDEPENDENT REVIEW** and is NOT accepted or COMPLETE until that review. **Phase 03 has NOT started and is NOT authorized.** Wait for explicit user authorization after independent Phase 02 acceptance. Historical provisional Phase 01 status entries are preserved above, not deleted.
+Phase 03 is **NOT ACCEPTED — READY FOR INDEPENDENT REVIEW**, and its Product Brief/success criteria await explicit user approval. **Phase 04 has NOT started and is NOT authorized.** Historical provisional/superseded status entries are preserved above, not deleted.

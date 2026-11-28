@@ -1,0 +1,117 @@
+{
+ "alternative_ids": [],
+ "brief_id": "brief-p3-demo-v1",
+ "created": "2026-11-28T03:56:36",
+ "criteria_validation": {
+  "errors": [],
+  "unknowns": [
+   "ac-1:status",
+   "ac-2:status"
+  ],
+  "valid": true
+ },
+ "feasibility": {
+  "at": "2026-11-28T03:56:36",
+  "dependencies": [
+   "تعیین پلتفرم دقیق توسط کاربر"
+  ],
+  "dimensions": {
+   "economic": {
+    "evidence": [],
+    "notes": "هزینه نامشخص",
+    "status": "unknown"
+   },
+   "operational": {
+    "evidence": [],
+    "notes": "",
+    "status": "unknown"
+   },
+   "practical": {
+    "evidence": [],
+    "notes": "",
+    "status": "unknown"
+   },
+   "technical": {
+    "evidence": [],
+    "notes": "قابلیت ابزارها تأیید نشده",
+    "status": "unknown"
+   }
+  },
+  "environment_limits": [
+   "بدون provider زنده در فاز ۰۳"
+  ],
+  "project": "p3-demo",
+  "requires_human_review": true,
+  "risks": [
+   "عدم تأیید منبع خارجی"
+  ]
+ },
+ "hash": "efc67e79d899058b3a22e4ca79a709bf15bf4eeb9068b3ef7dc122e257db7109",
+ "history": [],
+ "project": "p3-demo",
+ "request_id": "req-phase03-demo",
+ "schema_version": "af-product-strategy-1.0",
+ "sections": {
+  "acceptance_criteria": [
+   {
+    "description": "جریان اصلی در عرض ۳۹۰px بدون اسکرول افقی قابل استفاده است",
+    "id": "ac-1",
+    "linked_assumption": "کاربران تمرین کوتاه روزانه میخواهند",
+    "measurable": true,
+    "status": "unknown",
+    "testable": true
+   },
+   {
+    "description": "متن رابط فارسی و RTL است",
+    "id": "ac-2",
+    "linked_source": "local://request",
+    "measurable": true,
+    "status": "unknown",
+    "testable": true
+   }
+  ],
+  "alternatives": [
+   "static-web",
+   "spa-web"
+  ],
+  "assumptions": [
+   "زبانآموزان تمرین کوتاه میخواهند"
+  ],
+  "definition": "وباپ محلی بدون وابستگی خارجی",
+  "dependencies": [
+   "تأیید کاربر"
+  ],
+  "feasibility": "همه ابعاد نامشخص — نیاز به بازبینی انسانی",
+  "goal": "وباپ آموزشی ساده",
+  "out_of_scope": "احراز هویت، پرداخت، انتشار",
+  "prioritized_features": [
+   "تمرین",
+   "نتیجه"
+  ],
+  "problem": "نیاز به تمرین واژگان فارسی",
+  "risks": [
+   "منبع تأییدشده خارجی وجود ندارد"
+  ],
+  "scope": "تمرین واژگان و نمایش نتیجه",
+  "sources": [
+   "local://request",
+   "local://assumption"
+  ],
+  "success_metrics": [
+   "زمان تکمیل تمرین — مقدار نامعلوم"
+  ],
+  "target_users": "زبانآموزان فارسیزبان (فرضیه)",
+  "user_needs": "تمرین کوتاه روزانه (فرضیه)",
+  "value_proposition": "تمرین سریع و قابل اندازهگیری"
+ },
+ "source_ids": [],
+ "status": "PENDING_USER_APPROVAL",
+ "updated": "2026-11-28T03:56:36",
+ "user_approval": {
+  "actor": "",
+  "at": "",
+  "status": "NOT_APPROVED",
+  "token": ""
+ },
+ "version": 1
+}
